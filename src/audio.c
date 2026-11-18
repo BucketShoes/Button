@@ -12,8 +12,8 @@
 
 static const char *TAG = "audio";
 
-#define SR        24000
-#define BLOCK     240        // 10 ms
+#define SR        48000      // highest rate IDF recommends for PDM TX; clip must match
+#define BLOCK     (SR / 100) // 10 ms
 #define MASTER    256        // /256 master volume: full. Loud is the point (contact sport,
                              // yelling). The FS-1540 is rated 0.5 W and on USB-only the
                              // 400 mA charger feeds LEDs + amp, so VSYS may sag on peaks.
@@ -87,7 +87,7 @@ static void pcm_mix(int32_t *acc)
         }
     }
     if (!s_pcm_playing) return;
-    int16_t tmp[BLOCK];
+    static int16_t tmp[BLOCK];
     uint32_t n = s_pcm_count - s_pcm_pos;
     if (n > BLOCK) n = BLOCK;
     if (esp_partition_read(s_pcm_part, 16 + s_pcm_pos * 2, tmp, n * 2) != ESP_OK) {
@@ -158,7 +158,8 @@ static void render_block(void)
         c->active = true;
     }
 
-    int32_t acc[BLOCK] = {0};
+    static int32_t acc[BLOCK];
+    memset(acc, 0, sizeof acc);
     pcm_mix(acc);
     for (int s = 0; s < SLOT_COUNT; s++) {
         chan_t *c = &s_ch[s];
@@ -182,7 +183,7 @@ static void render_block(void)
                 }
                 note_begin(c);
                 update_inc(c);
-            } else if ((c->pos & 63) == 0) {
+            } else if ((c->pos & 127) == 0) {
                 update_inc(c);  // sweep resolution ~2.7 ms
             }
         }
@@ -235,7 +236,7 @@ void audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_pdm_tx_mode(s_tx, &pc));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
 
-    xTaskCreate(audio_task, "audio", 4096, NULL, 10, NULL);
+    xTaskCreate(audio_task, "audio", 6144, NULL, 10, NULL);
 
     // Let the PDM midpoint settle through CIN1 (10 ms tau) before the amp wakes.
     vTaskDelay(pdMS_TO_TICKS(60));

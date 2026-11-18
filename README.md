@@ -11,7 +11,7 @@ In VS Code, use the PlatformIO **Upload** task with the port picked in the statu
 `custom_audio` in `platformio.ini` sets what that Upload does with the audio partition, on the same port:
 
 - `keep`: leave the audio partition alone, for fast uploads.
-- `upload`: also write `audio/test_audio.bin` (about 2 MB, so the upload is slower).
+- `upload`: also write `audio/test_audio.bin` (about 3.8 MB, so the upload is slower).
 - `erase`: also blank the clip header, so nothing plays at power-up.
 
 Set it to `upload` once per board, then back to `keep`. From a terminal, `pio` isn't
@@ -24,16 +24,17 @@ on PATH, so use the full path:
 
 ## Speaker-test clip
 
-`audio/test_audio.bin` is raw 16-bit mono PCM at 24 kHz with a 16-byte header. It's
+`audio/test_audio.bin` is raw 16-bit mono PCM at 48 kHz (the firmware's audio rate) with a 16-byte header. It's
 gitignored, so regenerate it from any MP3:
 
 ```
 powershell -File tools	ranscode.ps1 -Src "music test.mp3" -OutDir <dir> -OutName music.wav
-python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin --hp 30 --compress light
+python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
 ```
 
 - `transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed.
-- `make_test_audio.py` picks the loudest 45 s (`--seconds`).
+- `make_test_audio.py` picks the loudest 40 s (`--seconds`). That's about the most that fits in 4 MB at 48 kHz.
+  - By default it does no high-pass and no compression, just a level normalise, so it's a clean speaker test.
   - `--hp` sets a high-pass in Hz; 0 turns it off.
   - `--compress` is `none`, `light` or `heavy`.
 - It also writes **`audio/test_audio.wav`**: the exact samples the ESP plays, so you can listen on a PC.

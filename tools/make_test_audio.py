@@ -1,6 +1,6 @@
 """Turn a 16-bit PCM WAV into the speaker-test flash image (audio/test_audio.bin).
 
-Picks the loudest window, mixes to mono, resamples to 24 kHz, optionally
+Picks the loudest window, mixes to mono, resamples to 48 kHz if needed, optionally
 high-passes and compresses, fades the ends, and writes:
 
     "PCM1" | u32 sample_rate | u32 sample_count | u32 reserved | int16 LE samples
@@ -13,7 +13,10 @@ Pure standard library (no numpy). The WAV can come from tools/transcode.ps1,
 which uses Windows' own decoder to turn an MP3 into a WAV.
 
     python tools/make_test_audio.py music.wav audio/test_audio.bin
-        [--seconds 45] [--hp 30] [--compress none|light|heavy]
+        [--seconds 40] [--hp 0] [--compress none|light|heavy]
+
+Defaults (no high-pass, no compression, 48 kHz) give a clean speaker test:
+the preview .wav should sound like a mono copy of the source.
 
 --hp is a 4th-order high-pass in Hz (0 = off). Note the firmware's PDM output
 also has its own ~35 Hz high-pass, and the amp input coupling is ~16 Hz.
@@ -27,7 +30,7 @@ import struct
 import sys
 import wave
 
-OUT_RATE = 24000
+OUT_RATE = 48000  # must match SR in src/audio.c; 40 s fits the 4 MB partition
 TAPS = 24  # resampler half-width in input samples
 
 
@@ -109,17 +112,23 @@ def compress(x, rate, mode):
         for i in range(len(x)):
             x[i] = x[i] / peak * 0.97
         return x
-    # Slow RMS levelling towards a target, then a soft (tanh) limiter.
+    # RMS levelling towards a target, then a soft (tanh) limiter. The RMS
+    # window and the gain smoothing are both much longer than a bass cycle, so
+    # the gain doesn't wobble within a waveform (that is audible distortion).
     target, max_gain, drive = COMPRESS[mode]
-    att = math.exp(-1 / (0.010 * rate))
-    rel = math.exp(-1 / (0.300 * rate))
-    env = 0.0
+    att = math.exp(-1 / (0.080 * rate))
+    rel = math.exp(-1 / (0.600 * rate))
+    gs = math.exp(-1 / (0.050 * rate))
+    env = target * target
+    g_s = 1.0
     for i in range(len(x)):
         v = x[i] / peak
         e = v * v
-        env = (att if e > env else rel) * env + (1 - (att if e > env else rel)) * e
+        k = att if e > env else rel
+        env = k * env + (1 - k) * e
         g = min(max_gain, target / math.sqrt(env + 1e-6))
-        x[i] = math.tanh(v * g * drive) / math.tanh(drive) * 0.97
+        g_s = gs * g_s + (1 - gs) * g
+        x[i] = math.tanh(v * g_s * drive) / math.tanh(drive) * 0.97
     return x
 
 
@@ -127,13 +136,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
     ap.add_argument("dst")
-    ap.add_argument("--seconds", type=float, default=45.0)
-    ap.add_argument("--hp", type=float, default=30.0, help="high-pass Hz, 0 = off")
-    ap.add_argument("--compress", choices=["none", "light", "heavy"], default="light")
+    ap.add_argument("--seconds", type=float, default=40.0)
+    ap.add_argument("--hp", type=float, default=0.0, help="high-pass Hz, 0 = off")
+    ap.add_argument("--compress", choices=["none", "light", "heavy"], default="none")
     a = ap.parse_args()
     dst = a.dst
     seg, rate = read_window(a.src, a.seconds)
-    y = resample(seg, rate, OUT_RATE)
+    y = seg if rate == OUT_RATE else resample(seg, rate, OUT_RATE)
     if a.hp > 0:
         y = highpass(y, OUT_RATE, a.hp)
     y = compress(y, OUT_RATE, a.compress)
