@@ -4,7 +4,8 @@
 //   wins when its clock reaches 0:00 (it has held the point for 10 minutes).
 // - Face press = OR of the three face switches, 100 ms release debounce.
 // - Hold 3 s: capture (switch to the other team; random team if unowned).
-// - Keep holding to 6 s: pause (undo the capture, no owner, ring off).
+// - Keep holding to 6 s: pause (undo the capture, ring off); the next
+//   3 s hold resumes with the owner from before the pause.
 // - Keep holding to 10 s: reset both clocks to 10:00.
 // - Triple tap: show VSYS / VBUS on the displays for a few seconds.
 //
@@ -66,9 +67,9 @@ static const note_t SND_SW[3][1] = {
 };
 static const note_t SND_BUILD[] = {{250, 1200, HOLD_CAPTURE_MS, W_SQUARE, 70}};
 static const note_t SND_TEAM[2][5] = {
-    {   // team 1: rising sine arpeggio
-        {523, 523, 110, W_SINE, 255}, {659, 659, 110, W_SINE, 255}, {784, 784, 110, W_SINE, 255},
-        {1047, 1047, 350, W_SINE, 255}, {0, 0, 1, W_SINE, 0},
+    {   // team 1: rising square arpeggio (sine was too quiet on the FS-1540)
+        {1047, 1047, 100, W_SQUARE, 160}, {1319, 1319, 100, W_SQUARE, 160}, {1568, 1568, 100, W_SQUARE, 160},
+        {2093, 2093, 350, W_SQUARE, 160}, {0, 0, 1, W_SQUARE, 0},
     },
     {   // team 2: square "da-da-DAAA"
         {880, 880, 90, W_SQUARE, 160}, {0, 0, 40, W_SQUARE, 0}, {880, 880, 90, W_SQUARE, 160},
@@ -161,6 +162,7 @@ static struct {
 } s_snap;                  // state when the current hold started
 static int s_hold_stage;   // 0 building, 1 captured, 2 paused, 3 reset
 static int s_hold_target;  // team the capture will go to, -1 = random
+static int s_resume_owner = -1;  // owner before a pause; the next capture goes back to them
 static int s_hold_last_sec;
 
 static int s_taps;
@@ -183,7 +185,7 @@ static void on_face_press(uint32_t now)
     s_snap.rem[1] = s_rem[1];
     s_hold_stage = 0;
     s_hold_last_sec = 0;
-    s_hold_target = (s_owner >= 0) ? 1 - s_owner : -1;
+    s_hold_target = (s_owner >= 0) ? 1 - s_owner : s_resume_owner;
 
     if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
 
@@ -212,6 +214,7 @@ static void hold_progress(uint32_t held)
         if (s_state != ST_WON) {
             int team = s_hold_target >= 0 ? s_hold_target : (int)(esp_random() & 1);
             s_owner = team;
+            s_resume_owner = -1;
             s_state = ST_RUNNING;
             AUDIO_PLAY(SLOT_EVENT, SND_TEAM[team]);
             ESP_LOGI(TAG, "CAPTURED by team %d", team + 1);
@@ -222,9 +225,11 @@ static void hold_progress(uint32_t held)
     if (s_hold_stage == 1 && held >= HOLD_PAUSE_MS) {
         s_hold_stage = 2;
         if (s_state != ST_WON) {
-            // Undo this hold entirely, then pause with no owner.
+            // Undo this hold entirely, then pause. The owner is remembered and
+            // gets the point back on the next 3 s hold.
             s_rem[0] = s_snap.rem[0];
             s_rem[1] = s_snap.rem[1];
+            if (s_snap.owner >= 0) s_resume_owner = s_snap.owner;
             s_owner = -1;
             s_state = ST_IDLE;
             ESP_LOGI(TAG, "PAUSED");
@@ -234,7 +239,7 @@ static void hold_progress(uint32_t held)
     if (s_hold_stage == 2 && held >= HOLD_RESET_MS) {
         s_hold_stage = 3;
         s_rem[0] = s_rem[1] = GAME_MS;
-        s_owner = s_winner = -1;
+        s_owner = s_winner = s_resume_owner = -1;
         s_state = ST_IDLE;
         AUDIO_PLAY(SLOT_EVENT, SND_RESET);
         ESP_LOGI(TAG, "RESET to 10:00");
@@ -293,7 +298,7 @@ static void render_displays(uint32_t now)
             bright = DISP_IDLE;
             if (s_state == ST_RUNNING) {
                 if (t == s_owner) {
-                    colon = (s_rem[t] % 1000) >= 500;  // flashes once per counted second
+                    colon = (s_rem[t] % 250) >= 125;  // 4 Hz, so the owner is obvious at a glance
                     bright = DISP_FULL;
                 } else {
                     bright = DISP_DIM;

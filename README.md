@@ -19,11 +19,11 @@ pio device monitor
 - **Hold:**
   - 0–3 s: the ring spins in the colour of the team about to capture (white if unowned), with a rising tone.
   - At 3 s the point is **captured**: it goes to the other team, or to a random team if unowned. The capturing team's sound plays.
-  - Keep holding to 6 s to **pause**: the capture is undone, the point has no owner and the ring goes off. A white fill and ticks warn as you approach it.
+  - Keep holding to 6 s to **pause**: the capture is undone, the clocks stop and the ring goes off. The next 3 s hold gives the point back to the team that owned it before the pause. A white fill and ticks warn as you approach it.
   - Keep holding to 10 s to **reset** both clocks to 10:00. A red fill shows progress.
   - Once a team has won, only the reset does anything.
 - **Triple tap:** DISP1 shows VSYS in mV and DISP2 shows VBUS in mV for 4 s, with a green gauge on the ring. On USB, VSYS reads the charger output, not a cell.
-- **Displays:** the owner's display is bright with a flashing colon. The non-owner's is dim.
+- **Displays:** the owner's display is bright with its colon flashing at 4 Hz. The non-owner's is dim.
 - **LEDs:**
   - LED1 is purple and LED2 is yellow, always at medium brightness.
   - The ring shows the owner's colour at full brightness.
