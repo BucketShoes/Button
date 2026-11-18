@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16131c">
+<title>Capture Buttons</title>
+<style>
+  :root {
+    --bg: #16131c; --card: #221e2b; --line: #3a3447; --text: #eee9f5; --muted: #a49cb3;
+    --accent: #b98cff; --ok: #6fd08c; --warn: #f0b44c; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px;
+           padding: 10px 16px; background: #120f17ee; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  #wall { font: 700 26px/1 ui-monospace, Consolas, monospace; letter-spacing: 1px; }
+  main { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
+  button, select, input { font: inherit; color: var(--text); background: #2d2738; border: 1px solid var(--line);
+           border-radius: 8px; padding: 8px 10px; }
+  button { cursor: pointer; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); color: #1a1222; border-color: var(--accent); font-weight: 600; }
+  button.danger { border-color: #7a3a44; color: #ffb3bb; }
+  button.on { background: var(--warn); color: #241a05; border-color: var(--warn); }
+  input[type=color] { padding: 2px; width: 48px; height: 38px; }
+  input[type=checkbox] { width: 20px; height: 20px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .grow { flex: 1; }
+  .muted { color: var(--muted); }
+  .note { color: var(--muted); font-size: 13px; }
+  #unsupported { display: none; padding: 12px; border: 1px solid var(--bad); border-radius: 10px; margin-bottom: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 12px 0; }
+  .card.off { opacity: .6; }
+  .card h2 { font-size: 17px; margin: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
+  .dot.ok { background: var(--ok); }
+  .owner { border-radius: 10px; padding: 12px; font-weight: 700; font-size: 18px; text-align: center;
+           border: 2px solid var(--line); margin: 8px 0; }
+  .clocks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .clocks.one { grid-template-columns: 1fr; }
+  .clock { border: 2px solid var(--line); border-radius: 10px; padding: 8px; text-align: center; }
+  .clock .v { font: 700 34px/1.1 ui-monospace, Consolas, monospace; }
+  .clock.live .v { text-decoration: underline; text-underline-offset: 6px; }
+  .clock .row { justify-content: center; margin: 6px 0 0; gap: 4px; }
+  .clock .row button { padding: 6px 8px; }
+  .clock input { width: 80px; text-align: center; }
+  details { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 6px; }
+  summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+  .grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; margin: 8px 0; }
+  .grid label { color: var(--muted); }
+  footer { text-align: center; padding: 24px 16px 40px; color: var(--muted); }
+  footer img { width: 120px; height: auto; display: block; margin: 0 auto 8px; }
+  footer a { color: var(--accent); }
+  @media (max-width: 420px) { .clock .v { font-size: 28px; } #wall { font-size: 22px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Capture Buttons</h1>
+  <div id="wall" title="Wall clock">--:--:--</div>
+</header>
+<main>
+  <div id="unsupported">
+    This browser can't use Bluetooth. Use Chrome on Android, or Chrome / Edge on a computer.
+    (On iPhone, Safari and Chrome can't; a Web Bluetooth browser such as Bluefy may work.)
+  </div>
+  <div class="row">
+    <button id="add" class="primary">+ Connect a button</button>
+    <span class="note">Each button you connect gets its own panel. You can connect several.</span>
+  </div>
+  <div id="cards"></div>
+</main>
+<footer>
+  <a href="https://battlecrylarp.org"><img src="bc-logo-300.avif" alt="Battlecry logo"></a>
+  Made for Battlecry ·
+  <a href="https://github.com/BucketShoes/Button">source on GitHub</a>
+</footer>
+
+<template id="card-tpl">
+  <section class="card">
+    <div class="row">
+      <span class="dot"></span>
+      <h2 class="name grow">Button</h2>
+      <span class="batt muted"></span>
+    </div>
+    <div class="owner">Connecting…</div>
+    <div class="clocks"></div>
+    <div class="row">
+      <button data-op="start" class="primary">Start</button>
+      <button data-op="pause">Pause</button>
+      <button data-op="reset" class="danger">Reset</button>
+      <button data-op="identify">Identify</button>
+      <button data-op="battery">Battery</button>
+    </div>
+    <div class="row">
+      <span class="muted">Holder:</span>
+      <button data-owner="-1">Uncaptured</button>
+      <button data-owner="0" class="t1">Team 1</button>
+      <button data-owner="1" class="t2">Team 2</button>
+      <button data-op="lock" class="lock">Lock button</button>
+    </div>
+    <div class="row">
+      <select class="sound grow"></select>
+      <button data-op="play">Play</button>
+      <button data-op="stopsound">Stop</button>
+    </div>
+    <details>
+      <summary>Settings</summary>
+      <div class="grid">
+        <label>Name</label><input class="f-name" maxlength="15" placeholder="(default)">
+        <label>Mode</label>
+        <select class="f-mode">
+          <option value="0">Teams only (no clock)</option>
+          <option value="1">One timer (one team's clock)</option>
+          <option value="2">Two timers (chess clock)</option>
+        </select>
+        <label class="m1">Timer team</label>
+        <select class="f-timer-team m1"><option value="0">Team 1</option><option value="1">Team 2</option></select>
+        <label class="mt">Direction</label>
+        <select class="f-dir mt"><option value="0">Count down (win at 0)</option><option value="1">Count up (win at duration, 0 = no limit)</option></select>
+        <label class="mt">Show numbers</label><input type="checkbox" class="f-show mt">
+        <label class="mt d0">Team 1 duration</label><input class="f-dur0 mt d0" placeholder="10:00">
+        <label class="mt d1">Team 2 duration</label><input class="f-dur1 mt d1" placeholder="10:00">
+        <label>After reset</label>
+        <select class="f-initial"><option value="0">Uncaptured</option><option value="1">Held by team 1</option><option value="2">Held by team 2</option></select>
+        <label>First capture</label>
+        <select class="f-default"><option value="0">Random</option><option value="1">Team 1</option><option value="2">Team 2</option></select>
+        <label>Hold to capture (s)</label><input type="number" class="f-hold" min="0.5" max="60" step="0.5">
+        <label>Team 1 colour</label><input type="color" class="f-col0">
+        <label>Team 2 colour</label><input type="color" class="f-col1">
+      </div>
+      <p class="note">Pause is at hold + 3 s, reset at hold + 7 s. An uncaptured button can also be
+        claimed with 1 tap then hold (team 1) or 2 taps then hold (team 2). Durations take effect at
+        once if nothing has happened since the last reset, otherwise at the next reset.</p>
+      <div class="row">
+        <button data-op="save" class="primary">Save settings</button>
+        <button data-op="factory" class="danger">Default settings</button>
+        <span class="grow"></span>
+        <button data-op="disconnect">Disconnect</button>
+      </div>
+    </details>
+  </section>
+</template>
+
+<script>
+"use strict";
+// ---- protocol (see docs/ble-protocol.md) --------------------------------
+const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
+const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4);
+const PROTO_VERSION = 1, CONFIG_VERSION = 1, CONFIG_LEN = 42;
+const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
+             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12 };
+const SOUNDS = ["Team 1 capture", "Team 2 capture", "Win fanfare", "Pause", "Reset", "Ding", "Doom",
+                "Countdown blip", "Whistle", "Horn", "Battery chirp", "Startup", "Diagnostic", "Music clip"];
+const MODE_TEAMS = 0, MODE_ONE = 1, MODE_TWO = 2;
+
+function parseState(dv) {
+  const f = dv.getUint8(1);
+  return {
+    version: dv.getUint8(0), running: !!(f & 1), won: !!(f & 2), locked: !!(f & 4), held: !!(f & 8),
+    identifying: !!(f & 16), usb: !!(f & 32), clip: !!(f & 64),
+    owner: dv.getInt8(2), winner: dv.getInt8(3), target: dv.getInt8(4), holdStage: dv.getUint8(5),
+    heldMs: dv.getUint16(6, true), time: [dv.getInt32(8, true), dv.getInt32(12, true)],
+    vsys: dv.getUint16(16, true), vbus: dv.getUint16(18, true), batt: dv.getInt16(20, true),
+    conns: dv.getUint8(22), uptime: dv.getUint32(24, true), rx: performance.now(),
+  };
+}
+function parseConfig(dv) {
+  const name = [];
+  for (let i = 26; i < 42; i++) { const c = dv.getUint8(i); if (!c) break; name.push(c); }
+  const col = o => "#" + [0, 1, 2].map(i => dv.getUint8(o + i).toString(16).padStart(2, "0")).join("");
+  return {
+    version: dv.getUint8(0), mode: dv.getUint8(1), timerTeam: dv.getUint8(2), countUp: dv.getUint8(3),
+    show: dv.getUint8(4), initial: dv.getUint8(5), defCapture: dv.getUint8(6), holdMs: dv.getUint16(8, true),
+    dur: [dv.getUint32(12, true), dv.getUint32(16, true)], colour: [col(20), col(23)],
+    name: new TextDecoder().decode(new Uint8Array(name)),
+  };
+}
+function encodeConfig(c) {
+  const b = new ArrayBuffer(CONFIG_LEN), dv = new DataView(b);
+  dv.setUint8(0, CONFIG_VERSION); dv.setUint8(1, c.mode); dv.setUint8(2, c.timerTeam); dv.setUint8(3, c.countUp);
+  dv.setUint8(4, c.show); dv.setUint8(5, c.initial); dv.setUint8(6, c.defCapture);
+  dv.setUint16(8, c.holdMs, true); dv.setUint32(12, c.dur[0], true); dv.setUint32(16, c.dur[1], true);
+  c.colour.forEach((hex, t) => { for (let i = 0; i < 3; i++) dv.setUint8(20 + t * 3 + i, parseInt(hex.substr(1 + i * 2, 2), 16)); });
+  const name = new TextEncoder().encode(c.name).slice(0, 15);
+  new Uint8Array(b, 26, 16).set(name);
+  return b;
+}
+function cmd(op, ...parts) {  // parts: [type, value]
+  const bytes = [op];
+  for (const [t, v] of parts) {
+    const n = { u8: 1, i8: 1, u16: 2, i32: 4 }[t];
+    for (let i = 0; i < n; i++) bytes.push((v >> (8 * i)) & 0xff);
+  }
+  return new Uint8Array(bytes);
+}
+
+// ---- helpers --------------------------------------------------------------
+const $ = (root, sel) => root.querySelector(sel);
+const pad = n => String(n).padStart(2, "0");
+function fmtMs(ms, roundUp) {
+  let s = Math.max(0, roundUp ? Math.ceil(ms / 1000) : Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  s %= 60;
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+function parseTime(str) {  // "m", "m:ss" or "h:mm:ss" -> ms (null if bad)
+  const p = String(str).trim().split(":").map(Number);
+  if (!p.length || p.some(x => !isFinite(x) || x < 0)) return null;
+  let s = 0;
+  if (p.length === 1) s = p[0] * 60;
+  else for (const x of p) s = s * 60 + x;
+  return Math.round(s * 1000);
+}
+const teamName = t => t === 0 ? "Team 1" : t === 1 ? "Team 2" : "Uncaptured";
+
+// ---- one connected button ---------------------------------------------------
+const buttons = new Set();
+
+class Btn {
+  constructor(device) {
+    this.device = device;
+    this.state = null;
+    this.cfg = null;
+    this.chr = {};
+    this.queue = Promise.resolve();
+    this.closed = false;
+    this.el = document.getElementById("card-tpl").content.firstElementChild.cloneNode(true);
+    document.getElementById("cards").prepend(this.el);
+    $(this.el, ".name").textContent = device.name || "Button";
+    const sel = $(this.el, ".sound");
+    SOUNDS.forEach((n, i) => sel.add(new Option(n, i)));
+    this.bind();
+    device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+    buttons.add(this);
+    this.connect();
+  }
+
+  async connect() {
+    try {
+      this.setStatus("Connecting…");
+      const server = await this.device.gatt.connect();
+      const svc = await server.getPrimaryService(SVC);
+      for (const [k, u] of [["state", CHR_STATE], ["config", CHR_CONFIG], ["cmd", CHR_CMD]])
+        this.chr[k] = await svc.getCharacteristic(u);
+      this.chr.state.addEventListener("characteristicvaluechanged", e => this.onState(e.target.value));
+      this.chr.config.addEventListener("characteristicvaluechanged", e => this.onConfig(e.target.value));
+      this.onConfig(await this.chr.config.readValue());
+      this.onState(await this.chr.state.readValue());
+      await this.chr.state.startNotifications();
+      await this.chr.config.startNotifications();
+      this.retry = 0;
+      this.el.classList.remove("off");
+      $(this.el, ".dot").classList.add("ok");
+    } catch (e) {
+      console.warn(e);
+      this.setStatus("Connection failed: " + e.message);
+      this.scheduleReconnect();
+    }
+  }
+  onDisconnect() {
+    this.el.classList.add("off");
+    $(this.el, ".dot").classList.remove("ok");
+    if (this.closed) return;
+    this.setStatus("Disconnected, reconnecting…");
+    this.scheduleReconnect();
+  }
+  scheduleReconnect() {
+    if (this.closed || this.device.gatt.connected) return;
+    clearTimeout(this.timer);
+    const wait = Math.min(15000, 1000 * 2 ** Math.min(this.retry = (this.retry || 0) + 1, 4));
+    this.timer = setTimeout(() => this.connect(), wait);
+  }
+  close() {
+    this.closed = true;
+    clearTimeout(this.timer);
+    if (this.device.gatt.connected) this.device.gatt.disconnect();
+    this.el.remove();
+    buttons.delete(this);
+  }
+  setStatus(text) { const o = $(this.el, ".owner"); o.textContent = text; o.style.background = ""; o.style.color = ""; }
+
+  // Writes one at a time (GATT allows one operation in flight).
+  write(chr, data) {
+    this.queue = this.queue.then(() => {
+      if (!this.device.gatt.connected) throw new Error("not connected");
+      const c = this.chr[chr];
+      return c.writeValueWithResponse ? c.writeValueWithResponse(data) : c.writeValue(data);
+    }).catch(e => { console.warn(e); alert(`${this.label()}: ${e.message}`); });
+    return this.queue;
+  }
+  send(op, ...parts) { return this.write("cmd", cmd(op, ...parts)); }
+  label() { return (this.cfg && this.cfg.name) || this.device.name || "Button"; }
+
+  onConfig(dv) {
+    if (dv.byteLength < CONFIG_LEN || dv.getUint8(0) !== CONFIG_VERSION) {
+      this.setStatus("Firmware/page version mismatch: update the button or reload the page"); return;
+    }
+    this.cfg = parseConfig(dv);
+    this.fillSettings();
+    this.buildClocks();
+    this.render();
+  }
+  onState(dv) {
+    if (dv.getUint8(0) !== PROTO_VERSION) return;
+    this.state = parseState(dv);
+    this.render();
+  }
+
+  bind() {
+    const e = this.el;
+    e.addEventListener("click", ev => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      if (b.dataset.owner !== undefined) return this.send(OP.SET_OWNER, ["i8", +b.dataset.owner]);
+      if (b.dataset.adj) return this.send(OP.ADD_TIME, ["u8", +b.dataset.team], ["i32", +b.dataset.adj]);
+      if (b.dataset.set) {
+        const ms = parseTime($(e, `.set-${b.dataset.team}`).value);
+        if (ms === null) return alert("Time as m:ss, e.g. 7:30");
+        return this.send(OP.SET_TIME, ["u8", +b.dataset.team], ["i32", ms]);
+      }
+      switch (b.dataset.op) {
+        case "start": return this.send(OP.START);
+        case "pause": return this.send(OP.PAUSE);
+        case "reset": if (confirm(`Reset ${this.label()}?`)) this.send(OP.RESET); return;
+        case "identify": return this.send(OP.IDENTIFY, ["u16", 3000]);
+        case "battery": return this.send(OP.SHOW_BATTERY);
+        case "lock": return this.send(OP.LOCK, ["u8", this.state && this.state.locked ? 0 : 1]);
+        case "play": return this.send(OP.PLAY_SOUND, ["u8", +$(e, ".sound").value]);
+        case "stopsound": return this.send(OP.STOP_SOUND);
+        case "save": return this.saveSettings();
+        case "factory": if (confirm(`Restore default settings on ${this.label()}?`)) this.send(OP.FACTORY_RESET); return;
+        case "disconnect": return this.close();
+      }
+    });
+    $(e, ".f-mode").addEventListener("change", () => this.settingsVisibility());
+    $(e, ".f-dir").addEventListener("change", () => this.settingsVisibility());
+  }
+
+  buildClocks() {
+    const box = $(this.el, ".clocks"), c = this.cfg;
+    const teams = c.mode === MODE_TWO ? [0, 1] : c.mode === MODE_ONE ? [c.timerTeam] : [];
+    const key = teams.join(",") + c.colour.join();
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.className = "clocks" + (teams.length === 1 ? " one" : "");
+    box.innerHTML = teams.map(t => `
+      <div class="clock" data-team="${t}" style="border-color:${c.colour[t]}">
+        <div class="muted">${teamName(t)}</div>
+        <div class="v">--:--</div>
+        <div class="row">
+          <button data-team="${t}" data-adj="-60000">−1m</button>
+          <button data-team="${t}" data-adj="-10000">−10s</button>
+          <button data-team="${t}" data-adj="10000">+10s</button>
+          <button data-team="${t}" data-adj="60000">+1m</button>
+        </div>
+        <div class="row">
+          <input class="set-${t}" placeholder="m:ss" inputmode="numeric">
+          <button data-team="${t}" data-set="1">Set</button>
+        </div>
+      </div>`).join("");
+  }
+
+  fillSettings() {
+    const e = this.el, c = this.cfg, fmt = ms => fmtMs(ms, false);
+    $(e, ".f-name").value = c.name;
+    $(e, ".f-mode").value = c.mode;
+    $(e, ".f-timer-team").value = c.timerTeam;
+    $(e, ".f-dir").value = c.countUp;
+    $(e, ".f-show").checked = !!c.show;
+    $(e, ".f-dur0").value = fmt(c.dur[0]);
+    $(e, ".f-dur1").value = fmt(c.dur[1]);
+    $(e, ".f-initial").value = c.initial;
+    $(e, ".f-default").value = c.defCapture;
+    $(e, ".f-hold").value = c.holdMs / 1000;
+    $(e, ".f-col0").value = c.colour[0];
+    $(e, ".f-col1").value = c.colour[1];
+    $(e, ".name").textContent = this.label();
+    this.settingsVisibility();
+  }
+  settingsVisibility() {
+    const e = this.el, mode = +$(e, ".f-mode").value, tt = +$(e, ".f-timer-team").value;
+    e.querySelectorAll(".mt").forEach(x => x.style.display = mode === MODE_TEAMS ? "none" : "");
+    e.querySelectorAll(".m1").forEach(x => x.style.display = mode === MODE_ONE ? "" : "none");
+    if (mode === MODE_ONE) e.querySelectorAll(tt ? ".d0" : ".d1").forEach(x => x.style.display = "none");
+  }
+  saveSettings() {
+    const e = this.el, d0 = parseTime($(e, ".f-dur0").value), d1 = parseTime($(e, ".f-dur1").value);
+    if (d0 === null || d1 === null) return alert("Durations as m:ss, e.g. 10:00");
+    const c = {
+      mode: +$(e, ".f-mode").value, timerTeam: +$(e, ".f-timer-team").value, countUp: +$(e, ".f-dir").value,
+      show: $(e, ".f-show").checked ? 1 : 0, initial: +$(e, ".f-initial").value, defCapture: +$(e, ".f-default").value,
+      holdMs: Math.round(Math.min(60, Math.max(0.5, +$(e, ".f-hold").value || 3)) * 1000),
+      dur: [d0, d1], colour: [$(e, ".f-col0").value, $(e, ".f-col1").value], name: $(e, ".f-name").value.trim(),
+    };
+    this.write("config", encodeConfig(c));
+  }
+
+  // Clock value now, extrapolated from the last update while it's running.
+  liveTime(t) {
+    const s = this.state, c = this.cfg;
+    let v = s.time[t];
+    if (s.running && !s.won && s.owner === t && (c.mode === MODE_TWO || (c.mode === MODE_ONE && c.timerTeam === t))) {
+      const dt = performance.now() - s.rx;
+      v = c.countUp ? v + dt : v - dt;
+      if (c.countUp && c.dur[t]) v = Math.min(v, c.dur[t]);
+    }
+    return Math.max(0, v);
+  }
+
+  render() {
+    const s = this.state, c = this.cfg, e = this.el;
+    if (!s || !c || !this.device.gatt.connected) return;
+    $(e, ".name").textContent = this.label();
+    const pct = s.batt, v = (s.vsys / 1000).toFixed(2);
+    $(e, ".batt").textContent = `${pct}% · ${v} V${s.usb ? " · USB" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}`;
+    const o = $(e, ".owner");
+    let text, col = null;
+    if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
+    else if (s.owner >= 0) { text = `${teamName(s.owner)} ${s.running ? "holds it" : "– paused"}`; col = c.colour[s.owner]; }
+    else text = `Uncaptured · next capture: ${s.target >= 0 ? teamName(s.target) : "random"}${s.running ? "" : " · not started"}`;
+    if (s.held) text += ` · being held ${(s.heldMs / 1000).toFixed(1)} s`;
+    if (s.locked) text += " · LOCKED";
+    o.textContent = text;
+    o.style.background = col && (s.running || s.won) ? col : "";
+    o.style.color = col && (s.running || s.won) ? "#111" : "";
+    o.style.borderColor = col || "";
+    e.querySelectorAll(".clock").forEach(el => {
+      const t = +el.dataset.team;
+      $(el, ".v").textContent = fmtMs(this.liveTime(t), !c.countUp);
+      el.classList.toggle("live", s.running && s.owner === t && !s.won);
+    });
+    e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
+    const lock = $(e, ".lock");
+    lock.classList.toggle("on", s.locked);
+    lock.textContent = s.locked ? "Unlock button" : "Lock button";
+    $(e, ".t1").style.borderColor = c.colour[0];
+    $(e, ".t2").style.borderColor = c.colour[1];
+  }
+}
+
+// ---- page -----------------------------------------------------------------
+if (!navigator.bluetooth) {
+  document.getElementById("unsupported").style.display = "block";
+  document.getElementById("add").disabled = true;
+}
+document.getElementById("add").addEventListener("click", async () => {
+  try {
+    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    for (const b of buttons) if (b.device.id === device.id) { b.el.scrollIntoView(); return; }
+    new Btn(device);
+  } catch (e) {
+    if (e.name !== "NotFoundError") alert(e.message);  // NotFoundError = chooser cancelled
+  }
+});
+
+function tick() {
+  const d = new Date();
+  document.getElementById("wall").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  for (const b of buttons) b.render();
+}
+setInterval(tick, 200);
+tick();
+</script>
+</body>
+</html>

@@ -28,8 +28,8 @@ on PATH, so use the full path:
 gitignored, so regenerate it from any MP3:
 
 ```
-powershell -File tools	ranscode.ps1 -Src "music test.mp3" -OutDir <dir> -OutName music.wav
-python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
+powershell -File tools\transcode.ps1 -Src "music test.mp3" -OutDir <dir> -OutName music.wav
+python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin
 ```
 
 - `transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed.
@@ -40,32 +40,53 @@ python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
 - It also writes **`audio/test_audio.wav`**: the exact samples the ESP plays, so you can listen on a PC.
   - What the board adds after that: the PDM high-pass (~35 Hz), the RC filter (~16 kHz), the amp and the speaker.
 
-## Current behaviour (bench test, USB only)
+## Control page (Web Bluetooth)
 
-- **Clocks:** each team starts at 10:00. The owner's clock counts down, and a team **wins** when its clock reaches 0:00.
-- **Face press:** any of the three switches counts (an OR), so it doesn't matter which one you hit. A press registers on first contact. The lid counts as pressed until 100 ms after the last contact on any switch, for both holds and taps.
-- **Hold:**
-  - 0–3 s: the ring spins in the colour of the team about to capture (white if random), with a rising tone.
-  - At 3 s the point is **captured**: it goes to the other team, or to a random team if unowned. The capturing team's sound plays.
-  - 3–6 s: a loud ding each second and a white fill warn that a pause is coming.
-  - At 6 s it **pauses**: the capture is undone and the clocks stop. The ring blinks faintly in the paused owner's colour, and the next 3 s hold gives the point back to that team.
-  - 6–10 s: a low "dun-dunn" each second and a red fill. At 10 s it **resets** both clocks to 10:00 with an ominous growl.
-  - Once a team has won, the win fanfare repeats for 20 s. Holding dings every second (no rising tone): 3 s silences the fanfare, and 10 s resets.
-- **Triple tap:** three taps under 500 ms each, with gaps under 500 ms between them.
-  - About 0.5 s after the last tap, DISP1 shows "bAtt" and DISP2 shows the estimated charge percent for 6 s, with a green gauge on the ring.
-  - The percent is estimated from voltage: 3.3 V is 0 % and 4.2 V is 100 %, steepest around 3.7 V. It can go below 0 % or above 100 %.
-  - On USB, VSYS reads the charger output, not the cell. The serial log shows the raw mV.
-- **Displays:** the owner's display is bright with its colon flashing at 4 Hz. The non-owner's is dim.
+[docs/index.html](docs/index.html) is published by GitHub Pages at
+<https://bucketshoes.github.io/Button/>. Open it in Chrome (Android, or Chrome/Edge on a computer) and
+press **Connect a button**. You can connect several buttons; each gets its own panel. Per button:
+
+- **Controls:** start, pause, reset, identify (displays and ring flash with beeps for 3 s), and battery.
+- **Holder:** set the holder (uncaptured / team 1 / team 2), and lock the button so holds do nothing (taps still show the battery).
+- **Sounds:** play any of the button's sounds, or stop them.
+- **Clocks:** live clocks, ±10 s / ±1 min, or set an exact time, even while running.
+- **Settings (saved on the button):**
+  - name and mode (teams only / one timer / two timers), plus which team has the clock in one-timer mode;
+  - count down or up, and whether the numbers show on the displays;
+  - durations, the holder after reset, the first capture (random / team 1 / team 2), the hold time and the team colours.
+- **Wall clock** with seconds in the top corner.
+
+The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
+
+## Behaviour
+
+- **Modes:**
+  - **Teams only:** the ring shows who holds the button. The displays stay off (except battery and identify).
+  - **One timer:** only one team's clock runs, while that team holds the button. It shows on both displays.
+  - **Two timers:** a reverse chess clock; the holder's clock runs.
+- **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
+- **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
+- **Hold**, where H is the hold time (default 3 s):
+  - **Up to H:** the ring spins in the colour of the team about to capture (white if random), with a rising whoop. For holds over 4 s, it ticks each second and the whoop covers the last 3 s.
+  - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
+  - **Uncaptured:** 1 tap then hold gives team 1, and 2 taps then hold gives team 2. A plain hold uses the "first capture" setting, which is random by default.
+  - **H to H+3 s:** a ding each second, then a **pause** at H+3 s (the capture is undone).
+  - **H+3 to H+7 s:** doom each second, then a **reset** at H+7 s.
+  - **After a win**, the fanfare repeats for 20 s. Holding dings every second: H silences the fanfare, and H+7 s resets.
+- **Idle cues:**
+  - **Uncaptured:** the ring pulses faintly (0–10 %, 0.5 Hz) in the next capture's colour, alternating colours if random. That team's display is lit, with the colour steady.
+  - **Paused with a holder:** the ring blinks faintly in their colour.
+- **After reset:** uncaptured, or held by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
+- **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.
+- **BOOT held for 5 s:** restores the default settings.
+- **Displays:** the running holder's display is bright, with its colon flashing at 4 Hz. The others are dim.
+- **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
 - **LEDs:**
-  - LED1 is purple and LED2 is yellow, always at medium brightness.
-  - The ring shows the owner's colour at full brightness.
-  - Each switch lights the two ring LEDs nearest it white while it's held.
-  - The external strip (16 LEDs assumed) mirrors the ring at half brightness.
-- **Countdown:** the owner's clock blips at 60, 30, 20 and 10..1 s left. Nearer zero, the blips get more pulses, higher and faster.
-- **Sounds:** full volume. Each face switch has its own blip. BOOT plays a diagnostic sweep, or stops the music clip if it's playing.
-- **Speaker test:** the flashed clip plays at power-up. Any face press or BOOT stops it.
-- **Status LED:** kept off.
-- **Serial:** a status line every second on USB Serial/JTAG, plus an event log that includes each tap and the running tap count.
-- **Startup self-test:** every segment lights, and the LED chain shows red, green, then blue.
+  - LED1 and LED2 show the team colours at medium brightness.
+  - The ring shows the holder.
+  - Each switch lights its two nearest ring LEDs white.
+  - The external strip (16 assumed) mirrors the ring.
+- **Speaker test:** the flashed clip plays at power-up. A face press or BOOT stops it.
+- **Serial:** a status line every second plus an event log.
 
-Not used yet: the pedals (only logged), Wi-Fi/BLE/802.15.4, and sleep.
+Not used yet: the pedals (only logged), coded PHY or a mesh between buttons, the event log/timeline, 802.15.4 and sleep.
