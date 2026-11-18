@@ -34,7 +34,7 @@
 static const char *TAG = "button";
 
 // ---------------------------------------------------------------- tuning
-#define GAME_MS          (3 * 60 * 1000)
+#define GAME_MS          (10 * 60 * 1000)
 #define HOLD_CAPTURE_MS  3000
 #define HOLD_PAUSE_MS    6000
 #define HOLD_RESET_MS    10000
