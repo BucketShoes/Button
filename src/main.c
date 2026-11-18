@@ -2,8 +2,8 @@
 //
 // - Each team starts with 10:00. The owning team's clock counts down; a team
 //   wins when its clock reaches 0:00 (it has held the point for 10 minutes).
-// - Face press = OR of the three face switches. A hold survives gaps of up
-//   to HOLD_RELEASE_MS with nothing pressed; taps use a much shorter debounce.
+// - Face press = OR of the three face switches; the lid counts as pressed
+//   until DEBOUNCE_MS after the last contact on any switch.
 // - Hold 3 s: capture (switch to the other team; random team if unowned).
 // - Keep holding to 6 s: pause (undo the capture, ring off); the next
 //   3 s hold resumes with the owner from before the pause.
@@ -38,15 +38,13 @@ static const char *TAG = "button";
 #define HOLD_CAPTURE_MS  3000
 #define HOLD_PAUSE_MS    6000
 #define HOLD_RESET_MS    10000
-#define DEBOUNCE_MS      100   // single switches / BOOT / pedals: release seen this long
-#define HOLD_RELEASE_MS  250   // face hold: all switches open this long ends the hold
-#define TAP_RELEASE_MS   40    // tap detector: short, so fast taps stay separate
-#define TAP_MAX_MS       400   // a press shorter than this is a tap
-#define TAP_GAP_MS       500   // max gap between taps; also the wait after the last one
+#define DEBOUNCE_MS      100   // the lid is assumed still pressed this long after any contact
+#define TAP_MAX_MS       500   // a press shorter than this is a tap
+#define TAP_GAP_MS       500   // max hand-off time between taps; also the wait after the last one
 #define WIN_ALARM_MS     20000 // win sound repeats this long (or until a 3 s hold)
 #define WIN_REPEAT_MS    2500
 #define PAUSED_LEVEL     14    // ring blink while paused with an owner: only visible close up
-#define BATT_SHOW_MS     4000
+#define BATT_SHOW_MS     6000
 #define LOOP_MS          5
 
 #define CENTRE_LEVEL     64    // team-colour centre LEDs, "medium"
@@ -126,9 +124,8 @@ static input_t s_in[IN_COUNT] = {
     {PIN_FACE3, "face3(NE)", DEBOUNCE_MS}, {PIN_BOOT, "boot", DEBOUNCE_MS},
     {PIN_PEDAL1, "pedal1", DEBOUNCE_MS},   {PIN_PEDAL2, "pedal2", DEBOUNCE_MS},
 };
-// Both are the OR of the three face switches, debounced differently.
-static input_t s_face = {GPIO_NUM_NC, "face", HOLD_RELEASE_MS};  // holds
-static input_t s_tap = {GPIO_NUM_NC, "tap", TAP_RELEASE_MS};     // tap counting
+// The lid: OR of the three face switches. Used for both holds and taps.
+static input_t s_face = {GPIO_NUM_NC, "face", DEBOUNCE_MS};
 
 // Press registers on the first closed sample; release only after release_ms
 // of continuously open. Returns +1 on press, -1 on release, 0 otherwise.
@@ -192,6 +189,61 @@ static uint32_t s_win_alarm_until, s_win_next_sound;
 
 static int s_vsys_mv, s_vbus_mv;
 
+// Rough Li-ion state of charge from voltage: 3.3 V = 0 %, 4.2 V = 100 %, with
+// the steep middle (most of the energy) around 3.6..3.8 V. Extrapolates past
+// both ends, so it can read below 0 % or above 100 %. Under load, or on USB
+// (VSYS = charger output), this is only an estimate.
+static int batt_percent(int mv)
+{
+    static const int16_t T[][2] = {
+        {3300, 0}, {3400, 4}, {3500, 9}, {3600, 18}, {3650, 25}, {3700, 35},
+        {3750, 45}, {3800, 55}, {3900, 68}, {4000, 80}, {4100, 90}, {4200, 100},
+    };
+    const int n = sizeof T / sizeof T[0];
+    int i = 0;
+    while (i < n - 2 && mv > T[i + 1][0]) i++;
+    return T[i][1] + (mv - T[i][0]) * (T[i + 1][1] - T[i][1]) / (T[i + 1][0] - T[i][0]);
+}
+
+// Last-seconds warning blips for the owner's clock: more pulses, higher and
+// faster as it gets closer. Built once into static buffers (the synth plays
+// from the pointer while the sound runs).
+static const int BLIP_AT[] = {60, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+#define BLIP_COUNT ((int)(sizeof BLIP_AT / sizeof BLIP_AT[0]))
+#define BLIP_MAX_NOTES 9
+static note_t s_blip[BLIP_COUNT][BLIP_MAX_NOTES];
+static int s_blip_len[BLIP_COUNT];
+static int s_blip_last_sec[2];
+
+static void blips_init(void)
+{
+    for (int i = 0; i < BLIP_COUNT; i++) {
+        int pulses = i == 0 ? 1 : i < 3 ? 2 : i < 8 ? 3 : 4;
+        uint16_t f = (uint16_t)(880 + i * 130);  // 880 Hz at 60 s .. ~2440 Hz at 1 s
+        uint16_t on = (uint16_t)(90 - i * 5);    // 90 ms .. 30 ms
+        uint16_t gap = (uint16_t)(60 - i * 3);   // 60 ms .. 24 ms
+        int k = 0;
+        for (int p = 0; p < pulses; p++) {
+            s_blip[i][k++] = (note_t){f, f, on, W_SQUARE, 255};
+            if (p < pulses - 1) s_blip[i][k++] = (note_t){0, 0, gap, W_SQUARE, 0};
+        }
+        s_blip_len[i] = k;
+    }
+}
+
+static void countdown_blips(void)
+{
+    for (int t = 0; t < 2; t++) {
+        int sec = (s_rem[t] + 999) / 1000;
+        if (s_state == ST_RUNNING && t == s_owner && sec != s_blip_last_sec[t]) {
+            for (int i = 0; i < BLIP_COUNT; i++) {
+                if (BLIP_AT[i] == sec) audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
+            }
+        }
+        s_blip_last_sec[t] = sec;
+    }
+}
+
 static void fmt_clock(char *buf, size_t n, int32_t ms)
 {
     int s = (ms + 999) / 1000;
@@ -208,34 +260,26 @@ static void on_face_press(uint32_t now)
     s_hold_last_sec = 0;
     s_hold_target = (s_owner >= 0) ? 1 - s_owner : s_resume_owner;
 
+    if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
+
     audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
     if (s_state != ST_WON) AUDIO_PLAY(SLOT_BUILD, SND_BUILD);
     ESP_LOGI(TAG, "face press (state %s, owner %d)", STATE_NAME[s_state], s_owner + 1);
 }
 
+// held = first to last contact; the gap to the next tap is measured from the
+// last contact too, so the debounce doesn't eat into the hand-off time.
 static void on_face_release(uint32_t held)
 {
     audio_stop(SLOT_BUILD);
-    ESP_LOGI(TAG, "face release after %lu ms", (unsigned long)held);
-}
-
-// Tap counting runs on its own short debounce, so quick taps (gaps well under
-// the hold grace) still count separately.
-static void on_tap_press(uint32_t now)
-{
-    if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
-}
-
-static void on_tap_release(uint32_t held)
-{
     if (held < TAP_MAX_MS) {
         s_taps++;
-        s_last_tap_ms = s_tap.last_active_ms;
+        s_last_tap_ms = s_face.last_active_ms;
     } else {
         s_taps = 0;
     }
-    ESP_LOGI(TAG, "tap %lu ms -> taps %d", (unsigned long)held, s_taps);
+    ESP_LOGI(TAG, "face release after %lu ms (taps %d)", (unsigned long)held, s_taps);
 }
 
 static void hold_progress(uint32_t now, uint32_t held)
@@ -311,11 +355,12 @@ static void game_tick(uint32_t now, uint32_t dt)
         AUDIO_PLAY(SLOT_EVENT, SND_WIN);
     }
 
-    if (!s_tap.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
+    if (!s_face.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
         if (s_taps == 3) {
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
-            ESP_LOGI(TAG, "triple tap: VSYS %d mV, VBUS %d mV", s_vsys_mv, s_vbus_mv);
+            ESP_LOGI(TAG, "triple tap: VSYS %d mV (~%d %%), VBUS %d mV", s_vsys_mv, batt_percent(s_vsys_mv),
+                     s_vbus_mv);
         }
         s_taps = 0;
     }
@@ -330,7 +375,22 @@ static void render_displays(uint32_t now)
         uint8_t seg[4];
         int bright;
         if (batt_showing(now)) {
-            display_number(seg, t == 0 ? s_vsys_mv : s_vbus_mv);
+            if (t == 0) {
+                // "bAtt", with each t drawn as a mirrored 7 (segments A, F, E).
+                seg[0] = display_char('b');
+                seg[1] = display_char('A');
+                seg[2] = seg[3] = 0x31;
+            } else {
+                int pct = batt_percent(s_vsys_mv);
+                if (pct < -999) pct = -999;
+                if (pct > 9999) pct = 9999;
+                display_number(seg, pct < 0 ? -pct : pct);
+                if (pct < 0) {  // minus sign just left of the digits
+                    int first = 0;
+                    while (first < 3 && seg[first] == 0) first++;
+                    if (first > 0) seg[first - 1] = display_char('-');
+                }
+            }
             bright = DISP_FULL;
         } else {
             int s = (s_rem[t] + 999) / 1000;
@@ -403,9 +463,10 @@ static void render_leds(uint32_t now)
         }
     }
 
-    // Battery gauge: green fill, 3.3 V empty .. 4.2 V full.
+    // Battery gauge: green fill by estimated percent (at least one LED).
     if (batt_showing(now)) {
-        int n = (s_vsys_mv - 3300) * 6 / 900 + 1;
+        int n = (batt_percent(s_vsys_mv) * 6 + 50) / 100;
+        if (n < 1) n = 1;
         for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(GREEN, 120) : (rgb_t){0};
     }
 
@@ -473,6 +534,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "capture button firmware, board b43");
     inputs_init();
+    blips_init();
     sense_init();
     display_init();
     leds_init();
@@ -518,11 +580,8 @@ void app_main(void)
         if (s_face.state) hold_progress(now, input_held_ms(&s_face));
         if (fe < 0) on_face_release(s_face.last_active_ms - s_face.press_ms);
 
-        int te = input_update(&s_tap, any_face, now);
-        if (te > 0) on_tap_press(now);
-        if (te < 0) on_tap_release(s_tap.last_active_ms - s_tap.press_ms);
-
         game_tick(now, dt);
+        countdown_blips();
 
         if ((int32_t)(now - next_adc) >= 0) {
             next_adc = now + 250;
