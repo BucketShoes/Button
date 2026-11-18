@@ -1,16 +1,26 @@
 """Turn a 16-bit PCM WAV into the speaker-test flash image (audio/test_audio.bin).
 
-Picks the loudest SECONDS-long window, mixes to mono, resamples to 24 kHz,
-high-passes (the FS-1540 has nothing below a few hundred Hz), compresses and
-normalises for loudness, fades the ends, and writes:
+Picks the loudest window, mixes to mono, resamples to 24 kHz, optionally
+high-passes and compresses, fades the ends, and writes:
 
     "PCM1" | u32 sample_rate | u32 sample_count | u32 reserved | int16 LE samples
+
+It also writes a .wav preview next to the .bin with exactly the same samples,
+so you can listen on a PC to what the ESP plays (before the RC filter, amp and
+speaker).
 
 Pure standard library (no numpy). The WAV can come from tools/transcode.ps1,
 which uses Windows' own decoder to turn an MP3 into a WAV.
 
-    python tools/make_test_audio.py music.wav audio/test_audio.bin [seconds]
+    python tools/make_test_audio.py music.wav audio/test_audio.bin
+        [--seconds 45] [--hp 30] [--compress none|light|heavy]
+
+--hp is a 4th-order high-pass in Hz (0 = off). Note the firmware's PDM output
+also has its own ~35 Hz high-pass, and the amp input coupling is ~16 Hz.
+--compress: none = peak-normalise only; light = gentle levelling (max +6 dB)
+and a soft limiter; heavy = strong levelling (max +18 dB), driven limiter.
 """
+import argparse
 import array
 import math
 import struct
@@ -18,7 +28,6 @@ import sys
 import wave
 
 OUT_RATE = 24000
-HP_HZ = 250.0
 TAPS = 24  # resampler half-width in input samples
 
 
@@ -88,29 +97,46 @@ def highpass(x, rate, hz):
     return x
 
 
-def compress(x, rate):
-    # Slow RMS levelling towards a loud target, then a soft (tanh) limiter.
-    target = 0.50
+COMPRESS = {  # levelling target RMS, max gain, limiter drive
+    "light": (0.25, 2.0, 1.0),
+    "heavy": (0.50, 8.0, 1.5),
+}
+
+
+def compress(x, rate, mode):
+    peak = max(abs(v) for v in x) or 1.0
+    if mode == "none":
+        for i in range(len(x)):
+            x[i] = x[i] / peak * 0.97
+        return x
+    # Slow RMS levelling towards a target, then a soft (tanh) limiter.
+    target, max_gain, drive = COMPRESS[mode]
     att = math.exp(-1 / (0.010 * rate))
     rel = math.exp(-1 / (0.300 * rate))
-    peak = max(abs(v) for v in x) or 1.0
     env = 0.0
     for i in range(len(x)):
         v = x[i] / peak
         e = v * v
         env = (att if e > env else rel) * env + (1 - (att if e > env else rel)) * e
-        g = min(8.0, target / math.sqrt(env + 1e-6))
-        x[i] = math.tanh(v * g * 1.5) * 0.97
+        g = min(max_gain, target / math.sqrt(env + 1e-6))
+        x[i] = math.tanh(v * g * drive) / math.tanh(drive) * 0.97
     return x
 
 
 def main():
-    src, dst = sys.argv[1], sys.argv[2]
-    seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 45.0
-    seg, rate = read_window(src, seconds)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("src")
+    ap.add_argument("dst")
+    ap.add_argument("--seconds", type=float, default=45.0)
+    ap.add_argument("--hp", type=float, default=30.0, help="high-pass Hz, 0 = off")
+    ap.add_argument("--compress", choices=["none", "light", "heavy"], default="light")
+    a = ap.parse_args()
+    dst = a.dst
+    seg, rate = read_window(a.src, a.seconds)
     y = resample(seg, rate, OUT_RATE)
-    y = highpass(y, OUT_RATE, HP_HZ)
-    y = compress(y, OUT_RATE)
+    if a.hp > 0:
+        y = highpass(y, OUT_RATE, a.hp)
+    y = compress(y, OUT_RATE, a.compress)
     fi, fo = int(0.3 * OUT_RATE), int(2.0 * OUT_RATE)
     for i in range(fi):
         y[i] *= i / fi
@@ -122,7 +148,19 @@ def main():
     with open(dst, "wb") as f:
         f.write(b"PCM1" + struct.pack("<III", OUT_RATE, len(pcm), 0))
         f.write(pcm.tobytes())
-    print(f"wrote {dst}: {len(pcm) / OUT_RATE:.1f}s at {OUT_RATE} Hz, {16 + 2 * len(pcm)} bytes")
+    preview = dst.rsplit(".", 1)[0] + ".wav"
+    w = wave.open(preview, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(OUT_RATE)
+    w.writeframes(pcm.tobytes())
+    w.close()
+    rms = math.sqrt(sum(v * v for v in pcm[::7]) / len(pcm[::7]))
+    peak = max(abs(v) for v in pcm)
+    print(f"wrote {dst}: {len(pcm) / OUT_RATE:.1f}s at {OUT_RATE} Hz, {16 + 2 * len(pcm)} bytes; "
+          f"hp {a.hp:g} Hz, compress {a.compress}; peak {peak}, RMS {rms:.0f} "
+          f"(crest {20 * math.log10(peak / rms):.1f} dB)")
+    print(f"preview {preview}")
 
 
 if __name__ == "__main__":

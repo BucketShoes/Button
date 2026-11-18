@@ -28,12 +28,16 @@ on PATH, so use the full path:
 gitignored, so regenerate it from any MP3:
 
 ```
-powershell -File tools\transcode.ps1 -Src "music test.mp3" -OutDir <dir> -OutName music.wav
-python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin 45
+powershell -File tools	ranscode.ps1 -Src "music test.mp3" -OutDir <dir> -OutName music.wav
+python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin --hp 30 --compress light
 ```
 
-`transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed. `make_test_audio.py`
-picks the loudest 45 s, high-passes at 250 Hz and compresses the clip for loudness.
+- `transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed.
+- `make_test_audio.py` picks the loudest 45 s (`--seconds`).
+  - `--hp` sets a high-pass in Hz; 0 turns it off.
+  - `--compress` is `none`, `light` or `heavy`.
+- It also writes **`audio/test_audio.wav`**: the exact samples the ESP plays, so you can listen on a PC.
+  - What the board adds after that: the PDM high-pass (~35 Hz), the RC filter (~16 kHz), the amp and the speaker.
 
 ## Current behaviour (bench test, USB only)
 
