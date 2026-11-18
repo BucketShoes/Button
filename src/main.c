@@ -34,11 +34,11 @@
 static const char *TAG = "button";
 
 // ---------------------------------------------------------------- tuning
-#define GAME_MS          (10 * 60 * 1000)
+#define GAME_MS          (3 * 60 * 1000)
 #define HOLD_CAPTURE_MS  3000
 #define HOLD_PAUSE_MS    6000
 #define HOLD_RESET_MS    10000
-#define DEBOUNCE_MS      100   // the lid is assumed still pressed this long after any contact
+#define DEBOUNCE_MS      50   // the lid is assumed still pressed this long after any contact
 #define TAP_MAX_MS       500   // a press shorter than this is a tap
 #define TAP_GAP_MS       500   // max hand-off time between taps; also the wait after the last one
 #define WIN_ALARM_MS     20000 // win sound repeats this long (or until a 3 s hold)
