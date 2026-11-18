@@ -4,7 +4,7 @@
 // Modes (settings, stored in NVS, set from the page):
 //   teams only   - the ring shows who holds it; no clocks on the displays.
 //   one timer    - only one team's clock runs, while that team holds it
-//                  (break down the wall). Shown on both displays.
+//                  (break down the wall). Shown only on that team's display.
 //   two timers   - reverse chess clock: the holder's clock runs.
 // Clocks count down (win at 0:00) or up (win at the duration, 0 = no limit).
 //
@@ -18,9 +18,11 @@
 //   hold H+7 s    reset
 //   after a win, a hold of H silences the alarm
 //   3 taps        battery
+//   BOOT tap      diagnostic sound
+//   BOOT 1.5-5 s  power off on release (deep sleep; a face press wakes it)
 //   BOOT 5 s      restore default settings
 //
-// USB-only bench test: no Wi-Fi or sleep. BLE is on.
+// No Wi-Fi. BLE is on. "Off" is deep sleep with everything else unpowered.
 
 #include <math.h>
 #include <stdbool.h>
@@ -28,10 +30,14 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/rtc_io.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 
 #include "audio.h"
@@ -59,6 +65,7 @@ static const char *TAG = "button";
 #define BATT_SHOW_MS     6000
 #define IDENT_MS         3000
 #define FACTORY_HOLD_MS  5000  // BOOT held this long restores default settings
+#define OFF_HOLD_MS      1500  // BOOT released between this and FACTORY_HOLD_MS powers off
 #define STATE_PUBLISH_MS 200
 #define LOOP_MS          5
 
@@ -69,7 +76,7 @@ static const char *TAG = "button";
 #define DISP_DIM         2
 #define DISP_IDLE        6
 
-#define PROTO_VERSION    1
+#define PROTO_VERSION    2
 
 static const rgb_t WHITE = {255, 255, 255};
 static const rgb_t RED = {255, 0, 0};
@@ -128,6 +135,8 @@ static const note_t SND_DENIED[] = {{150, 150, 250, W_SQUARE, 200}};
 static const note_t SND_FACTORY[] = {
     {2000, 500, 300, W_SQUARE, 220}, {0, 0, 60, W_SQUARE, 0}, {2000, 500, 300, W_SQUARE, 220},
 };
+static const note_t SND_OFF_READY[] = {{400, 400, 120, W_SQUARE, 200}};  // BOOT held long enough to power off
+static const note_t SND_OFF[] = {{1200, 200, 500, W_SQUARE, 220}};
 static const note_t SND_HORN[] = {{220, 220, 900, W_SQUARE, 255}, {0, 0, 120, W_SQUARE, 0}, {220, 220, 900, W_SQUARE, 255}};
 #define WHISTLE_NOTES 32
 static note_t s_whistle[WHISTLE_NOTES];  // pea-whistle trill, built in sounds_init
@@ -525,7 +534,12 @@ enum {
     OP_LOCK = 10,        // u8 0/1
     OP_SHOW_BATTERY = 11,
     OP_FACTORY_RESET = 12,
+    OP_POWER_OFF = 13,
 };
+
+// Boots since power-on (survives resets, not power loss), to spot brown-outs.
+static RTC_NOINIT_ATTR uint32_t s_boot_count;
+static uint8_t s_reset_reason;
 
 typedef struct __attribute__((packed)) {
     uint8_t version;      //  0 PROTO_VERSION
@@ -540,10 +554,11 @@ typedef struct __attribute__((packed)) {
     uint16_t vbus_mv;     // 18
     int16_t batt_pct;     // 20
     uint8_t connections;  // 22
-    uint8_t reserved;     // 23
+    uint8_t reset_reason; // 23 esp_reset_reason_t of the last boot (9 = brown-out)
     uint32_t uptime_s;    // 24
-} state_pkt_t;            // 28 bytes
-_Static_assert(sizeof(state_pkt_t) == 28, "state_pkt_t layout is part of the BLE protocol");
+    uint32_t boots;       // 28 boots since power-on
+} state_pkt_t;            // 32 bytes
+_Static_assert(sizeof(state_pkt_t) == 32, "state_pkt_t layout is part of the BLE protocol");
 
 static void default_name(char *buf, size_t n)
 {
@@ -578,6 +593,8 @@ static void publish_state(uint32_t now)
         .hold_stage = (uint8_t)(held ? s_hold_stage : 0),
         .held_ms = (uint16_t)(hm > 65535 ? 65535 : hm),
         .time_ms = {s_val[0], s_val[1]},
+        .reset_reason = s_reset_reason,
+        .boots = s_boot_count,
         .vsys_mv = (uint16_t)s_vsys_mv,
         .vbus_mv = (uint16_t)s_vbus_mv,
         .batt_pct = (int16_t)batt_percent(s_vsys_mv),
@@ -598,10 +615,45 @@ static void apply_config(const config_t *in, uint32_t now)
     // once; mid-game they wait for the next reset (or use set time).
     if (structural || s_fresh) game_reset(now);
     if (strcmp(old.name, s_cfg.name) != 0) apply_name();
+    audio_set_volume(s_cfg.volume);
     ble_publish_config(&s_cfg, sizeof s_cfg);
-    ESP_LOGI(TAG, "settings: mode %d, hold %u ms, %s, numbers %s, durations %lu/%lu s", s_cfg.mode, s_cfg.hold_ms,
-             s_cfg.count_up ? "up" : "down", s_cfg.show_numbers ? "shown" : "hidden",
-             (unsigned long)(s_cfg.duration_ms[0] / 1000), (unsigned long)(s_cfg.duration_ms[1] / 1000));
+    ESP_LOGI(TAG, "settings: mode %d, hold %u ms, %s, numbers %s, durations %lu/%lu s, volume %d, leds %d",
+             s_cfg.mode, s_cfg.hold_ms, s_cfg.count_up ? "up" : "down", s_cfg.show_numbers ? "shown" : "hidden",
+             (unsigned long)(s_cfg.duration_ms[0] / 1000), (unsigned long)(s_cfg.duration_ms[1] / 1000), s_cfg.volume,
+             s_cfg.led_level);
+}
+
+static bool any_face_raw(void)
+{
+    return gpio_get_level(PIN_FACE1) == 0 || gpio_get_level(PIN_FACE2) == 0 || gpio_get_level(PIN_FACE3) == 0;
+}
+
+// "Off": everything but the ESP unpowered (PWR_EN low), ESP in deep sleep
+// (~10 uA), woken by any face switch (IO2/6/7 are LP GPIOs). On USB the
+// charger still feeds VSYS, but the amp and LEDs sit idle.
+static void power_off(void)
+{
+    ESP_LOGI(TAG, "powering off");
+    AUDIO_PLAY(SLOT_EVENT, SND_OFF);
+    uint8_t blank[4] = {0};
+    display_set(0, blank, 0);
+    display_set(1, blank, 0);
+    rgb_t frame[LED_COUNT] = {0};
+    leds_show(frame, LED_COUNT);
+    vTaskDelay(pdMS_TO_TICKS(600));
+    // Sleeping with the lid held would wake straight away: wait for a release (up to 5 s).
+    for (int i = 0; i < 500 && any_face_raw(); i++) vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(PIN_AMP_EN, 0);
+    gpio_set_level(PIN_PWR_EN, 0);  // RQEN1 keeps it low through sleep
+    const gpio_num_t wake[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
+    uint64_t mask = 0;
+    for (int i = 0; i < 3; i++) {
+        rtc_gpio_pullup_en(wake[i]);
+        rtc_gpio_pulldown_dis(wake[i]);
+        mask |= 1ULL << wake[i];
+    }
+    esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_deep_sleep_start();
 }
 
 static void factory_reset(uint32_t now)
@@ -685,6 +737,9 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
     case OP_FACTORY_RESET:
         factory_reset(now);
         break;
+    case OP_POWER_OFF:
+        power_off();
+        break;
     default:
         ESP_LOGW(TAG, "unknown command %d", d[0]);
     }
@@ -750,8 +805,10 @@ static void render_displays(uint32_t now)
                 }
             }
             bright = DISP_FULL;
-        } else if (s_cfg.mode != MODE_TEAMS && s_cfg.show_numbers) {
-            int src = s_cfg.mode == MODE_ONE_TIMER ? s_cfg.timer_team : t;
+        } else if (s_cfg.mode != MODE_TEAMS && s_cfg.show_numbers &&
+                   (s_cfg.mode == MODE_TWO_TIMERS || t == s_cfg.timer_team)) {
+            // One timer: only on that team's display, so it reads as a single clock.
+            int src = t;
             render_clock(seg, s_val[src], !s_cfg.count_up);
             bool colon = true;
             if (s_winner >= 0) {
@@ -849,6 +906,8 @@ static void render_leds(uint32_t now)
         }
     }
 
+    if (s_cfg.led_level < 255)
+        for (int i = 0; i < LED_COUNT; i++) frame[i] = rgb_scale(frame[i], s_cfg.led_level);
     leds_show(frame, LED_COUNT);
 }
 
@@ -906,7 +965,13 @@ void app_main(void)
     power_on();
     vTaskDelay(pdMS_TO_TICKS(30));  // rails settle; GN1650 power-up
 
-    ESP_LOGI(TAG, "capture button firmware, board b43");
+    s_reset_reason = (uint8_t)esp_reset_reason();
+    if (s_reset_reason == ESP_RST_POWERON) s_boot_count = 0;
+    s_boot_count++;
+    bool woke = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1;
+    ESP_LOGI(TAG, "capture button firmware, board b43; reset reason %d%s, boot %lu since power-on", s_reset_reason,
+             s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : woke ? " (woken by a press)" : "",
+             (unsigned long)s_boot_count);
     config_load(&s_cfg);
     inputs_init();
     sounds_init();
@@ -914,6 +979,7 @@ void app_main(void)
     display_init();
     leds_init();
     audio_init();
+    audio_set_volume(s_cfg.volume);
     startup_test();
 
     char name[24];
@@ -933,8 +999,14 @@ void app_main(void)
     uint32_t last = now_ms();
     game_reset(last);
 
-    // Speaker test: play the flash clip once at power-up, if one is flashed.
-    if (audio_pcm_available()) audio_pcm_start();
+    // The music clip no longer plays at power-up; play it from the page (sound 13).
+    // Woken by a press: show the battery, and ignore that press until it's released.
+    bool ignore_face = woke;
+    if (woke) {
+        s_batt_until = last + BATT_SHOW_MS;
+        AUDIO_PLAY(SLOT_EVENT, SND_BATT);
+    }
+    uint32_t boot_ready_press = 0, boot_skip_press = 0;
 
     TickType_t wake = xTaskGetTickCount();
     uint32_t next_led = 0, next_disp = 0, next_adc = 0, next_status = 0, next_refresh = 0, next_ble = 0;
@@ -953,19 +1025,32 @@ void app_main(void)
             int e = input_update(&s_in[i], raw, now);
             if (e) ESP_LOGI(TAG, "%s %s", s_in[i].name, e > 0 ? "down" : "up");
             if (e > 0 && i <= IN_FACE3) AUDIO_PLAY(SLOT_SW1 + i, SND_SW[i]);
-            if (e > 0 && i == IN_BOOT) {
-                if (audio_pcm_playing()) {
-                    audio_pcm_stop();
-                } else {
-                    AUDIO_PLAY(SLOT_DIAG, SND_BOOT);
-                }
+            if (e > 0 && i == IN_BOOT && audio_pcm_playing()) {
+                audio_pcm_stop();
+                boot_skip_press = s_in[IN_BOOT].press_ms;  // that press only stops the clip
+            }
+            if (e < 0 && i == IN_BOOT && boot_skip_press != s_in[IN_BOOT].press_ms &&
+                s_boot_factory_done != s_in[IN_BOOT].press_ms) {
+                uint32_t held = s_in[IN_BOOT].last_active_ms - s_in[IN_BOOT].press_ms;
+                if (held >= OFF_HOLD_MS) power_off();
+                AUDIO_PLAY(SLOT_DIAG, SND_BOOT);  // a tap: diagnostic sound
             }
         }
-        // BOOT held: restore default settings (once per press).
-        if (s_in[IN_BOOT].state && input_held_ms(&s_in[IN_BOOT]) >= FACTORY_HOLD_MS &&
-            s_boot_factory_done != s_in[IN_BOOT].press_ms) {
-            s_boot_factory_done = s_in[IN_BOOT].press_ms;
-            factory_reset(now);
+        // BOOT held: a beep at 1.5 s (release now to power off), defaults at 5 s.
+        if (s_in[IN_BOOT].state && boot_skip_press != s_in[IN_BOOT].press_ms) {
+            uint32_t held = input_held_ms(&s_in[IN_BOOT]);
+            if (held >= OFF_HOLD_MS && boot_ready_press != s_in[IN_BOOT].press_ms) {
+                boot_ready_press = s_in[IN_BOOT].press_ms;
+                AUDIO_PLAY(SLOT_DIAG, SND_OFF_READY);
+            }
+            if (held >= FACTORY_HOLD_MS && s_boot_factory_done != s_in[IN_BOOT].press_ms) {
+                s_boot_factory_done = s_in[IN_BOOT].press_ms;
+                factory_reset(now);
+            }
+        }
+        if (ignore_face) {
+            if (any_face) any_face = false;
+            else ignore_face = false;
         }
         int fe = input_update(&s_face, any_face, now);
         if (fe > 0) on_face_press(now);

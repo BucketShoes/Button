@@ -46,14 +46,17 @@ python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin
 <https://bucketshoes.github.io/Button/>. Open it in Chrome (Android, or Chrome/Edge on a computer) and
 press **Connect a button**. You can connect several buttons; each gets its own panel. Per button:
 
-- **Controls:** start, pause, reset, identify (displays and ring flash with beeps for 3 s), and battery.
+- **Controls:** start, pause, reset, identify (displays and ring flash with beeps for 3 s), battery, and power off.
 - **Holder:** set the holder (uncaptured / team 1 / team 2), and lock the button so holds do nothing (taps still show the battery).
 - **Sounds:** play any of the button's sounds, or stop them.
 - **Clocks:** live clocks, ±10 s / ±1 min, or set an exact time, even while running.
 - **Settings (saved on the button):**
   - name and mode (teams only / one timer / two timers), plus which team has the clock in one-timer mode;
   - count down or up, and whether the numbers show on the displays;
-  - durations, the holder after reset, the first capture (random / team 1 / team 2), the hold time and the team colours.
+  - durations, the holder after reset, the first capture (random / team 1 / team 2), the hold time, the team colours, the volume and the LED brightness;
+  - "Copy to all" sends the settings to every connected button, keeping each name.
+- **All connected buttons** (shown when 2+ are connected): resume, pause, identify, play a sound (for example the whistle) or power off on all of them at once.
+- **Reboots:** the panel shows how many times the button rebooted since power-on, and why (for example BROWN-OUT).
 - **Wall clock** with seconds in the top corner.
 
 The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
@@ -62,7 +65,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 
 - **Modes:**
   - **Teams only:** the ring shows who holds the button. The displays stay off (except battery and identify).
-  - **One timer:** only one team's clock runs, while that team holds the button. It shows on both displays.
+  - **One timer:** only one team's clock runs, while that team holds the button. It shows only on that team's display.
   - **Two timers:** a reverse chess clock; the holder's clock runs.
 - **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
 - **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
@@ -78,7 +81,11 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **Paused with a holder:** the ring blinks faintly in their colour.
 - **After reset:** uncaptured, or held by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
 - **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.
-- **BOOT held for 5 s:** restores the default settings.
+- **BOOT:**
+  - Tap: diagnostic sound.
+  - Hold 1.5 s (low beep) and release: **power off**. That is deep sleep with everything else unpowered; a lid press wakes it and shows the battery.
+  - Hold 5 s: restore the default settings.
+- **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power.
 - **Displays:** the running holder's display is bright, with its colon flashing at 4 Hz. The others are dim.
 - **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
 - **LEDs:**
@@ -86,7 +93,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - The ring shows the holder.
   - Each switch lights its two nearest ring LEDs white.
   - The external strip (16 assumed) mirrors the ring.
-- **Speaker test:** the flashed clip plays at power-up. A face press or BOOT stops it.
+- **Music clip:** no longer plays at power-up; play it from the page. A face press or BOOT stops it.
 - **Serial:** a status line every second plus an event log.
 
-Not used yet: the pedals (only logged), coded PHY or a mesh between buttons, the event log/timeline, 802.15.4 and sleep.
+Not used yet: the pedals (only logged), the power lifecycle (idle off, light-sleep BLE, battery levels, storage charge), coded PHY or a mesh between buttons, and the event log/timeline. See [docs/plans.md](docs/plans.md).

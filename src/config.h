@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define CONFIG_VERSION 1
+#define CONFIG_VERSION 2
 
 enum { MODE_TEAMS = 0, MODE_ONE_TIMER = 1, MODE_TWO_TIMERS = 2 };
 
@@ -17,9 +17,10 @@ typedef struct __attribute__((packed)) {
     uint8_t show_numbers;     //  4 1 = clocks on the displays, 0 = hidden (admins see them in the page)
     uint8_t initial_owner;    //  5 after reset: 0 uncaptured, 1 team 1, 2 team 2
     uint8_t default_capture;  //  6 first capture of an uncaptured button (no taps): 0 random, 1, 2
-    uint8_t reserved0;        //  7
+    uint8_t volume;           //  7 0..255 master volume (255 = full)
     uint16_t hold_ms;         //  8 hold to capture; pause at +3 s, reset at +7 s
-    uint16_t reserved1;       // 10
+    uint8_t led_level;        // 10 0..255 LED brightness scale
+    uint8_t reserved1;        // 11
     uint32_t duration_ms[2];  // 12, 16
     uint8_t colour[2][3];     // 20, 23 RGB
     char name[16];            // 26 NUL-terminated, empty = default "Button-XXXX"

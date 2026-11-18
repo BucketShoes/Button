@@ -70,6 +70,24 @@
     <button id="add" class="primary">+ Connect a button</button>
     <span class="note">Each button you connect gets its own panel. You can connect several.</span>
   </div>
+  <section id="all" class="card" hidden>
+    <h2>All connected buttons <span id="all-count" class="muted"></span></h2>
+    <div class="row">
+      <button data-all="start" class="primary">Resume all</button>
+      <button data-all="pause">Pause all</button>
+      <button data-all="identify">Identify all</button>
+    </div>
+    <div class="row">
+      <select id="all-sound" class="grow"></select>
+      <button data-all="play">Play on all</button>
+      <button data-all="stopsound">Stop</button>
+    </div>
+    <div class="row">
+      <button data-all="off" class="danger">Power off all</button>
+    </div>
+    <p class="note">Commands go to each button over its own connection, so they land within a fraction
+      of a second of each other. To copy settings, use "Copy to all" in a button's settings.</p>
+  </section>
   <div id="cards"></div>
 </main>
 <footer>
@@ -130,14 +148,20 @@
         <label>Hold to capture (s)</label><input type="number" class="f-hold" min="0.5" max="60" step="0.5">
         <label>Team 1 colour</label><input type="color" class="f-col0">
         <label>Team 2 colour</label><input type="color" class="f-col1">
+        <label>Volume</label><input type="range" class="f-vol" min="0" max="100" step="5">
+        <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
       </div>
       <p class="note">Pause is at hold + 3 s, reset at hold + 7 s. An uncaptured button can also be
         claimed with 1 tap then hold (team 1) or 2 taps then hold (team 2). Durations take effect at
-        once if nothing has happened since the last reset, otherwise at the next reset.</p>
+        once if nothing has happened since the last reset, otherwise at the next reset. On USB power alone,
+        keep the volume and LEDs at about 50 % or the button can brown out and reboot. "Copy to all" sends
+        everything except the name. Power off wakes again on a press of the lid.</p>
       <div class="row">
         <button data-op="save" class="primary">Save settings</button>
+        <button data-op="copyall">Copy to all</button>
         <button data-op="factory" class="danger">Default settings</button>
         <span class="grow"></span>
+        <button data-op="off" class="danger">Power off</button>
         <button data-op="disconnect">Disconnect</button>
       </div>
     </details>
@@ -149,9 +173,11 @@
 // ---- protocol (see docs/ble-protocol.md) --------------------------------
 const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
 const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4);
-const PROTO_VERSION = 1, CONFIG_VERSION = 1, CONFIG_LEN = 42;
+const PROTO_VERSION = 2, CONFIG_VERSION = 2, CONFIG_LEN = 42;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
-             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12 };
+             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13 };
+const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
+                       8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
 const SOUNDS = ["Team 1 capture", "Team 2 capture", "Win fanfare", "Pause", "Reset", "Ding", "Doom",
                 "Countdown blip", "Whistle", "Horn", "Battery chirp", "Startup", "Diagnostic", "Music clip"];
 const MODE_TEAMS = 0, MODE_ONE = 1, MODE_TWO = 2;
@@ -164,7 +190,8 @@ function parseState(dv) {
     owner: dv.getInt8(2), winner: dv.getInt8(3), target: dv.getInt8(4), holdStage: dv.getUint8(5),
     heldMs: dv.getUint16(6, true), time: [dv.getInt32(8, true), dv.getInt32(12, true)],
     vsys: dv.getUint16(16, true), vbus: dv.getUint16(18, true), batt: dv.getInt16(20, true),
-    conns: dv.getUint8(22), uptime: dv.getUint32(24, true), rx: performance.now(),
+    conns: dv.getUint8(22), resetReason: dv.getUint8(23), uptime: dv.getUint32(24, true),
+    boots: dv.getUint32(28, true), rx: performance.now(),
   };
 }
 function parseConfig(dv) {
@@ -173,7 +200,8 @@ function parseConfig(dv) {
   const col = o => "#" + [0, 1, 2].map(i => dv.getUint8(o + i).toString(16).padStart(2, "0")).join("");
   return {
     version: dv.getUint8(0), mode: dv.getUint8(1), timerTeam: dv.getUint8(2), countUp: dv.getUint8(3),
-    show: dv.getUint8(4), initial: dv.getUint8(5), defCapture: dv.getUint8(6), holdMs: dv.getUint16(8, true),
+    show: dv.getUint8(4), initial: dv.getUint8(5), defCapture: dv.getUint8(6), volume: dv.getUint8(7),
+    holdMs: dv.getUint16(8, true), ledLevel: dv.getUint8(10),
     dur: [dv.getUint32(12, true), dv.getUint32(16, true)], colour: [col(20), col(23)],
     name: new TextDecoder().decode(new Uint8Array(name)),
   };
@@ -181,7 +209,8 @@ function parseConfig(dv) {
 function encodeConfig(c) {
   const b = new ArrayBuffer(CONFIG_LEN), dv = new DataView(b);
   dv.setUint8(0, CONFIG_VERSION); dv.setUint8(1, c.mode); dv.setUint8(2, c.timerTeam); dv.setUint8(3, c.countUp);
-  dv.setUint8(4, c.show); dv.setUint8(5, c.initial); dv.setUint8(6, c.defCapture);
+  dv.setUint8(4, c.show); dv.setUint8(5, c.initial); dv.setUint8(6, c.defCapture); dv.setUint8(7, c.volume);
+  dv.setUint8(10, c.ledLevel);
   dv.setUint16(8, c.holdMs, true); dv.setUint32(12, c.dur[0], true); dv.setUint32(16, c.dur[1], true);
   c.colour.forEach((hex, t) => { for (let i = 0; i < 3; i++) dv.setUint8(20 + t * 3 + i, parseInt(hex.substr(1 + i * 2, 2), 16)); });
   const name = new TextEncoder().encode(c.name).slice(0, 15);
@@ -332,6 +361,8 @@ class Btn {
         case "stopsound": return this.send(OP.STOP_SOUND);
         case "save": return this.saveSettings();
         case "factory": if (confirm(`Restore default settings on ${this.label()}?`)) this.send(OP.FACTORY_RESET); return;
+        case "copyall": return this.copyToAll();
+        case "off": if (confirm(`Power off ${this.label()}? A press on its lid wakes it.`)) this.send(OP.POWER_OFF); return;
         case "disconnect": return this.close();
       }
     });
@@ -377,6 +408,8 @@ class Btn {
     $(e, ".f-hold").value = c.holdMs / 1000;
     $(e, ".f-col0").value = c.colour[0];
     $(e, ".f-col1").value = c.colour[1];
+    $(e, ".f-vol").value = Math.round(c.volume / 2.55);
+    $(e, ".f-led").value = Math.round(c.ledLevel / 2.55);
     $(e, ".name").textContent = this.label();
     this.settingsVisibility();
   }
@@ -386,16 +419,28 @@ class Btn {
     e.querySelectorAll(".m1").forEach(x => x.style.display = mode === MODE_ONE ? "" : "none");
     if (mode === MODE_ONE) e.querySelectorAll(tt ? ".d0" : ".d1").forEach(x => x.style.display = "none");
   }
-  saveSettings() {
+  readSettings() {  // from the form; null if invalid
     const e = this.el, d0 = parseTime($(e, ".f-dur0").value), d1 = parseTime($(e, ".f-dur1").value);
-    if (d0 === null || d1 === null) return alert("Durations as m:ss, e.g. 10:00");
-    const c = {
+    if (d0 === null || d1 === null) { alert("Durations as m:ss, e.g. 10:00"); return null; }
+    return {
       mode: +$(e, ".f-mode").value, timerTeam: +$(e, ".f-timer-team").value, countUp: +$(e, ".f-dir").value,
       show: $(e, ".f-show").checked ? 1 : 0, initial: +$(e, ".f-initial").value, defCapture: +$(e, ".f-default").value,
       holdMs: Math.round(Math.min(60, Math.max(0.5, +$(e, ".f-hold").value || 3)) * 1000),
       dur: [d0, d1], colour: [$(e, ".f-col0").value, $(e, ".f-col1").value], name: $(e, ".f-name").value.trim(),
+      volume: Math.round(+$(e, ".f-vol").value * 2.55), ledLevel: Math.round(+$(e, ".f-led").value * 2.55),
     };
+  }
+  saveSettings() {
+    const c = this.readSettings();
+    if (c) this.write("config", encodeConfig(c));
+  }
+  copyToAll() {
+    const c = this.readSettings();
+    if (!c) return;
+    const others = [...buttons].filter(b => b !== this && b.device.gatt.connected && b.cfg);
+    if (!confirm(`Save these settings here and on ${others.length} other button(s)? Names are kept.`)) return;
     this.write("config", encodeConfig(c));
+    for (const b of others) b.write("config", encodeConfig({ ...c, name: b.cfg.name }));
   }
 
   // Clock value now, extrapolated from the last update while it's running.
@@ -415,7 +460,8 @@ class Btn {
     if (!s || !c || !this.device.gatt.connected) return;
     $(e, ".name").textContent = this.label();
     const pct = s.batt, v = (s.vsys / 1000).toFixed(2);
-    $(e, ".batt").textContent = `${pct}% · ${v} V${s.usb ? " · USB" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}`;
+    const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
+    $(e, ".batt").textContent = `${pct}% · ${v} V${s.usb ? " · USB" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
@@ -456,9 +502,34 @@ document.getElementById("add").addEventListener("click", async () => {
   }
 });
 
+// ---- all connected buttons ---------------------------------------------------
+const allSound = document.getElementById("all-sound");
+SOUNDS.forEach((n, i) => allSound.add(new Option(n, i)));
+allSound.value = SOUNDS.indexOf("Whistle");
+document.getElementById("all").addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-all]");
+  if (!b) return;
+  const live = [...buttons].filter(x => x.device.gatt.connected);
+  let data;
+  switch (b.dataset.all) {
+    case "start": data = cmd(OP.START); break;
+    case "pause": data = cmd(OP.PAUSE); break;
+    case "identify": data = cmd(OP.IDENTIFY, ["u16", 3000]); break;
+    case "play": data = cmd(OP.PLAY_SOUND, ["u8", +allSound.value]); break;
+    case "stopsound": data = cmd(OP.STOP_SOUND); break;
+    case "off":
+      if (!confirm(`Power off all ${live.length} connected buttons?`)) return;
+      data = cmd(OP.POWER_OFF); break;
+  }
+  for (const x of live) x.write("cmd", data);  // each has its own queue, so they go out in parallel
+});
+
 function tick() {
   const d = new Date();
   document.getElementById("wall").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const n = [...buttons].filter(x => x.device.gatt.connected).length;
+  document.getElementById("all").hidden = buttons.size < 2;
+  document.getElementById("all-count").textContent = `(${n} connected)`;
   for (const b of buttons) b.render();
 }
 setInterval(tick, 200);

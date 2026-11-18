@@ -14,7 +14,7 @@ static const char *TAG = "audio";
 
 #define SR        48000      // highest rate IDF recommends for PDM TX; clip must match
 #define BLOCK     (SR / 100) // 10 ms
-#define MASTER    256        // /256 master volume: full. Loud is the point (contact sport,
+#define MASTER_DEFAULT 256 // /256 master volume; set at runtime by audio_set_volume. Loud is the point (contact sport,
                              // yelling). The FS-1540 is rated 0.5 W and on USB-only the
                              // 400 mA charger feeds LEDs + amp, so VSYS may sag on peaks.
 #define SQ_AMP    28000      // square wave amplitude
@@ -41,6 +41,7 @@ static QueueHandle_t s_q;
 static chan_t s_ch[SLOT_COUNT];
 static int16_t s_sine[256];
 static int16_t s_buf[BLOCK];
+static volatile int32_t s_master = MASTER_DEFAULT;
 
 // PCM clip state. s_pcm_req is set by other tasks, consumed by the audio task.
 static const esp_partition_t *s_pcm_part;
@@ -189,7 +190,7 @@ static void render_block(void)
         }
     }
     for (int i = 0; i < BLOCK; i++) {
-        int32_t v = (acc[i] * MASTER) >> 8;
+        int32_t v = (acc[i] * s_master) >> 8;
         if (v > 32767) v = 32767;
         if (v < -32767) v = -32767;
         s_buf[i] = (int16_t)v;
@@ -252,3 +253,10 @@ void audio_play(int slot, const note_t *notes, int n)
 }
 
 void audio_stop(int slot) { audio_play(slot, NULL, 0); }
+
+void audio_set_volume(int v)
+{
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
+    s_master = v == 255 ? 256 : v;
+}

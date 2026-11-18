@@ -29,6 +29,7 @@ enum {
 void audio_init(void);
 void audio_play(int slot, const note_t *notes, int n);  // replaces whatever the slot was playing
 void audio_stop(int slot);
+void audio_set_volume(int v);  // 0..255, 255 = full
 
 // Raw PCM clip in the "audio" flash partition (speaker / music test).
 // Header "PCM1", u32 rate (must match SR in audio.c, 48000), u32 samples, u32 reserved, then int16 LE.
