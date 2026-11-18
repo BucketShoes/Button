@@ -1,0 +1,20 @@
+# ESP-IDF config for the capture button. PlatformIO builds sdkconfig.button
+# from this file; delete sdkconfig.button after changing anything here.
+
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# Console on the native USB (USB Serial/JTAG on IO12/IO13).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+CONFIG_FREERTOS_HZ=1000
+
+# Brown-out detector. It watches the +3V3 rail (LDO output), not the cell.
+# C6 levels: SEL_7=2.51V (IDF default), 6=2.64, 5=2.76, 4=2.92, 3=3.10, 2=3.27.
+# Left at the default for the USB-only bench test (no cell fitted, the
+# charger output alone feeds the LDO). For field use with a cell, swap to:
+#   CONFIG_ESP_BROWNOUT_DET_LVL_SEL_3=y   (3.10 V)
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+
+# No power management / sleep yet.
+# CONFIG_PM_ENABLE is not set
