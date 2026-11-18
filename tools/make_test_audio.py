@@ -1,7 +1,7 @@
 """Turn a 16-bit PCM WAV into the speaker-test flash image (audio/test_audio.bin).
 
-Picks the loudest window, mixes to mono, resamples to 48 kHz if needed, optionally
-high-passes and compresses, fades the ends, and writes:
+Takes a window from the start of the song (or --start), mixes to mono, resamples to 48 kHz if needed, optionally
+high-passes and compresses, adds 10 ms de-click ramps at the ends, and writes:
 
     "PCM1" | u32 sample_rate | u32 sample_count | u32 reserved | int16 LE samples
 
@@ -13,7 +13,7 @@ Pure standard library (no numpy). The WAV can come from tools/transcode.ps1,
 which uses Windows' own decoder to turn an MP3 into a WAV.
 
     python tools/make_test_audio.py music.wav audio/test_audio.bin
-        [--seconds 40] [--hp 0] [--compress none|light|heavy]
+        [--seconds 40] [--start auto|loudest|<s>] [--hp 0] [--compress none|light|heavy]
 
 Defaults (no high-pass, no compression, 48 kHz) give a clean speaker test:
 the preview .wav should sound like a mono copy of the source.
@@ -34,7 +34,7 @@ OUT_RATE = 48000  # must match SR in src/audio.c; 40 s fits the 4 MB partition
 TAPS = 24  # resampler half-width in input samples
 
 
-def read_window(path, seconds):
+def read_window(path, seconds, start_opt):
     w = wave.open(path, "rb")
     ch, width, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
     if width != 2:
@@ -50,12 +50,20 @@ def read_window(path, seconds):
         mono = array.array("f", (sum(data[i:i + ch]) / ch for i in range(0, len(data), ch)))
     else:
         mono = array.array("f", data)
-    # Loudest window, scored on 1 s blocks of mean |x| (sampled every 8th).
-    blk = rate
-    scores = [sum(abs(mono[j]) for j in range(i, min(i + blk, len(mono)), 8)) for i in range(0, len(mono), blk)]
-    win = int(seconds)
-    best = max(range(max(1, len(scores) - win)), key=lambda s: sum(scores[s:s + win]))
-    start = best * blk
+    if start_opt == "loudest":
+        # Loudest window, scored on 1 s blocks of mean |x| (sampled every 8th).
+        blk = rate
+        scores = [sum(abs(mono[j]) for j in range(i, min(i + blk, len(mono)), 8)) for i in range(0, len(mono), blk)]
+        win = int(seconds)
+        best = max(range(max(1, len(scores) - win)), key=lambda s: sum(scores[s:s + win]))
+        start = best * blk
+    elif start_opt == "auto":
+        # Start of the song: first sample above -50 dBFS, backed off 10 ms.
+        thr = 32768 * 10 ** (-50 / 20)
+        first = next((i for i, v in enumerate(mono) if abs(v) > thr), 0)
+        start = max(0, first - rate // 100)
+    else:
+        start = int(float(start_opt) * rate)
     seg = mono[start:start + int(seconds * rate)]
     print(f"source {n / rate:.1f}s {rate} Hz x{ch}; using {start / rate:.1f}s..{(start + len(seg)) / rate:.1f}s")
     return seg, rate
@@ -137,16 +145,19 @@ def main():
     ap.add_argument("src")
     ap.add_argument("dst")
     ap.add_argument("--seconds", type=float, default=40.0)
+    ap.add_argument("--start", default="auto",
+                    help="auto = song start (skip leading silence), loudest, or seconds")
     ap.add_argument("--hp", type=float, default=0.0, help="high-pass Hz, 0 = off")
     ap.add_argument("--compress", choices=["none", "light", "heavy"], default="none")
     a = ap.parse_args()
     dst = a.dst
-    seg, rate = read_window(a.src, a.seconds)
+    seg, rate = read_window(a.src, a.seconds, a.start)
     y = seg if rate == OUT_RATE else resample(seg, rate, OUT_RATE)
     if a.hp > 0:
         y = highpass(y, OUT_RATE, a.hp)
     y = compress(y, OUT_RATE, a.compress)
-    fi, fo = int(0.3 * OUT_RATE), int(2.0 * OUT_RATE)
+    # 10 ms de-click ramps only (no audible fade).
+    fi = fo = OUT_RATE // 100
     for i in range(fi):
         y[i] *= i / fi
     for i in range(fo):

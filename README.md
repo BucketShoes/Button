@@ -33,8 +33,8 @@ python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
 ```
 
 - `transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed.
-- `make_test_audio.py` picks the loudest 40 s (`--seconds`). That's about the most that fits in 4 MB at 48 kHz.
-  - By default it does no high-pass and no compression, just a level normalise, so it's a clean speaker test.
+- `make_test_audio.py` takes 40 s from the start of the song, skipping leading silence (`--seconds`; `--start loudest` or `--start <s>` to pick elsewhere). That's about the most that fits in 4 MB at 48 kHz.
+  - By default it does no high-pass and no compression, just a level normalise and 10 ms de-click ramps at the ends, so it's a clean speaker test.
   - `--hp` sets a high-pass in Hz; 0 turns it off.
   - `--compress` is `none`, `light` or `heavy`.
 - It also writes **`audio/test_audio.wav`**: the exact samples the ESP plays, so you can listen on a PC.
