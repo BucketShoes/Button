@@ -1,4 +1,4 @@
-# BLE protocol (version 2)
+# BLE protocol (version 3)
 
 The button is a BLE peripheral using legacy advertising, so Chrome's Web Bluetooth can find it. It advertises
 the service UUID and puts its name in the scan response. The name is the one set in the settings, or
@@ -9,7 +9,7 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | N | What | Access |
 |---|---|---|
 | 1 | service | |
-| 2 | state (32 bytes) | read, notify (5 Hz) |
+| 2 | state (36 bytes) | read, notify (5 Hz on, 1 Hz off) |
 | 3 | config (42 bytes) | read, write, notify (on change) |
 | 4 | command | write |
 
@@ -17,7 +17,7 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 
 | Offset | Type | Field |
 |---|---|---|
-| 0 | u8 | protocol version (2) |
+| 0 | u8 | protocol version (3) |
 | 1 | u8 | flags: bit0 running, bit1 won, bit2 locked, bit3 face held, bit4 identifying, bit5 USB power, bit6 music clip playing |
 | 2 | i8 | owner (-1 uncaptured, 0 team 1, 1 team 2) |
 | 3 | i8 | winner (-1 none) |
@@ -32,6 +32,9 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | 23 | u8 | reset reason of the last boot (esp_reset_reason_t: 1 power-on, 8 woke from off, 9 brown-out, 4 crash, 5-7 watchdog) |
 | 24 | u32 | uptime s |
 | 28 | u32 | boots since power-on (more than 1 means it has rebooted) |
+| 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off |
+| 33 | u8 | bit0 dimmed (idle), bit1 battery low warning |
+| 34 | u16 | battery mV: long average of VSYS while on; last unloaded reading while off; 0 = unknown |
 
 ## Config
 
@@ -75,7 +78,8 @@ The first byte is the opcode.
 | 10 | u8 0/1 | lock: holds do nothing, but taps still work |
 | 11 | | show battery |
 | 12 | | restore default settings |
-| 13 | | power off (deep sleep; a lid press wakes it) |
+| 13 | | power off |
+| 14 | | power on |
 
 Sound ids:
 
@@ -90,3 +94,5 @@ Sound ids:
 | 6 | doom | 13 | music clip |
 
 There is no pairing or PIN yet, so anyone with the page can connect.
+
+While off, the button keeps advertising slowly (about every 1 s, +6 dBm), so the page can still connect. Identify, battery and play sound wake it briefly (peek). Other commands just change its state, and power on turns it on.

@@ -83,6 +83,7 @@
       <button data-all="stopsound">Stop</button>
     </div>
     <div class="row">
+      <button data-all="on">Power on all</button>
       <button data-all="off" class="danger">Power off all</button>
     </div>
     <p class="note">Commands go to each button over its own connection, so they land within a fraction
@@ -111,6 +112,7 @@
       <button data-op="reset" class="danger">Reset</button>
       <button data-op="identify">Identify</button>
       <button data-op="battery">Battery</button>
+      <button data-op="on" class="poweron">Power on</button>
     </div>
     <div class="row">
       <span class="muted">Holder:</span>
@@ -173,9 +175,10 @@
 // ---- protocol (see docs/ble-protocol.md) --------------------------------
 const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
 const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4);
-const PROTO_VERSION = 2, CONFIG_VERSION = 2, CONFIG_LEN = 42;
+const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
-             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13 };
+             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14 };
+const POWER = ["on", "peek", "off"];
 const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
                        8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
 const SOUNDS = ["Team 1 capture", "Team 2 capture", "Win fanfare", "Pause", "Reset", "Ding", "Doom",
@@ -191,7 +194,8 @@ function parseState(dv) {
     heldMs: dv.getUint16(6, true), time: [dv.getInt32(8, true), dv.getInt32(12, true)],
     vsys: dv.getUint16(16, true), vbus: dv.getUint16(18, true), batt: dv.getInt16(20, true),
     conns: dv.getUint8(22), resetReason: dv.getUint8(23), uptime: dv.getUint32(24, true),
-    boots: dv.getUint32(28, true), rx: performance.now(),
+    boots: dv.getUint32(28, true), power: dv.getUint8(32), dimmed: !!(dv.getUint8(33) & 1),
+    battLow: !!(dv.getUint8(33) & 2), battMv: dv.getUint16(34, true), rx: performance.now(),
   };
 }
 function parseConfig(dv) {
@@ -361,6 +365,7 @@ class Btn {
         case "stopsound": return this.send(OP.STOP_SOUND);
         case "save": return this.saveSettings();
         case "factory": if (confirm(`Restore default settings on ${this.label()}?`)) this.send(OP.FACTORY_RESET); return;
+        case "on": return this.send(OP.POWER_ON);
         case "copyall": return this.copyToAll();
         case "off": if (confirm(`Power off ${this.label()}? A press on its lid wakes it.`)) this.send(OP.POWER_OFF); return;
         case "disconnect": return this.close();
@@ -461,12 +466,17 @@ class Btn {
     $(e, ".name").textContent = this.label();
     const pct = s.batt, v = (s.vsys / 1000).toFixed(2);
     const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
-    $(e, ".batt").textContent = `${pct}% · ${v} V${s.usb ? " · USB" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
+    const avg = !s.usb && s.battMv ? ` (avg ${(s.battMv / 1000).toFixed(2)} V)` : "";
+    const volts = s.power === 2 ? (s.usb ? "on USB" : s.battMv ? `${(s.battMv / 1000).toFixed(2)} V at rest` : "") : `${pct}% · ${v} V${avg}`;
+    $(e, ".batt").textContent = `${volts}${s.usb && s.power !== 2 ? " · USB" : ""}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
     else if (s.owner >= 0) { text = `${teamName(s.owner)} ${s.running ? "holds it" : "– paused"}`; col = c.colour[s.owner]; }
     else text = `Uncaptured · next capture: ${s.target >= 0 ? teamName(s.target) : "random"}${s.running ? "" : " · not started"}`;
+    if (s.power === 2) text = "Powered off · Power on below, or press its lid";
+    else if (s.power === 1) text = "Peeking (showing battery) · hold its lid 3 s, or Power on";
+    else if (s.dimmed) text += " · idle (dimmed)";
     if (s.held) text += ` · being held ${(s.heldMs / 1000).toFixed(1)} s`;
     if (s.locked) text += " · LOCKED";
     o.textContent = text;
@@ -482,6 +492,8 @@ class Btn {
     const lock = $(e, ".lock");
     lock.classList.toggle("on", s.locked);
     lock.textContent = s.locked ? "Unlock button" : "Lock button";
+    $(e, ".poweron").hidden = s.power === 0;
+    e.classList.toggle("off", s.power === 2);
     $(e, ".t1").style.borderColor = c.colour[0];
     $(e, ".t2").style.borderColor = c.colour[1];
   }
@@ -517,6 +529,7 @@ document.getElementById("all").addEventListener("click", ev => {
     case "identify": data = cmd(OP.IDENTIFY, ["u16", 3000]); break;
     case "play": data = cmd(OP.PLAY_SOUND, ["u8", +allSound.value]); break;
     case "stopsound": data = cmd(OP.STOP_SOUND); break;
+    case "on": data = cmd(OP.POWER_ON); break;
     case "off":
       if (!confirm(`Power off all ${live.length} connected buttons?`)) return;
       data = cmd(OP.POWER_OFF); break;

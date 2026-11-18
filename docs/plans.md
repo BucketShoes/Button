@@ -12,11 +12,11 @@ top of their section.
   - wall clock, and all-buttons commands (resume, pause, identify, sound, power off, copy settings).
 - **Volume and LED brightness settings,** defaulting to 50 %, because full volume browns out on USB-only power.
 - **Reboot counter and last reset reason** in the page, so brown-outs show up.
-- **Basic power off:** from the page, or by releasing BOOT after 1.5–5 s. It's deep sleep, with PWR_EN low, and a press on the lid wakes it and shows the battery.
+- **Power modes (on / peek / off), first version:** light sleep when idle, amp and PDM off between sounds, idle dim, auto off, slow BLE while off, hourly battery checks, and low-battery deep sleep levels. See the README "Power" section. The currents still need measuring.
 
 ## Next stages
 
-1. **Power lifecycle** (see below): stay-on vs idle, light-sleep BLE while "off", low-battery levels, storage-charge management.
+1. **Power, part 2:** measure the real currents in each mode, then tune. Add storage-charge management on USB (below).
 2. **Timeline / audit log:**
    - **What it records:** every capture, pause, reset, tap, toggle, setting change, and BLE command, with which central sent it. Timestamps come from the button's clock, synced to the phone's clock on connect.
    - **Storage:** a ring buffer in flash, downloadable from the page as CSV/JSON.

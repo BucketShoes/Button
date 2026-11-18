@@ -81,11 +81,12 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **Paused with a holder:** the ring blinks faintly in their colour.
 - **After reset:** uncaptured, or held by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
 - **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.
+- **Power:** see "Power" below.
 - **BOOT:**
   - Tap: diagnostic sound.
-  - Hold 1.5 s (low beep) and release: **power off**. That is deep sleep with everything else unpowered; a lid press wakes it and shows the battery.
+  - Hold 1.5 s (low beep) and release: **power off**.
   - Hold 5 s: restore the default settings.
-- **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power.
+- **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power. The brightness setting dims the displays too.
 - **Displays:** the running holder's display is bright, with its colon flashing at 4 Hz. The others are dim.
 - **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
 - **LEDs:**
@@ -96,4 +97,31 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Music clip:** no longer plays at power-up; play it from the page. A face press or BOOT stops it.
 - **Serial:** a status line every second plus an event log.
 
-Not used yet: the pedals (only logged), the power lifecycle (idle off, light-sleep BLE, battery levels, storage charge), coded PHY or a mesh between buttons, and the event log/timeline. See [docs/plans.md](docs/plans.md).
+Not used yet: the pedals (only logged), storage-charge management on USB, coded PHY or a mesh between buttons, and the event log/timeline. See [docs/plans.md](docs/plans.md).
+
+## Power
+
+- **On:**
+  - Everything is powered.
+  - Between loop passes (20 ms when idle), the CPU light-sleeps.
+  - The amp switches off after 1.5 s of silence, and the PDM output after 20 s. The first sound after that comes about 60 ms late.
+  - **Idle dim:** after 5 min with no presses, no page commands and no running clock, the displays and LEDs dim to 25 % of the brightness setting.
+  - **Auto off:** after 60 min idle with no phone connected, it powers off. A teams-only button that someone holds counts as running, so it never auto-offs mid-game.
+- **Turning it off:**
+  - Release BOOT after 1.5–5 s, use the page's Power off, or let it auto-off.
+  - Clocks pause; a teams-only holder stays.
+- **Off:**
+  - PWR_EN is low, so only the ESP is powered, and it light-sleeps.
+  - BLE keeps advertising slowly, so the page can connect and power it on, or identify it.
+  - It checks the battery hourly, briefly powering VSYS to read it.
+- **Peek:**
+  - A lid press while off shows the battery for about 6 s.
+  - Keep holding (or hold again) for 3 s to turn it on; the ring fills white.
+  - Otherwise it goes back to off.
+- **Low battery (not on USB):**
+  - Below 3.45 V average while on: a battery warning every 5 min.
+  - Below 3.3 V: it shows "LO" and goes into deep sleep. A press shows "LO" again, and plugging in USB wakes it.
+  - Below 3.0 V: deep sleep, and only USB wakes it.
+  - Off for a week and below 3.5 V: deep sleep (BLE off).
+- **On USB:** the firmware never light-sleeps, so the serial console keeps working, and the battery levels don't apply.
+- **Not measured yet:** the actual currents. BLE sleep keeps the main crystal running (there's no 32 kHz crystal), so "off" will draw more than the ~130 µA bare light-sleep figure.

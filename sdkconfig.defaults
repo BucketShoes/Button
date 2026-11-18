@@ -16,8 +16,8 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_BROWNOUT_DET=y
 CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
 
-# No power management / sleep yet.
-# CONFIG_PM_ENABLE is not set
+
+
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
@@ -31,3 +31,11 @@ CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 # CONFIG_BT_NIMBLE_ROLE_OBSERVER is not set
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+
+# Light sleep: auto light sleep with tickless idle, BLE controller sleep
+# (main XTAL kept as its low-power clock: no 32 kHz crystal on this board).
+# On USB the firmware holds a no-light-sleep lock (serial console).
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_BT_LE_SLEEP_ENABLE=y
+CONFIG_ESP_PHY_MAC_BB_PD=y

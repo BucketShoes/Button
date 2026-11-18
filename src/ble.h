@@ -23,3 +23,4 @@ bool ble_poll(ble_msg_t *m);                       // non-blocking
 void ble_publish_state(const void *p, size_t n);   // read value + notify subscribers
 void ble_publish_config(const void *p, size_t n);  // read value + notify subscribers
 int ble_connections(void);
+void ble_set_slow(bool slow);  // true: ~1 s advert interval, +6 dBm (powered off); false: 100 ms, +9 dBm

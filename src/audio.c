@@ -101,7 +101,12 @@ static void pcm_mix(int32_t *acc)
 }
 
 bool audio_pcm_available(void) { return s_pcm_part != NULL; }
-void audio_pcm_start(void) { s_pcm_req = 1; }
+static TaskHandle_t s_task;
+void audio_pcm_start(void)
+{
+    s_pcm_req = 1;
+    if (s_task) xTaskNotifyGive(s_task);
+}
 void audio_pcm_stop(void) { s_pcm_req = 2; }
 bool audio_pcm_playing(void) { return s_pcm_playing || s_pcm_req == 1; }
 
@@ -197,12 +202,83 @@ static void render_block(void)
     }
 }
 
+// Power: the amp switches off after AMP_IDLE_MS of silence (back on with the
+// next sound, no delay: the PDM midpoint is still running). After
+// I2S_IDLE_MS the PDM stops too, which lets the chip light-sleep; the next
+// sound then waits ~60 ms for the midpoint to settle before the amp wakes.
+#define AMP_IDLE_MS 1500
+#define I2S_IDLE_MS 20000
+
+static volatile bool s_allowed = true;  // false while VSYS is off (powered down)
+static bool s_i2s_on, s_amp_on;
+
+static bool busy(void)
+{
+    if (s_pcm_playing || s_pcm_req == 1 || uxQueueMessagesWaiting(s_q)) return true;
+    for (int s = 0; s < SLOT_COUNT; s++)
+        if (s_ch[s].active) return true;
+    return false;
+}
+
+static void amp(bool on)
+{
+    if (on == s_amp_on) return;
+    s_amp_on = on;
+    gpio_set_level(PIN_AMP_EN, on);
+}
+
+static void i2s_on(void)
+{
+    if (s_i2s_on) return;
+    i2s_channel_enable(s_tx);
+    s_i2s_on = true;
+    // Let the PDM midpoint settle through CIN1 (10 ms tau) before the amp wakes.
+    memset(s_buf, 0, sizeof s_buf);
+    size_t w;
+    for (int i = 0; i < 6; i++) i2s_channel_write(s_tx, s_buf, sizeof s_buf, &w, portMAX_DELAY);
+}
+
+static void i2s_off(void)
+{
+    amp(false);
+    if (!s_i2s_on) return;
+    i2s_channel_disable(s_tx);
+    s_i2s_on = false;
+}
+
 static void audio_task(void *arg)
 {
+    uint32_t quiet_ms = 0;
     for (;;) {
+        if (!s_allowed) {
+            i2s_off();
+            cmd_t c;
+            while (xQueueReceive(s_q, &c, 0) == pdTRUE) {}  // drop sounds while powered down
+            for (int s = 0; s < SLOT_COUNT; s++) s_ch[s].active = false;
+            s_pcm_playing = false;
+            s_pcm_req = 0;
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+        if (!s_i2s_on) {
+            if (!busy()) {
+                ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // sleep until audio_play / pcm start
+                continue;
+            }
+            i2s_on();
+        }
+        if (busy()) {
+            quiet_ms = 0;
+            amp(true);
+        }
         render_block();
         size_t w;
         i2s_channel_write(s_tx, s_buf, sizeof(s_buf), &w, portMAX_DELAY);
+        if (!busy()) {
+            quiet_ms += 10;
+            if (quiet_ms >= AMP_IDLE_MS) amp(false);
+            if (quiet_ms >= I2S_IDLE_MS) i2s_off();
+        }
     }
 }
 
@@ -210,11 +286,11 @@ void audio_init(void)
 {
     for (int i = 0; i < 256; i++) s_sine[i] = (int16_t)(sinf(i * 2.0f * (float)M_PI / 256.0f) * 24000.0f);
 
-    gpio_config_t amp = {
+    gpio_config_t io = {
         .pin_bit_mask = 1ULL << PIN_AMP_EN,
         .mode = GPIO_MODE_OUTPUT,
     };
-    gpio_config(&amp);
+    gpio_config(&io);
     gpio_set_level(PIN_AMP_EN, 0);
 
     s_q = xQueueCreate(16, sizeof(cmd_t));
@@ -235,14 +311,15 @@ void audio_init(void)
         },
     };
     ESP_ERROR_CHECK(i2s_channel_init_pdm_tx_mode(s_tx, &pc));
-    ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
 
-    xTaskCreate(audio_task, "audio", 6144, NULL, 10, NULL);
+    xTaskCreate(audio_task, "audio", 6144, NULL, 10, &s_task);
+    ESP_LOGI(TAG, "PDM audio on IO%d at %d Hz (amp and PDM on demand)", PIN_PDM, SR);
+}
 
-    // Let the PDM midpoint settle through CIN1 (10 ms tau) before the amp wakes.
-    vTaskDelay(pdMS_TO_TICKS(60));
-    gpio_set_level(PIN_AMP_EN, 1);
-    ESP_LOGI(TAG, "PDM audio on IO%d at %d Hz, amp enabled", PIN_PDM, SR);
+void audio_set_allowed(bool on)
+{
+    s_allowed = on;
+    if (s_task) xTaskNotifyGive(s_task);
 }
 
 void audio_play(int slot, const note_t *notes, int n)
@@ -250,6 +327,7 @@ void audio_play(int slot, const note_t *notes, int n)
     if (slot < 0 || slot >= SLOT_COUNT || !s_q) return;
     cmd_t c = {.slot = slot, .notes = notes, .n = n};
     xQueueSend(s_q, &c, 0);
+    if (s_task) xTaskNotifyGive(s_task);
 }
 
 void audio_stop(int slot) { audio_play(slot, NULL, 0); }

@@ -1,5 +1,6 @@
 #include "ble.h"
 #include <string.h>
+#include "esp_bt.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -33,6 +34,7 @@ static uint16_t s_state_h, s_config_h;
 static uint8_t s_own_addr_type;
 static volatile bool s_synced;
 static volatile int s_conns;
+static volatile bool s_slow;  // "off": 1 s adverts at lower power
 
 static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
 
@@ -122,8 +124,9 @@ static void advertise(void)
     struct ble_gap_adv_params p = {0};
     p.conn_mode = BLE_GAP_CONN_MODE_UND;
     p.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    p.itvl_min = BLE_GAP_ADV_ITVL_MS(100);
-    p.itvl_max = BLE_GAP_ADV_ITVL_MS(150);
+    p.itvl_min = s_slow ? BLE_GAP_ADV_ITVL_MS(1000) : BLE_GAP_ADV_ITVL_MS(100);
+    p.itvl_max = s_slow ? BLE_GAP_ADV_ITVL_MS(1100) : BLE_GAP_ADV_ITVL_MS(150);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, s_slow ? ESP_PWR_LVL_P6 : ESP_PWR_LVL_P9);
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
     if (rc && rc != BLE_HS_EALREADY) ESP_LOGI(TAG, "not advertising (%d, %d connected)", rc, s_conns);
 }
@@ -220,3 +223,13 @@ static void publish(uint8_t *dst, size_t *dst_len, uint16_t handle, const void *
 void ble_publish_state(const void *p, size_t n) { publish(s_state, &s_state_len, s_state_h, p, n); }
 void ble_publish_config(const void *p, size_t n) { publish(s_config, &s_config_len, s_config_h, p, n); }
 int ble_connections(void) { return s_conns; }
+
+void ble_set_slow(bool slow)
+{
+    if (slow == s_slow) return;
+    s_slow = slow;
+    if (s_synced) {
+        ble_gap_adv_stop();
+        advertise();
+    }
+}
