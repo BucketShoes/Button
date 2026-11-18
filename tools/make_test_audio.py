@@ -145,8 +145,8 @@ def main():
     ap.add_argument("src")
     ap.add_argument("dst")
     ap.add_argument("--seconds", type=float, default=40.0)
-    ap.add_argument("--start", default="auto",
-                    help="auto = song start (skip leading silence), loudest, or seconds")
+    ap.add_argument("--start", default="0",
+                    help="seconds (default 0), auto = skip leading silence, or loudest")
     ap.add_argument("--hp", type=float, default=0.0, help="high-pass Hz, 0 = off")
     ap.add_argument("--compress", choices=["none", "light", "heavy"], default="none")
     a = ap.parse_args()

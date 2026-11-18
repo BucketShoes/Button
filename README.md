@@ -33,7 +33,7 @@ python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
 ```
 
 - `transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed.
-- `make_test_audio.py` takes 40 s from the start of the song, skipping leading silence (`--seconds`; `--start loudest` or `--start <s>` to pick elsewhere). That's about the most that fits in 4 MB at 48 kHz.
+- `make_test_audio.py` takes 40 s from the very start of the song (`--seconds`; `--start <s>`, `--start auto` to skip leading silence, or `--start loudest`). That's about the most that fits in 4 MB at 48 kHz.
   - By default it does no high-pass and no compression, just a level normalise and 10 ms de-click ramps at the ends, so it's a clean speaker test.
   - `--hp` sets a high-pass in Hz; 0 turns it off.
   - `--compress` is `none`, `light` or `heavy`.
@@ -50,7 +50,7 @@ python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
   - 3–6 s: a loud ding each second and a white fill warn that a pause is coming.
   - At 6 s it **pauses**: the capture is undone and the clocks stop. The ring blinks faintly in the paused owner's colour, and the next 3 s hold gives the point back to that team.
   - 6–10 s: a low "dun-dunn" each second and a red fill. At 10 s it **resets** both clocks to 10:00 with an ominous growl.
-  - Once a team has won, the win fanfare repeats for 20 s. A 3 s hold silences it, and the 10 s reset still works.
+  - Once a team has won, the win fanfare repeats for 20 s. Holding dings every second (no rising tone): 3 s silences the fanfare, and 10 s resets.
 - **Triple tap:** three taps under 500 ms each, with gaps under 500 ms between them.
   - About 0.5 s after the last tap, DISP1 shows "bAtt" and DISP2 shows the estimated charge percent for 6 s, with a green gauge on the ring.
   - The percent is estimated from voltage: 3.3 V is 0 % and 4.2 V is 100 %, steepest around 3.7 V. It can go below 0 % or above 100 %.

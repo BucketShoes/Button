@@ -293,6 +293,8 @@ static void hold_progress(uint32_t now, uint32_t held)
                 audio_stop(SLOT_EVENT);
                 AUDIO_PLAY(SLOT_CLICK, SND_SILENCE);
                 ESP_LOGI(TAG, "win alarm silenced");
+            } else {
+                AUDIO_PLAY(SLOT_CLICK, SND_DING);  // keep the once-a-second rhythm at 3 s
             }
         } else {
             int team = s_hold_target >= 0 ? s_hold_target : (int)(esp_random() & 1);
@@ -329,7 +331,8 @@ static void hold_progress(uint32_t now, uint32_t held)
     // Warning every second after the capture: dings towards pause, doom towards reset.
     int sec = (int)(held / 1000);
     if (sec != s_hold_last_sec && sec != 3 && sec != 6) {
-        if (s_hold_stage == 1) AUDIO_PLAY(SLOT_CLICK, SND_DING);
+        // After a win there is no rising tone, so tick from the first second too.
+        if (s_hold_stage == 1 || (s_hold_stage == 0 && s_state == ST_WON)) AUDIO_PLAY(SLOT_CLICK, SND_DING);
         if (s_hold_stage == 2) AUDIO_PLAY(SLOT_CLICK, SND_DOOM);
     }
     s_hold_last_sec = sec;
