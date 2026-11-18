@@ -2,12 +2,16 @@
 //
 // - Each team starts with 10:00. The owning team's clock counts down; a team
 //   wins when its clock reaches 0:00 (it has held the point for 10 minutes).
-// - Face press = OR of the three face switches, 100 ms release debounce.
+// - Face press = OR of the three face switches. A hold survives gaps of up
+//   to HOLD_RELEASE_MS with nothing pressed; taps use a much shorter debounce.
 // - Hold 3 s: capture (switch to the other team; random team if unowned).
 // - Keep holding to 6 s: pause (undo the capture, ring off); the next
 //   3 s hold resumes with the owner from before the pause.
 // - Keep holding to 10 s: reset both clocks to 10:00.
+// - After a win, the alarm repeats for WIN_ALARM_MS; a 3 s hold silences it.
 // - Triple tap: show VSYS / VBUS on the displays for a few seconds.
+// - Speaker test: the PCM clip in the audio partition plays at power-up;
+//   any face press or BOOT stops it.
 //
 // USB-only bench test: no Wi-Fi, BLE or sleep.
 
@@ -34,9 +38,14 @@ static const char *TAG = "button";
 #define HOLD_CAPTURE_MS  3000
 #define HOLD_PAUSE_MS    6000
 #define HOLD_RESET_MS    10000
-#define DEBOUNCE_MS      100   // release must be seen this long before it counts
-#define TAP_MAX_MS       500   // a press shorter than this is a tap
-#define TAP_GAP_MS       600   // max gap between taps; also the wait after the last one
+#define DEBOUNCE_MS      100   // single switches / BOOT / pedals: release seen this long
+#define HOLD_RELEASE_MS  250   // face hold: all switches open this long ends the hold
+#define TAP_RELEASE_MS   40    // tap detector: short, so fast taps stay separate
+#define TAP_MAX_MS       400   // a press shorter than this is a tap
+#define TAP_GAP_MS       500   // max gap between taps; also the wait after the last one
+#define WIN_ALARM_MS     20000 // win sound repeats this long (or until a 3 s hold)
+#define WIN_REPEAT_MS    2500
+#define PAUSED_LEVEL     14    // ring blink while paused with an owner: only visible close up
 #define BATT_SHOW_MS     4000
 #define LOOP_MS          5
 
@@ -59,33 +68,40 @@ static const rgb_t GREEN = {0, 255, 0};
 static const int RING_CW[6] = {3 /*N*/, 2 /*NE*/, 7 /*SE*/, 6 /*S*/, 5 /*SW*/, 4 /*NW*/};
 
 // ---------------------------------------------------------------- sounds
-static const note_t SND_CLICK[] = {{1, 1, 6, W_NOISE, 200}};
+// Square waves carry best on the FS-1540 (resonance ~850 Hz); sines sound weak.
+static const note_t SND_CLICK[] = {{1, 1, 6, W_NOISE, 255}};
 static const note_t SND_SW[3][1] = {
-    {{700, 700, 35, W_SQUARE, 110}},
-    {{1050, 1050, 35, W_TRI, 200}},
-    {{1500, 1500, 35, W_SQUARE, 110}},
+    {{700, 700, 35, W_SQUARE, 180}},
+    {{1050, 1050, 35, W_TRI, 255}},
+    {{1500, 1500, 35, W_SQUARE, 180}},
 };
-static const note_t SND_BUILD[] = {{250, 1200, HOLD_CAPTURE_MS, W_SQUARE, 70}};
+static const note_t SND_BUILD[] = {{250, 1200, HOLD_CAPTURE_MS, W_SQUARE, 140}};
 static const note_t SND_TEAM[2][5] = {
-    {   // team 1: rising square arpeggio (sine was too quiet on the FS-1540)
-        {1047, 1047, 100, W_SQUARE, 160}, {1319, 1319, 100, W_SQUARE, 160}, {1568, 1568, 100, W_SQUARE, 160},
-        {2093, 2093, 350, W_SQUARE, 160}, {0, 0, 1, W_SQUARE, 0},
+    {   // team 1: rising square arpeggio
+        {1047, 1047, 100, W_SQUARE, 255}, {1319, 1319, 100, W_SQUARE, 255}, {1568, 1568, 100, W_SQUARE, 255},
+        {2093, 2093, 350, W_SQUARE, 255}, {0, 0, 1, W_SQUARE, 0},
     },
     {   // team 2: square "da-da-DAAA"
-        {880, 880, 90, W_SQUARE, 160}, {0, 0, 40, W_SQUARE, 0}, {880, 880, 90, W_SQUARE, 160},
-        {0, 0, 40, W_SQUARE, 0}, {1319, 1319, 400, W_SQUARE, 160},
+        {880, 880, 90, W_SQUARE, 255}, {0, 0, 40, W_SQUARE, 0}, {880, 880, 90, W_SQUARE, 255},
+        {0, 0, 40, W_SQUARE, 0}, {1319, 1319, 400, W_SQUARE, 255},
     },
 };
-static const note_t SND_TICK[] = {{1600, 1600, 15, W_TRI, 180}};
-static const note_t SND_PAUSE[] = {{1200, 300, 450, W_TRI, 230}};
-static const note_t SND_RESET[] = {
-    {1400, 1400, 100, W_SQUARE, 140}, {1100, 1100, 100, W_SQUARE, 140},
-    {800, 800, 100, W_SQUARE, 140}, {500, 500, 400, W_SQUARE, 140},
+// 3..6 s (heading for pause): bright "ding" with a short tail.
+static const note_t SND_DING[] = {{1760, 1760, 30, W_SQUARE, 255}, {1760, 1760, 90, W_SQUARE, 110}};
+// 6..10 s (heading for reset): low, dissonant "dun-dunn".
+static const note_t SND_DOOM[] = {
+    {233, 220, 80, W_SQUARE, 255}, {0, 0, 30, W_SQUARE, 0}, {165, 150, 240, W_SQUARE, 255},
 };
+static const note_t SND_PAUSE[] = {{1200, 300, 450, W_SQUARE, 220}};
+static const note_t SND_RESET[] = {  // ominous: slow falling minor steps into a long low growl
+    {330, 311, 250, W_SQUARE, 255}, {0, 0, 40, W_SQUARE, 0}, {247, 233, 250, W_SQUARE, 255},
+    {0, 0, 40, W_SQUARE, 0}, {175, 110, 1200, W_SQUARE, 255},
+};
+static const note_t SND_SILENCE[] = {{1200, 1200, 40, W_SQUARE, 200}, {600, 600, 80, W_SQUARE, 200}};
 static const note_t SND_WIN[] = {
-    {784, 784, 150, W_SQUARE, 150}, {1047, 1047, 150, W_SQUARE, 150}, {1319, 1319, 150, W_SQUARE, 150},
-    {1568, 1568, 500, W_SQUARE, 150}, {0, 0, 100, W_SQUARE, 0}, {1319, 1319, 150, W_SQUARE, 150},
-    {1568, 1568, 800, W_SQUARE, 150},
+    {784, 784, 150, W_SQUARE, 255}, {1047, 1047, 150, W_SQUARE, 255}, {1319, 1319, 150, W_SQUARE, 255},
+    {1568, 1568, 500, W_SQUARE, 255}, {0, 0, 100, W_SQUARE, 0}, {1319, 1319, 150, W_SQUARE, 255},
+    {1568, 1568, 800, W_SQUARE, 255},
 };
 static const note_t SND_BOOT[] = {  // diagnostic: sine 440 / 880 / 1760, then noise, then sweep
     {440, 440, 200, W_SINE, 255}, {880, 880, 200, W_SINE, 255}, {1760, 1760, 200, W_SINE, 255},
@@ -98,6 +114,7 @@ static const note_t SND_BATT[] = {{1000, 1000, 60, W_SINE, 200}, {1500, 1500, 60
 typedef struct {
     gpio_num_t pin;
     const char *name;
+    uint32_t release_ms;      // open this long before a release counts
     bool state;               // debounced pressed
     uint32_t press_ms;        // when the current press started
     uint32_t last_active_ms;  // last time the raw contact was seen closed
@@ -105,12 +122,15 @@ typedef struct {
 
 enum { IN_FACE1, IN_FACE2, IN_FACE3, IN_BOOT, IN_PEDAL1, IN_PEDAL2, IN_COUNT };
 static input_t s_in[IN_COUNT] = {
-    {PIN_FACE1, "face1(W)"}, {PIN_FACE2, "face2(SE)"}, {PIN_FACE3, "face3(NE)"},
-    {PIN_BOOT, "boot"},      {PIN_PEDAL1, "pedal1"},   {PIN_PEDAL2, "pedal2"},
+    {PIN_FACE1, "face1(W)", DEBOUNCE_MS},  {PIN_FACE2, "face2(SE)", DEBOUNCE_MS},
+    {PIN_FACE3, "face3(NE)", DEBOUNCE_MS}, {PIN_BOOT, "boot", DEBOUNCE_MS},
+    {PIN_PEDAL1, "pedal1", DEBOUNCE_MS},   {PIN_PEDAL2, "pedal2", DEBOUNCE_MS},
 };
-static input_t s_face = {GPIO_NUM_NC, "face"};  // OR of the three switches
+// Both are the OR of the three face switches, debounced differently.
+static input_t s_face = {GPIO_NUM_NC, "face", HOLD_RELEASE_MS};  // holds
+static input_t s_tap = {GPIO_NUM_NC, "tap", TAP_RELEASE_MS};     // tap counting
 
-// Press registers on the first closed sample; release only after DEBOUNCE_MS
+// Press registers on the first closed sample; release only after release_ms
 // of continuously open. Returns +1 on press, -1 on release, 0 otherwise.
 static int input_update(input_t *in, bool raw, uint32_t now)
 {
@@ -121,7 +141,7 @@ static int input_update(input_t *in, bool raw, uint32_t now)
             in->press_ms = now;
             return 1;
         }
-    } else if (in->state && now - in->last_active_ms >= DEBOUNCE_MS) {
+    } else if (in->state && now - in->last_active_ms >= in->release_ms) {
         in->state = false;
         return -1;
     }
@@ -168,6 +188,7 @@ static int s_hold_last_sec;
 static int s_taps;
 static uint32_t s_last_tap_ms;
 static uint32_t s_batt_until;
+static uint32_t s_win_alarm_until, s_win_next_sound;
 
 static int s_vsys_mv, s_vbus_mv;
 
@@ -187,39 +208,55 @@ static void on_face_press(uint32_t now)
     s_hold_last_sec = 0;
     s_hold_target = (s_owner >= 0) ? 1 - s_owner : s_resume_owner;
 
-    if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
-
+    audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
     if (s_state != ST_WON) AUDIO_PLAY(SLOT_BUILD, SND_BUILD);
     ESP_LOGI(TAG, "face press (state %s, owner %d)", STATE_NAME[s_state], s_owner + 1);
 }
 
-static void on_face_release(uint32_t now, uint32_t held)
+static void on_face_release(uint32_t held)
 {
     audio_stop(SLOT_BUILD);
+    ESP_LOGI(TAG, "face release after %lu ms", (unsigned long)held);
+}
+
+// Tap counting runs on its own short debounce, so quick taps (gaps well under
+// the hold grace) still count separately.
+static void on_tap_press(uint32_t now)
+{
+    if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
+}
+
+static void on_tap_release(uint32_t held)
+{
     if (held < TAP_MAX_MS) {
         s_taps++;
-        s_last_tap_ms = s_face.last_active_ms;
+        s_last_tap_ms = s_tap.last_active_ms;
     } else {
         s_taps = 0;
     }
-    ESP_LOGI(TAG, "face release after %lu ms (taps %d)", (unsigned long)held, s_taps);
+    ESP_LOGI(TAG, "tap %lu ms -> taps %d", (unsigned long)held, s_taps);
 }
 
-static void hold_progress(uint32_t held)
+static void hold_progress(uint32_t now, uint32_t held)
 {
     if (s_hold_stage == 0 && held >= HOLD_CAPTURE_MS) {
         s_hold_stage = 1;
         audio_stop(SLOT_BUILD);
-        if (s_state != ST_WON) {
+        if (s_state == ST_WON) {
+            if ((int32_t)(s_win_alarm_until - now) > 0) {
+                s_win_alarm_until = now;
+                audio_stop(SLOT_EVENT);
+                AUDIO_PLAY(SLOT_CLICK, SND_SILENCE);
+                ESP_LOGI(TAG, "win alarm silenced");
+            }
+        } else {
             int team = s_hold_target >= 0 ? s_hold_target : (int)(esp_random() & 1);
             s_owner = team;
             s_resume_owner = -1;
             s_state = ST_RUNNING;
             AUDIO_PLAY(SLOT_EVENT, SND_TEAM[team]);
             ESP_LOGI(TAG, "CAPTURED by team %d", team + 1);
-        } else {
-            AUDIO_PLAY(SLOT_EVENT, SND_TICK);
         }
     }
     if (s_hold_stage == 1 && held >= HOLD_PAUSE_MS) {
@@ -241,13 +278,15 @@ static void hold_progress(uint32_t held)
         s_rem[0] = s_rem[1] = GAME_MS;
         s_owner = s_winner = s_resume_owner = -1;
         s_state = ST_IDLE;
+        s_win_alarm_until = now;
         AUDIO_PLAY(SLOT_EVENT, SND_RESET);
         ESP_LOGI(TAG, "RESET to 10:00");
     }
-    // Warning ticks every second after the capture, until the reset.
+    // Warning every second after the capture: dings towards pause, doom towards reset.
     int sec = (int)(held / 1000);
-    if (s_hold_stage >= 1 && s_hold_stage < 3 && sec != s_hold_last_sec && sec != 3 && sec != 6) {
-        AUDIO_PLAY(SLOT_CLICK, SND_TICK);
+    if (sec != s_hold_last_sec && sec != 3 && sec != 6) {
+        if (s_hold_stage == 1) AUDIO_PLAY(SLOT_CLICK, SND_DING);
+        if (s_hold_stage == 2) AUDIO_PLAY(SLOT_CLICK, SND_DOOM);
     }
     s_hold_last_sec = sec;
 }
@@ -260,12 +299,19 @@ static void game_tick(uint32_t now, uint32_t dt)
             s_rem[s_owner] = 0;
             s_winner = s_owner;
             s_state = ST_WON;
-            AUDIO_PLAY(SLOT_EVENT, SND_WIN);
+            s_win_alarm_until = now + WIN_ALARM_MS;
+            s_win_next_sound = now;
             ESP_LOGI(TAG, "TEAM %d WINS", s_winner + 1);
         }
     }
 
-    if (!s_face.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
+    // Win alarm repeats until it times out or a 3 s hold silences it.
+    if (s_state == ST_WON && (int32_t)(s_win_alarm_until - now) > 0 && (int32_t)(now - s_win_next_sound) >= 0) {
+        s_win_next_sound = now + WIN_REPEAT_MS;
+        AUDIO_PLAY(SLOT_EVENT, SND_WIN);
+    }
+
+    if (!s_tap.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
         if (s_taps == 3) {
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
@@ -329,6 +375,9 @@ static void render_leds(uint32_t now)
         for (int i = 0; i < 6; i++) ring[i] = rgb_scale(TEAM_COLOUR[s_owner], RING_LEVEL);
     } else if (s_state == ST_WON && s_winner >= 0 && ((now / 250) & 1)) {
         for (int i = 0; i < 6; i++) ring[i] = rgb_scale(TEAM_COLOUR[s_winner], RING_LEVEL);
+    } else if (s_state == ST_IDLE && s_resume_owner >= 0 && ((now / 500) & 1)) {
+        // Paused with an owner: faint slow blink, only noticeable up close.
+        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(TEAM_COLOUR[s_resume_owner], PAUSED_LEVEL);
     }
 
     // Hold progress.
@@ -397,13 +446,13 @@ static void power_on(void)
     gpio_config_t io = {.pin_bit_mask = (1ULL << PIN_PWR_EN) | (1ULL << PIN_STAT_LED), .mode = GPIO_MODE_OUTPUT};
     gpio_config(&io);
     gpio_set_level(PIN_PWR_EN, 1);
-    gpio_set_level(PIN_STAT_LED, 1);
+    gpio_set_level(PIN_STAT_LED, 0);  // kept off: it's distracting through the case
 }
 
 static void startup_test(void)
 {
     // Displays: all segments + colon. LEDs: red, green, blue across the chain
-    // (checks the GRB order and every LED). Fits inside the 1 s status LED on.
+    // (checks the GRB order and every LED).
     uint8_t all[4] = {0xFF, 0xFF, 0xFF, 0xFF};
     display_set(0, all, DISP_FULL);
     display_set(1, all, DISP_FULL);
@@ -420,7 +469,6 @@ static void startup_test(void)
 void app_main(void)
 {
     power_on();
-    uint32_t t0 = now_ms();
     vTaskDelay(pdMS_TO_TICKS(30));  // rails settle; GN1650 power-up
 
     ESP_LOGI(TAG, "capture button firmware, board b43");
@@ -436,6 +484,9 @@ void app_main(void)
     ESP_LOGI(TAG, "VSYS %d mV, VBUS %d mV, display NAKs %lu/%lu", s_vsys_mv, s_vbus_mv,
              (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1));
 
+    // Speaker test: play the flash clip once at power-up, if one is flashed.
+    if (audio_pcm_available()) audio_pcm_start();
+
     TickType_t wake = xTaskGetTickCount();
     uint32_t last = now_ms();
     uint32_t next_led = 0, next_disp = 0, next_adc = 0, next_status = 0, next_refresh = 0;
@@ -446,10 +497,6 @@ void app_main(void)
         uint32_t dt = now - last;
         last = now;
 
-        // Status LED: 1 s on at start, then a 20 ms blink each second.
-        uint32_t up = now - t0;
-        gpio_set_level(PIN_STAT_LED, (up < 1000 || (up % 1000) < 20) ? 1 : 0);
-
         // Inputs.
         bool any_face = false;
         for (int i = 0; i < IN_COUNT; i++) {
@@ -458,12 +505,22 @@ void app_main(void)
             int e = input_update(&s_in[i], raw, now);
             if (e) ESP_LOGI(TAG, "%s %s", s_in[i].name, e > 0 ? "down" : "up");
             if (e > 0 && i <= IN_FACE3) AUDIO_PLAY(SLOT_SW1 + i, SND_SW[i]);
-            if (e > 0 && i == IN_BOOT) AUDIO_PLAY(SLOT_DIAG, SND_BOOT);
+            if (e > 0 && i == IN_BOOT) {
+                if (audio_pcm_playing()) {
+                    audio_pcm_stop();
+                } else {
+                    AUDIO_PLAY(SLOT_DIAG, SND_BOOT);
+                }
+            }
         }
         int fe = input_update(&s_face, any_face, now);
         if (fe > 0) on_face_press(now);
-        if (s_face.state) hold_progress(input_held_ms(&s_face));
-        if (fe < 0) on_face_release(now, s_face.last_active_ms - s_face.press_ms);
+        if (s_face.state) hold_progress(now, input_held_ms(&s_face));
+        if (fe < 0) on_face_release(s_face.last_active_ms - s_face.press_ms);
+
+        int te = input_update(&s_tap, any_face, now);
+        if (te > 0) on_tap_press(now);
+        if (te < 0) on_tap_release(s_tap.last_active_ms - s_tap.press_ms);
 
         game_tick(now, dt);
 

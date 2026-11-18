@@ -4,3 +4,8 @@ managed_components/
 sdkconfig.button
 sdkconfig.old
 build/
+
+# Local audio sources and generated flash images (large; regenerate with tools/)
+*.mp3
+*.wav
+audio/*.bin

@@ -2,6 +2,8 @@
 #include "board.h"
 #include <math.h>
 #include <stdbool.h>
+#include <string.h>
+#include "esp_partition.h"
 #include "driver/i2s_pdm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -12,8 +14,10 @@ static const char *TAG = "audio";
 
 #define SR        24000
 #define BLOCK     240        // 10 ms
-#define MASTER    100        // /256 master volume. Keep modest: the FS-1540 is rated 0.5 W,
-                             // and on USB-only the 400 mA charger feeds LEDs + amp.
+#define MASTER    256        // /256 master volume: full. Loud is the point (contact sport,
+                             // yelling). The FS-1540 is rated 0.5 W and on USB-only the
+                             // 400 mA charger feeds LEDs + amp, so VSYS may sag on peaks.
+#define SQ_AMP    28000      // square wave amplitude
 #define ATTACK    (SR / 500) // 2 ms
 #define RELEASE   (SR / 125) // 8 ms
 
@@ -38,6 +42,68 @@ static chan_t s_ch[SLOT_COUNT];
 static int16_t s_sine[256];
 static int16_t s_buf[BLOCK];
 
+// PCM clip state. s_pcm_req is set by other tasks, consumed by the audio task.
+static const esp_partition_t *s_pcm_part;
+static uint32_t s_pcm_count;
+static uint32_t s_pcm_pos;
+static volatile bool s_pcm_playing;
+static volatile int s_pcm_req;  // 0 none, 1 start, 2 stop
+
+static void pcm_init(void)
+{
+    s_pcm_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "audio");
+    if (!s_pcm_part) {
+        ESP_LOGW(TAG, "no audio partition");
+        return;
+    }
+    uint8_t hdr[16];
+    if (esp_partition_read(s_pcm_part, 0, hdr, sizeof hdr) != ESP_OK || memcmp(hdr, "PCM1", 4) != 0) {
+        ESP_LOGW(TAG, "audio partition empty (flash it with the upload_audio target)");
+        s_pcm_part = NULL;
+        return;
+    }
+    uint32_t rate, count;
+    memcpy(&rate, hdr + 4, 4);
+    memcpy(&count, hdr + 8, 4);
+    if (rate != SR || count == 0 || 16 + (uint64_t)count * 2 > s_pcm_part->size) {
+        ESP_LOGW(TAG, "audio clip header bad (rate %lu, samples %lu)", (unsigned long)rate, (unsigned long)count);
+        s_pcm_part = NULL;
+        return;
+    }
+    s_pcm_count = count;
+    ESP_LOGI(TAG, "audio clip: %lu samples, %.1f s", (unsigned long)count, count / (float)SR);
+}
+
+static void pcm_mix(int32_t *acc)
+{
+    int req = s_pcm_req;
+    if (req) {
+        s_pcm_req = 0;
+        if (req == 1 && s_pcm_part) {
+            s_pcm_pos = 0;
+            s_pcm_playing = true;
+        } else {
+            s_pcm_playing = false;
+        }
+    }
+    if (!s_pcm_playing) return;
+    int16_t tmp[BLOCK];
+    uint32_t n = s_pcm_count - s_pcm_pos;
+    if (n > BLOCK) n = BLOCK;
+    if (esp_partition_read(s_pcm_part, 16 + s_pcm_pos * 2, tmp, n * 2) != ESP_OK) {
+        s_pcm_playing = false;
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) acc[i] += tmp[i];
+    s_pcm_pos += n;
+    if (s_pcm_pos >= s_pcm_count) s_pcm_playing = false;
+}
+
+bool audio_pcm_available(void) { return s_pcm_part != NULL; }
+void audio_pcm_start(void) { s_pcm_req = 1; }
+void audio_pcm_stop(void) { s_pcm_req = 2; }
+bool audio_pcm_playing(void) { return s_pcm_playing || s_pcm_req == 1; }
+
 static void note_begin(chan_t *c)
 {
     const note_t *nt = &c->notes[c->idx];
@@ -58,7 +124,7 @@ static inline int32_t wave_sample(chan_t *c, int wave)
 {
     switch (wave) {
     case W_SQUARE:
-        return (c->phase & 0x80000000u) ? 20000 : -20000;
+        return (c->phase & 0x80000000u) ? SQ_AMP : -SQ_AMP;
     case W_TRI: {
         int32_t p = (int32_t)(c->phase >> 16);  // 0..65535
         int32_t s = p < 32768 ? (2 * p - 32768) : (98303 - 2 * p);
@@ -93,6 +159,7 @@ static void render_block(void)
     }
 
     int32_t acc[BLOCK] = {0};
+    pcm_mix(acc);
     for (int s = 0; s < SLOT_COUNT; s++) {
         chan_t *c = &s_ch[s];
         if (!c->active) continue;
@@ -149,6 +216,7 @@ void audio_init(void)
     gpio_set_level(PIN_AMP_EN, 0);
 
     s_q = xQueueCreate(16, sizeof(cmd_t));
+    pcm_init();
 
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;  // underrun -> zeros -> 50% PDM -> silence
