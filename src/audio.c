@@ -14,7 +14,7 @@ static const char *TAG = "audio";
 
 #define SR        48000      // highest rate IDF recommends for PDM TX; clip must match
 #define BLOCK     (SR / 100) // 10 ms
-#define MASTER_DEFAULT 256 // /256 master volume; set at runtime by audio_set_volume. Loud is the point (contact sport,
+#define MASTER_DEFAULT 65536 // Q16 master gain (65536 = full); set by audio_set_volume. Loud is the point (contact sport,
                              // yelling). The FS-1540 is rated 0.5 W and on USB-only the
                              // 400 mA charger feeds LEDs + amp, so VSYS may sag on peaks.
 #define SQ_AMP    28000      // square wave amplitude
@@ -195,19 +195,18 @@ static void render_block(void)
         }
     }
     for (int i = 0; i < BLOCK; i++) {
-        int32_t v = (acc[i] * s_master) >> 8;
+        int32_t v = (int32_t)(((int64_t)acc[i] * s_master) >> 16);
         if (v > 32767) v = 32767;
         if (v < -32767) v = -32767;
         s_buf[i] = (int16_t)v;
     }
 }
 
-// Power: the amp switches off after AMP_IDLE_MS of silence (back on with the
-// next sound, no delay: the PDM midpoint is still running). After
-// I2S_IDLE_MS the PDM stops too, which lets the chip light-sleep; the next
-// sound then waits ~60 ms for the midpoint to settle before the amp wakes.
-#define AMP_IDLE_MS 1500
-#define I2S_IDLE_MS 20000
+// Power: amp and PDM both stop QUIET_MS after the last sound (a running PDM
+// holds a lock that stops the chip light-sleeping). The first sound after
+// that always waits ~60 ms for the PDM midpoint to settle before the amp
+// wakes; sounds in quick succession (taps, holds) have no delay.
+#define QUIET_MS 1000
 
 static volatile bool s_allowed = true;  // false while VSYS is off (powered down)
 static bool s_i2s_on, s_amp_on;
@@ -276,8 +275,7 @@ static void audio_task(void *arg)
         i2s_channel_write(s_tx, s_buf, sizeof(s_buf), &w, portMAX_DELAY);
         if (!busy()) {
             quiet_ms += 10;
-            if (quiet_ms >= AMP_IDLE_MS) amp(false);
-            if (quiet_ms >= I2S_IDLE_MS) i2s_off();
+            if (quiet_ms >= QUIET_MS) i2s_off();  // amp first, then PDM
         }
     }
 }
@@ -334,7 +332,11 @@ void audio_stop(int slot) { audio_play(slot, NULL, 0); }
 
 void audio_set_volume(int v)
 {
-    if (v < 0) v = 0;
+    // 0 = mute, 1..255 = -40 dB .. 0 dB, evenly spaced in dB (loudness, not amplitude).
+    if (v <= 0) {
+        s_master = 0;
+        return;
+    }
     if (v > 255) v = 255;
-    s_master = v == 255 ? 256 : v;
+    s_master = (int32_t)(65536.0f * powf(10.0f, (v / 255.0f - 1.0f) * 2.0f));
 }

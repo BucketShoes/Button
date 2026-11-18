@@ -33,7 +33,7 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | 24 | u32 | uptime s |
 | 28 | u32 | boots since power-on (more than 1 means it has rebooted) |
 | 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off |
-| 33 | u8 | bit0 dimmed (idle), bit1 battery low warning |
+| 33 | u8 | bit0 dimmed (idle 1 h), bit1 battery low warning, bit2 sparse LEDs (idle 10 min) |
 | 34 | u16 | battery mV: long average of VSYS while on; last unloaded reading while off; 0 = unknown |
 
 ## Config
@@ -49,7 +49,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 4 | u8 | show numbers (0/1) |
 | 5 | u8 | owner after reset: 0 uncaptured, 1 team 1, 2 team 2 |
 | 6 | u8 | first capture of an uncaptured button with no taps: 0 random, 1, 2 |
-| 7 | u8 | volume 0..255 (default 128) |
+| 7 | u8 | volume: 0 mute, 1..255 = -40..0 dB (default 128, about -20 dB) |
 | 8 | u16 | hold ms (500..60000); pause at +3 s, reset at +7 s |
 | 10 | u8 | LED brightness 0..255 (default 128) |
 | 11 | u8 | reserved |

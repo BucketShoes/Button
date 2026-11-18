@@ -623,9 +623,12 @@ static const char *const PWR_NAME[] = {"on", "peek", "off"};
 
 #define PEEK_MS            6000
 #define POWER_ON_HOLD_MS   3000
-#define IDLE_DIM_MS        (5 * 60 * 1000)   // not running, nobody touched it: dim
-#define AUTO_OFF_MS        (60 * 60 * 1000)  // ... and nobody connected: off
-#define DIM_LEVEL          64                // /255 of the brightness setting while dimmed
+// Idle = no press and no page command (game state is kept throughout; a tap
+// brings it straight back). Mid-game something always happens well within these.
+#define IDLE_SPARSE_MS     (10 * 60 * 1000)      // every 2nd ring/strip LED off (LED1/2 stay)
+#define IDLE_DIM_MS        (60 * 60 * 1000)      // probably forgotten: 10 % brightness
+#define AUTO_OFF_MS        (4 * 60 * 60 * 1000)  // then off
+#define DIM_LEVEL          26                    // /255 of the brightness setting while dimmed
 #define OFF_BATT_CHECK_MS  (60 * 60 * 1000)
 #define OFF_RECHECK_MS     60000             // a low reading is confirmed once before acting
 #define BATT_TAU_MS        60000             // averaging while on, so speaker/LED dips don't count
@@ -633,8 +636,8 @@ static const char *const PWR_NAME[] = {"on", "peek", "off"};
 #define BATT_WARN_EVERY_MS (5 * 60 * 1000)
 #define BATT_LOW_MV        3300
 #define BATT_DEAD_MV       3000
-#define BATT_STORAGE_MV    3500              // off this long below this: BLE off too
-#define OFF_BLE_MAX_MS     (7ULL * 24 * 3600 * 1000)
+#define BATT_STORAGE_MV    3500              // off below this (or after OFF_BLE_MAX_MS): BLE off too
+#define OFF_BLE_MAX_MS     (8ULL * 24 * 3600 * 1000)  // off-BLE lasts this long at most
 #define USB_MV             4000
 
 static pwr_t s_pwr = PWR_ON;
@@ -645,7 +648,7 @@ static int64_t s_off_since_us;
 static uint32_t s_next_batt_check, s_next_batt_warn;
 static int s_batt_mv;     // averaged VSYS while on, last rest reading while off
 static int s_low_readings;
-static bool s_dim;
+static bool s_dim, s_sparse;
 static esp_pm_lock_handle_t s_usb_lock;
 static bool s_usb_lock_held;
 
@@ -726,11 +729,11 @@ static void deep_sleep(bool press_wake)
 
 static void show_low_and_sleep(int mv)
 {
-    // "LO" and the percent for 3 s, quietly, then back to deep sleep.
+    // "bAtt Lo" for 3 s, quietly, then back to deep sleep.
     periph_power(true);
-    uint8_t a[4] = {0, 0, display_char('L'), display_char('O')}, b[4];
-    int pct = batt_percent(mv);
-    display_number(b, pct < 0 ? 0 : pct);
+    // "bAtt" (t as a mirrored 7) / "  Lo".
+    uint8_t a[4] = {display_char('b'), display_char('A'), 0x31, 0x31};
+    uint8_t b[4] = {0, 0, 0x38 /*L*/, 0x5C /*o*/};
     display_set(0, a, 8);
     display_set(1, b, 8);
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -786,10 +789,10 @@ static void power_tick_on(uint32_t now, uint32_t dt)
         return;
     }
 
-    if (s_running) activity(now);  // a running game is never idle
     uint32_t idle = now - s_last_activity;
+    s_sparse = idle >= IDLE_SPARSE_MS;
     s_dim = idle >= IDLE_DIM_MS;
-    if (idle >= AUTO_OFF_MS && ble_connections() == 0) {
+    if (idle >= AUTO_OFF_MS) {
         ESP_LOGI(TAG, "idle for %lu min: auto off", (unsigned long)(idle / 60000));
         power_set(PWR_OFF, now);
         return;
@@ -815,7 +818,7 @@ static void power_tick_off(uint32_t now)
     int mv = read_batt_rest();
     s_batt_mv = mv;
     bool long_off = esp_timer_get_time() - s_off_since_us > (int64_t)OFF_BLE_MAX_MS * 1000;
-    bool low = mv < BATT_LOW_MV || (long_off && mv < BATT_STORAGE_MV);
+    bool low = mv < BATT_STORAGE_MV || long_off;
     ESP_LOGI(TAG, "off: battery %d mV%s", mv, low ? " (low)" : "");
     if (!low) {
         s_low_readings = 0;
@@ -880,7 +883,7 @@ static void publish_state(uint32_t now)
         .reset_reason = s_reset_reason,
         .boots = s_boot_count,
         .power = (uint8_t)s_pwr,
-        .flags2 = (uint8_t)((s_dim ? 1 : 0) | (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0)),
+        .flags2 = (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) | (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0)),
         .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
         .vsys_mv = (uint16_t)s_vsys_mv,
         .vbus_mv = (uint16_t)s_vbus_mv,
@@ -1162,6 +1165,11 @@ static void render_leds(uint32_t now)
         }
     }
 
+    // Idle 10 min+: every second ring and strip LED off (LED1/2 stay), still visible, less power.
+    if (s_sparse) {
+        for (int i = 1; i < 6; i += 2) frame[RING_CW[i]] = (rgb_t){0};
+        for (int i = 1; i < LED_COUNT_EXT; i += 2) frame[LED_IDX_EXT + i] = (rgb_t){0};
+    }
     int level = identifying(now) ? 255 : led_level();
     if (level < 255)
         for (int i = 0; i < LED_COUNT; i++) frame[i] = rgb_scale(frame[i], level);

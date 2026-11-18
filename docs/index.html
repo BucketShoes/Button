@@ -150,7 +150,7 @@
         <label>Hold to capture (s)</label><input type="number" class="f-hold" min="0.5" max="60" step="0.5">
         <label>Team 1 colour</label><input type="color" class="f-col0">
         <label>Team 2 colour</label><input type="color" class="f-col1">
-        <label>Volume</label><input type="range" class="f-vol" min="0" max="100" step="5">
+        <label>Volume</label><input type="range" class="f-vol" min="0" max="100" step="5" title="-40 dB at the left end, 0 dB (full) at the right">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
       </div>
       <p class="note">Pause is at hold + 3 s, reset at hold + 7 s. An uncaptured button can also be
@@ -195,7 +195,7 @@ function parseState(dv) {
     vsys: dv.getUint16(16, true), vbus: dv.getUint16(18, true), batt: dv.getInt16(20, true),
     conns: dv.getUint8(22), resetReason: dv.getUint8(23), uptime: dv.getUint32(24, true),
     boots: dv.getUint32(28, true), power: dv.getUint8(32), dimmed: !!(dv.getUint8(33) & 1),
-    battLow: !!(dv.getUint8(33) & 2), battMv: dv.getUint16(34, true), rx: performance.now(),
+    battLow: !!(dv.getUint8(33) & 2), sparse: !!(dv.getUint8(33) & 4), battMv: dv.getUint16(34, true), rx: performance.now(),
   };
 }
 function parseConfig(dv) {
@@ -476,7 +476,8 @@ class Btn {
     else text = `Uncaptured · next capture: ${s.target >= 0 ? teamName(s.target) : "random"}${s.running ? "" : " · not started"}`;
     if (s.power === 2) text = "Powered off · Power on below, or press its lid";
     else if (s.power === 1) text = "Peeking (showing battery) · hold its lid 3 s, or Power on";
-    else if (s.dimmed) text += " · idle (dimmed)";
+    else if (s.dimmed) text += " · idle 1 h+ (dimmed; turns off at 4 h)";
+    else if (s.sparse) text += " · idle 10 min+ (half the LEDs)";
     if (s.held) text += ` · being held ${(s.heldMs / 1000).toFixed(1)} s`;
     if (s.locked) text += " · LOCKED";
     o.textContent = text;

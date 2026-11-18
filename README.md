@@ -104,9 +104,11 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **On:**
   - Everything is powered.
   - Between loop passes (20 ms when idle), the CPU light-sleeps.
-  - The amp switches off after 1.5 s of silence, and the PDM output after 20 s. The first sound after that comes about 60 ms late.
-  - **Idle dim:** after 5 min with no presses, no page commands and no running clock, the displays and LEDs dim to 25 % of the brightness setting.
-  - **Auto off:** after 60 min idle with no phone connected, it powers off. A teams-only button that someone holds counts as running, so it never auto-offs mid-game.
+  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. The first sound of each interaction therefore always comes about 60 ms late; quick follow-ups (taps, holds) don't.
+  - **Idle** means no press and no page command; the game state is kept throughout, and a tap brings it straight back.
+    - After 10 min, every second ring and strip LED goes off (LED1 and LED2 stay).
+    - After 1 h, everything drops to 10 % of the brightness setting.
+    - After 4 h, it powers off.
 - **Turning it off:**
   - Release BOOT after 1.5–5 s, use the page's Power off, or let it auto-off.
   - Clocks pause; a teams-only holder stays.
@@ -120,8 +122,10 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - Otherwise it goes back to off.
 - **Low battery (not on USB):**
   - Below 3.45 V average while on: a battery warning every 5 min.
-  - Below 3.3 V: it shows "LO" and goes into deep sleep. A press shows "LO" again, and plugging in USB wakes it.
+  - Below 3.3 V: it shows "bAtt Lo" and goes into deep sleep. A press shows "bAtt Lo" again (below 3.5 V), and plugging in USB should wake it.
   - Below 3.0 V: deep sleep, and only USB wakes it.
-  - Off for a week and below 3.5 V: deep sleep (BLE off).
+  - While off, BLE only runs until the battery reads below 3.5 V or 8 days have passed; then it goes to deep sleep. A press wakes it, and it peeks if the cell is still at 3.5 V or more.
 - **On USB:** the firmware never light-sleeps, so the serial console keeps working, and the battery levels don't apply.
-- **Not measured yet:** the actual currents. BLE sleep keeps the main crystal running (there's no 32 kHz crystal), so "off" will draw more than the ~130 µA bare light-sleep figure.
+- **Not measured yet:** the actual currents. BLE sleep uses the main crystal as its low-power clock (Espressif's RC-clock option supports legacy adverts and scanning only, not connections). A 32 kHz crystal on IO0/IO1 would allow lower sleep current.
+- **Volume:** the slider is in dB (-40 dB to full), so each step sounds about the same.
+
