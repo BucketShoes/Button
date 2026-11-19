@@ -4,15 +4,16 @@
 // enough to look right: clocks count down, holds fill and capture, the controls do what they say.
 "use strict";
 (() => {
-  // fav: the team that mostly holds this button. steal: how often the other team's hold succeeds
+  // fav: the team that mostly owns this button. steal: how often the other team's hold succeeds
   // (their other holds give up part way), so each button is mostly one colour over time.
-  // Shrine starts near zero and its holder never loses it, so a win shows up within a minute.
+  // Shrine starts near zero and its owner never loses it, so a win shows up within a minute.
+  // Well is in one-timer mode: one shared clock, shown in the owner's box.
   const DEMOS = [
     { name: "Bridge", owner: 0, running: true, time: [512000, 431000], batt: 87, fav: 0, steal: 0.25 },
     { name: "Shrine", owner: 1, running: true, time: [598000, 40000], batt: 64, fav: 1, steal: 0 },
     { name: "Gate", owner: -1, running: true, time: [600000, 600000], batt: 92, fav: 1, steal: 0.3 },
     { name: "Tower", owner: 0, running: false, time: [377000, 489000], batt: 41, fav: 0, steal: 0.2 },
-    { name: "Well", owner: 1, running: true, time: [600000, 375000], batt: 18, fav: 1, steal: 0.35, mode: MODE_ONE, timerTeam: 1 },
+    { name: "Well", owner: 1, running: true, time: [375000, 375000], batt: 18, fav: 1, steal: 0.35, mode: MODE_ONE },
   ];
   const TICK = 100, NOTIFY = 250;
   const HOLD_EVERY = 9000;   // average ms between hold attempts on a button
@@ -20,7 +21,7 @@
 
   function makeDevice(d) {
     const cfg = {
-      mode: d.mode ?? MODE_TWO, timerTeam: d.timerTeam ?? 0, countUp: 0, show: 1, initial: 0, defCapture: 0,
+      mode: d.mode ?? MODE_TWO, timerTeam: 0, countUp: 0, show: 1, initial: 0, defCapture: 0,
       volume: 128, ledLevel: 128, holdMs: 3000, dur: [600000, 600000], colour: ["#9600ff", "#ffaa00"], name: d.name,
     };
     const s = {
@@ -28,7 +29,8 @@
       owner: d.owner, winner: -1, target: d.owner >= 0 ? 1 - d.owner : Math.round(Math.random()), heldMs: 0,
       holdFor: 0, time: d.time.slice(), batt: d.batt, power: 0, wonAt: 0, start: performance.now(),
     };
-    const timed = t => cfg.mode === MODE_TWO || (cfg.mode === MODE_ONE && cfg.timerTeam === t);
+    const timed = () => cfg.mode !== MODE_TEAMS;
+    const share = t => { if (cfg.mode === MODE_ONE) s.time[1 - t] = s.time[t]; };  // one timer: one shared clock
 
     function encodeState() {
       const b = new ArrayBuffer(STATE_LEN), v = new DataView(b), now = performance.now();
@@ -69,7 +71,7 @@
 
     function reset() {
       Object.assign(s, { running: false, won: false, held: false, heldMs: 0, owner: cfg.initial - 1, winner: -1 });
-      s.time = cfg.dur.slice();
+      s.time = cfg.mode === MODE_ONE ? [cfg.dur[0], cfg.dur[0]] : cfg.dur.slice();
       s.target = s.owner >= 0 ? 1 - s.owner : Math.round(Math.random());
     }
     function onWrite(kind, v) {
@@ -80,8 +82,8 @@
         case OP.PAUSE: s.running = false; break;
         case OP.RESET: reset(); break;
         case OP.IDENTIFY: s.identifyUntil = performance.now() + v.getUint16(1, true); break;
-        case OP.SET_TIME: s.time[v.getUint8(1)] = v.getInt32(2, true); break;
-        case OP.ADD_TIME: { const t = v.getUint8(1); s.time[t] = Math.max(0, s.time[t] + v.getInt32(2, true)); break; }
+        case OP.SET_TIME: s.time[v.getUint8(1)] = v.getInt32(2, true); share(v.getUint8(1)); break;
+        case OP.ADD_TIME: { const t = v.getUint8(1); s.time[t] = Math.max(0, s.time[t] + v.getInt32(2, true)); share(t); break; }
         case OP.SET_OWNER: s.owner = v.getInt8(1); s.won = false; s.target = s.owner >= 0 ? 1 - s.owner : s.target; break;
         case OP.GAME_PAUSE: if (!s.gamePaused) { s.wasRunning = s.running; s.running = false; s.gamePaused = true; s.held = false; } break;
         case OP.GAME_RESUME: if (s.gamePaused) { s.running = s.wasRunning; s.gamePaused = false; } break;
@@ -92,19 +94,20 @@
       chrs.state.notify();
     }
 
-    // The game: clocks run, and now and then someone holds the lid (some give up part way).
+    // The game: clocks run, and now and then someone holds the lid down (some give up part way).
     function step(dt) {
       if (s.power) return;
       const now = performance.now();
       if (s.running && !s.won && s.owner >= 0 && timed(s.owner)) {
         s.time[s.owner] -= dt;
         if (s.time[s.owner] <= 0) { s.time[s.owner] = 0; s.won = true; s.winner = s.owner; s.running = false; s.wonAt = now; }
+        share(s.owner);
       }
       if (s.held) {
         s.heldMs += dt;
         if (s.heldMs >= s.holdFor) {
           if (s.holdFor >= cfg.holdMs) {
-            s.owner = s.target;  // a paused button's target is its holder, so it resumes with the same team
+            s.owner = s.target;  // a paused button's target is its owner, so it resumes with the same team
             s.running = true;
           }
           s.held = false; s.heldMs = 0;

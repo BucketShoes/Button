@@ -11,7 +11,6 @@ void config_defaults(config_t *c)
     memset(c, 0, sizeof *c);
     c->version = CONFIG_VERSION;
     c->mode = MODE_TWO_TIMERS;
-    c->timer_team = 0;
     c->count_up = 0;
     c->show_numbers = 1;
     c->initial_owner = 0;
@@ -30,7 +29,7 @@ void config_sanitise(config_t *c)
 {
     c->version = CONFIG_VERSION;
     if (c->mode > MODE_TWO_TIMERS) c->mode = MODE_TWO_TIMERS;
-    c->timer_team &= 1;
+    c->reserved2 = 0;
     c->count_up = c->count_up ? 1 : 0;
     c->show_numbers = c->show_numbers ? 1 : 0;
     if (c->initial_owner > 2) c->initial_owner = 0;

@@ -24,7 +24,7 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | 4 | i8 | next capture target with no taps, or the current hold's target while held (-1 random) |
 | 5 | u8 | hold stage while held: 0 building, 1 captured, 2 paused, 3 reset |
 | 6 | u16 | held ms |
-| 8 | i32 ×2 | team 1 and team 2 clock values in ms, as shown |
+| 8 | i32 ×2 | team 1 and team 2 clock values in ms, as shown (one timer: the shared clock, the same in both; set time works on either) |
 | 16 | u16 | VSYS mV |
 | 18 | u16 | VBUS mV |
 | 20 | i16 | battery % estimate (can be below 0 or above 100) |
@@ -44,7 +44,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 |---|---|---|
 | 0 | u8 | config version (2); writes with a different version are ignored |
 | 1 | u8 | mode: 0 teams only, 1 one timer, 2 two timers |
-| 2 | u8 | timer team (one-timer mode) |
+| 2 | u8 | unused, write 0 (was the one-timer team; one timer is now one shared clock) |
 | 3 | u8 | count up (0/1) |
 | 4 | u8 | show numbers (0/1) |
 | 5 | u8 | owner after reset: 0 uncaptured, 1 team 1, 2 team 2 |
@@ -53,11 +53,11 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 8 | u16 | hold ms (500..60000); pause at +4 s, reset at +9 s, power off at +14 s |
 | 10 | u8 | LED brightness 0..255 (default 128) |
 | 11 | u8 | reserved |
-| 12 | u32 ×2 | durations in ms |
+| 12 | u32 ×2 | durations in ms, per team (one timer uses the first) |
 | 20 | u8 ×6 | team 1 RGB, team 2 RGB |
 | 26 | char ×16 | name, NUL-terminated (empty = default) |
 
-- **Mode, timer team or direction changes:** the game resets.
+- **Mode or direction changes:** the game resets.
 - **Other changes:** they take effect at once only if nothing has happened since the last reset.
 
 ## Commands
@@ -72,7 +72,7 @@ The first byte is the opcode.
 | 4 | [u16 ms] | identify (default 3000, max 10000) |
 | 5 | u8 team, i32 ms | set clock value |
 | 6 | u8 team, i32 ms | add to clock value (negative to subtract); undoes a win if the winner is no longer at the line |
-| 7 | i8 owner | set holder (-1 uncaptured) |
+| 7 | i8 owner | set owner (-1 uncaptured) |
 | 8 | u8 id | play a sound (see below) |
 | 9 | | stop sounds and the music clip |
 | 10 | | (removed: was lock) |

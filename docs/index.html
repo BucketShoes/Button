@@ -161,7 +161,7 @@
       <button data-op="on" class="poweron">Power on</button>
     </div>
     <div class="row">
-      <span class="muted">Holder:</span>
+      <span class="muted">Owner:</span>
       <button data-owner="-1">Uncaptured</button>
       <button data-owner="0" class="t1">Team 1</button>
       <button data-owner="1" class="t2">Team 2</button>
@@ -178,18 +178,16 @@
         <label>Mode</label>
         <select class="f-mode">
           <option value="0">Teams only (no clock)</option>
-          <option value="1">One timer (one team's clock)</option>
+          <option value="1">One timer (shared clock: whoever owns it at the end wins)</option>
           <option value="2">Two timers (chess clock)</option>
         </select>
-        <label class="m1">Timer team</label>
-        <select class="f-timer-team m1"><option value="0">Team 1</option><option value="1">Team 2</option></select>
         <label class="mt">Direction</label>
         <select class="f-dir mt"><option value="0">Count down (win at 0)</option><option value="1">Count up (win at duration, 0 = no limit)</option></select>
         <label class="mt">Show numbers</label><input type="checkbox" class="f-show mt">
-        <label class="mt d0">Team 1 duration</label><input class="f-dur0 mt d0" placeholder="10:00">
+        <label class="mt d0 l-dur0">Team 1 duration</label><input class="f-dur0 mt d0" placeholder="10:00">
         <label class="mt d1">Team 2 duration</label><input class="f-dur1 mt d1" placeholder="10:00">
         <label>After reset</label>
-        <select class="f-initial"><option value="0">Uncaptured</option><option value="1">Held by team 1</option><option value="2">Held by team 2</option></select>
+        <select class="f-initial"><option value="0">Uncaptured</option><option value="1">Owned by team 1</option><option value="2">Owned by team 2</option></select>
         <label>First capture</label>
         <select class="f-default"><option value="0">Random</option><option value="1">Team 1</option><option value="2">Team 2</option></select>
         <label>Hold to capture (s)</label><input type="number" class="f-hold" min="0.5" max="60" step="0.5">
@@ -461,14 +459,15 @@ class Btn {
 
   buildClocks() {
     const box = $(this.el, ".clocks"), c = this.cfg;
-    const teams = c.mode === MODE_TWO ? [0, 1] : c.mode === MODE_ONE ? [c.timerTeam] : [];
-    const key = teams.join(",") + c.colour.join();
+    // One timer: a single shared clock (the button keeps it in both slots; slot 0 is used here).
+    const teams = c.mode === MODE_TWO ? [0, 1] : c.mode === MODE_ONE ? [0] : [];
+    const key = c.mode + c.colour.join();
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.className = "clocks" + (teams.length === 1 ? " one" : "");
     box.innerHTML = teams.map(t => `
       <div class="clock" data-team="${t}" style="border-color:${c.colour[t]}">
-        <div class="muted">${teamName(t)}</div>
+        <div class="muted">${c.mode === MODE_ONE ? "Shared clock" : teamName(t)}</div>
         <div class="v">--:--</div>
         <div class="adj">
           <button data-team="${t}" data-adj="-60000">−1m</button>
@@ -485,7 +484,6 @@ class Btn {
     const e = this.el, c = this.cfg, fmt = ms => fmtMs(ms, false);
     $(e, ".f-name").value = c.name;
     $(e, ".f-mode").value = c.mode;
-    $(e, ".f-timer-team").value = c.timerTeam;
     $(e, ".f-dir").value = c.countUp;
     $(e, ".f-show").checked = !!c.show;
     $(e, ".f-dur0").value = fmt(c.dur[0]);
@@ -501,16 +499,17 @@ class Btn {
     this.settingsVisibility();
   }
   settingsVisibility() {
-    const e = this.el, mode = +$(e, ".f-mode").value, tt = +$(e, ".f-timer-team").value;
+    const e = this.el, mode = +$(e, ".f-mode").value;
     e.querySelectorAll(".mt").forEach(x => x.style.display = mode === MODE_TEAMS ? "none" : "");
-    e.querySelectorAll(".m1").forEach(x => x.style.display = mode === MODE_ONE ? "" : "none");
-    if (mode === MODE_ONE) e.querySelectorAll(tt ? ".d0" : ".d1").forEach(x => x.style.display = "none");
+    if (mode === MODE_ONE) e.querySelectorAll(".d1").forEach(x => x.style.display = "none");
+    $(e, ".l-dur0").textContent = mode === MODE_ONE ? "Duration" : "Team 1 duration";
   }
   readSettings() {  // from the form; null if invalid
-    const e = this.el, d0 = parseTime($(e, ".f-dur0").value), d1 = parseTime($(e, ".f-dur1").value);
+    const e = this.el, mode = +$(e, ".f-mode").value, d0 = parseTime($(e, ".f-dur0").value);
+    const d1 = mode === MODE_ONE ? d0 : parseTime($(e, ".f-dur1").value);  // one timer: only the first is used
     if (d0 === null || d1 === null) { alert("Durations as m:ss, e.g. 10:00"); return null; }
     return {
-      mode: +$(e, ".f-mode").value, timerTeam: +$(e, ".f-timer-team").value, countUp: +$(e, ".f-dir").value,
+      mode, timerTeam: 0, countUp: +$(e, ".f-dir").value,
       show: $(e, ".f-show").checked ? 1 : 0, initial: +$(e, ".f-initial").value, defCapture: +$(e, ".f-default").value,
       holdMs: Math.round(Math.min(60, Math.max(0.5, +$(e, ".f-hold").value || 3)) * 1000),
       dur: [d0, d1], colour: [$(e, ".f-col0").value, $(e, ".f-col1").value], name: $(e, ".f-name").value.trim(),
@@ -534,10 +533,12 @@ class Btn {
   liveTime(t) {
     const s = this.state, c = this.cfg;
     let v = s.time[t];
-    if (s.running && !s.won && s.owner === t && (c.mode === MODE_TWO || (c.mode === MODE_ONE && c.timerTeam === t))) {
+    // Two timers: the owner's clock runs. One timer: the shared clock runs for either owner.
+    if (s.running && !s.won && s.owner >= 0 && (c.mode === MODE_TWO ? s.owner === t : c.mode === MODE_ONE)) {
       const dt = performance.now() - s.rx;
       v = c.countUp ? v + dt : v - dt;
-      if (c.countUp && c.dur[t]) v = Math.min(v, c.dur[t]);
+      const dur = c.dur[c.mode === MODE_ONE ? 0 : t];
+      if (c.countUp && dur) v = Math.min(v, dur);
     }
     return Math.max(0, v);
   }
@@ -553,13 +554,17 @@ class Btn {
     r.classList.toggle("dim", !live || s.power === 2);
     [0, 1].forEach(t => {
       const box = r.children[t + 1], col = c ? c.colour[t] : "";
-      const own = live && s.owner === t, timed = c && (c.mode === MODE_TWO || (c.mode === MODE_ONE && c.timerTeam === t));
+      // One timer, like the button's displays: the shared clock in the owner's box only (both while
+      // uncaptured, the box it's going to during a hold); the other box empty.
+      const own = live && s.owner === t, going = live && s.held && s.holdStage === 0 && !s.won && s.target === t;
+      const timed = c && (c.mode === MODE_TWO ||
+        (c.mode === MODE_ONE && (s && s.won ? s.winner === t : !s || s.owner < 0 || own || going)));
       box.style.borderColor = col;
       box.style.background = own ? col : "";
       box.classList.toggle("own", own);
       box.classList.toggle("tick", live && s.running && s.owner === t && !s.won && s.power !== 2);
       box.classList.toggle("won", live && s.won && s.winner === t);
-      $(box, ".tv").textContent = !live ? "--:--" : timed ? fmtMs(this.liveTime(t), !c.countUp) : "–";
+      $(box, ".tv").textContent = !live ? "--:--" : timed ? fmtMs(this.liveTime(t), !c.countUp) : c.mode === MODE_ONE ? " " : "–";  // (no-break space, keeps the box height)
       const pie = $(box, ".pie");
       if (live && s.held && s.holdStage === 0 && !s.won && !s.gamePaused && s.target === t) {
         const ms = s.heldMs + (performance.now() - s.rx), deg = Math.min(360, 360 * ms / c.holdMs);
@@ -582,7 +587,7 @@ class Btn {
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
-    else if (s.owner >= 0) { text = `${teamName(s.owner)} ${s.running ? "holds it" : "– paused"}`; col = c.colour[s.owner]; }
+    else if (s.owner >= 0) { text = `${teamName(s.owner)} ${s.running ? "owns it" : "owns it – paused"}`; col = c.colour[s.owner]; }
     else text = `Uncaptured · next capture: ${s.target >= 0 ? teamName(s.target) : "random"}${s.running ? "" : " · not started"}`;
     if (s.power === 2) text = "Powered off · Power on below, or press its lid";
     else if (s.power === 1) text = "Peeking (showing battery) · press its lid twice, or hold 1.5 s, or Power on";
@@ -597,7 +602,8 @@ class Btn {
     e.querySelectorAll(".clock").forEach(el => {
       const t = +el.dataset.team;
       $(el, ".v").textContent = fmtMs(this.liveTime(t), !c.countUp);
-      el.classList.toggle("live", s.running && s.owner === t && !s.won);
+      el.classList.toggle("live", s.running && s.owner >= 0 && (c.mode === MODE_ONE || s.owner === t) && !s.won);
+      if (c.mode === MODE_ONE) el.style.borderColor = s.won ? c.colour[s.winner] : s.owner >= 0 ? c.colour[s.owner] : "";
     });
     e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
     $(e, ".poweron").hidden = s.power === 0;

@@ -14,7 +14,7 @@ A capture button for LARP objective points. It's an ESP32-C6 device that sits on
 - **Button:** the whole device.
 - **Lid:** the moving top of the case. Pressing anywhere on it closes one or more of three tact **switches** on the PCB (BTN1–3).
 - **BOOT:** an internal button, not reachable from outside the case.
-- **Owning team / owner:** the team that currently holds the point.
+- **Owning team / owner:** the team that currently controls the point. Always "own", never "hold": a hold is a player pressing the lid.
 
 ## Use
 

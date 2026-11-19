@@ -8,7 +8,7 @@ top of their section.
 - **Stage 1, BLE control page:**
   - modes (teams only / one timer / two timers), count up or down, hidden numbers;
   - hold time, colours, start team, and tap-to-pick-team;
-  - identify, battery, set holder, lock, sounds, live time adjust;
+  - identify, battery, set owner, lock, sounds, live time adjust;
   - wall clock, and all-buttons commands (resume, pause, identify, sound, power off, copy settings).
 - **Volume and LED brightness settings,** defaulting to 50 %, because full volume browns out on USB-only power.
 - **Reboot counter and last reset reason** in the page, so brown-outs show up.
@@ -25,7 +25,7 @@ top of their section.
 3. **Game clock in the page:**
    - round start and end, and a whistle gap (usually 5 min) with a countdown beside the wall clock;
    - optionally play the whistle on all buttons;
-   - score a point per whistle for whoever holds each team-only button;
+   - score a point per whistle for whoever owns each team-only button;
    - scores hidden from players by default.
 4. **Button-to-button mesh over BLE adverts:**
    - extended adverts on coded PHY (S=8) carrying a small state packet (owner, running, sequence number);

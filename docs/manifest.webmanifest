@@ -1,7 +1,7 @@
 {
   "name": "Capture Buttons",
   "short_name": "Buttons",
-  "description": "Control LARP capture buttons over Bluetooth: clocks, holders, game pause and settings.",
+  "description": "Control LARP capture buttons over Bluetooth: clocks, owners, game pause and settings.",
   "id": "./",
   "start_url": "./",
   "scope": "./",

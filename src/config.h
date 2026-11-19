@@ -12,7 +12,7 @@ enum { MODE_TEAMS = 0, MODE_ONE_TIMER = 1, MODE_TWO_TIMERS = 2 };
 typedef struct __attribute__((packed)) {
     uint8_t version;          //  0 CONFIG_VERSION
     uint8_t mode;             //  1 MODE_*
-    uint8_t timer_team;       //  2 MODE_ONE_TIMER: whose clock (0 = team 1, 1 = team 2)
+    uint8_t reserved2;        //  2 unused, 0 (was the one-timer team; one timer is now a shared clock)
     uint8_t count_up;         //  3 0 = count down to 0, 1 = count up (to duration, 0 = no limit)
     uint8_t show_numbers;     //  4 1 = clocks on the displays, 0 = hidden (admins see them in the page)
     uint8_t initial_owner;    //  5 after reset: 0 uncaptured, 1 team 1, 2 team 2
@@ -21,7 +21,7 @@ typedef struct __attribute__((packed)) {
     uint16_t hold_ms;         //  8 hold to capture; pause at +3 s, reset at +7 s
     uint8_t led_level;        // 10 0..255 LED brightness scale
     uint8_t reserved1;        // 11
-    uint32_t duration_ms[2];  // 12, 16
+    uint32_t duration_ms[2];  // 12, 16 per team; one timer uses [0]
     uint8_t colour[2][3];     // 20, 23 RGB
     char name[16];            // 26 NUL-terminated, empty = default "Button-XXXX"
 } config_t;                   // 42 bytes

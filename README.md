@@ -2,8 +2,8 @@
 
 A capture point for LARP battle games, made for [Battlecry LARP](https://battlecrylarp.org). Two teams fight
 over a hand-sized button. To take it you hold its lid down for a few seconds, which is long enough
-for an enemy nearby to hit you first. The button shows who holds it with a ring of team-coloured
-lights, and can run a clock for each team, like a reverse chess clock: whoever holds it longest wins.
+for an enemy nearby to hit you first. The button shows who owns it with a ring of team-coloured
+lights, and can run a clock for each team, like a reverse chess clock: whoever owns it longest wins.
 
 We used to mark points with scrunchies or flags on a pole, or with a chess clock, which needed a ref
 standing next to it holding up a flag so players could see the score from a distance. The button lights
@@ -150,21 +150,21 @@ press **Connect a button**. You can connect several buttons. With no hardware, a
 - **Keep screen on** (at the bottom of the page, on by default): stops the phone locking while the page is in front, so a ref can glance at it mid-game. Chrome allows it straight away; a browser that wants a tap first gets one from the next tap anywhere on the page. Next to it, "(on)" means it is working. Untick it to save battery; the choice is remembered.
 - **Game bar** (top): pause and resume the whole game, and play a sound (whistle by default) on every button. Game resume undoes the game pause: each button goes back to exactly what it was doing, so a button that was paused or uncaptured stays that way.
 - **Overview:** one row per button, sized so about 5 fit on a phone screen. Name and battery on the left, then a box per team (team names once at the top of each column):
-  - thick border in the team colour, filled for the holder;
-  - underlined time while that clock is ticking, blinking on a win;
+  - thick border in the team colour, filled for the owner;
+  - underlined time while that clock is ticking, blinking on a win. In one-timer mode the shared clock shows in the owner's box only, and the other box is empty;
   - a small pie fills while someone holds the lid, in the box of the team about to capture;
   - tap a row to jump to that button's panel.
 - **Each button** gets its own panel below:
 
 - **Controls:** start, pause, reset, identify (displays and ring flash with beeps for 3 s), battery, and power off.
-- **Holder:** set the holder (uncaptured / team 1 / team 2).
+- **Owner:** set the owner (uncaptured / team 1 / team 2).
 - **Reboot** (in settings), for when something is stuck. Settings are kept; the game state is lost.
 - **Sounds:** play any of the button's sounds, or stop them.
-- **Clocks:** live clocks, −1 min / −10 s, +1 min / +10 s, or set an exact time (m:ss), even while running.
+- **Clocks:** live clocks (one shared clock in one-timer mode), −1 min / −10 s, +1 min / +10 s, or set an exact time (m:ss), even while running.
 - **Settings (saved on the button):**
-  - name and mode (teams only / one timer / two timers), plus which team has the clock in one-timer mode;
+  - name and mode (teams only / one timer / two timers);
   - count down or up, and whether the numbers show on the displays;
-  - durations, the holder after reset, the first capture (random / team 1 / team 2), the hold time, the team colours, the volume and the LED brightness;
+  - durations (one in one-timer mode), the owner after reset, the first capture (random / team 1 / team 2), the hold time, the team colours, the volume and the LED brightness;
   - "Copy to all" sends the settings to every connected button, keeping each name.
 - **More for all buttons** (under the overview): identify, power on and power off all of them at once.
 - **Reboots:** the panel shows how many times the button rebooted since power-on, and why (for example BROWN-OUT).
@@ -175,28 +175,29 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 ## Behaviour
 
 - **Modes:**
-  - **Teams only:** the ring shows who holds the button. The displays stay off (except battery and identify).
-  - **One timer:** only one team's clock runs, while that team holds the button. It shows only on that team's display.
-  - **Two timers:** a reverse chess clock; the holder's clock runs.
+  - **Teams only:** the ring shows who owns the button. There are no clocks: the owner's display shows dashes ("--:--") with the same colon, highlight and hold cues as a clock, and the other display is blank.
+  - **One timer:** one shared clock, which runs whichever team owns the button. Whoever owns it when the clock runs out wins. It shows only on the owner's display, and the other display is blank, so it reads as one clock that belongs to them. While uncaptured it shows on both, neither lit.
+  - **Two timers:** a reverse chess clock; the owner's clock runs.
+  - **"Own" and "hold":** a team *owns* the button (it's in their control); a player *holds* the lid (pressing it).
 - **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
 - **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
 - **Hold**, where H is the hold time (default 3 s):
   - **Up to H:** the ring fills one LED at a time in the colour of the team about to capture, with a bright spinning LED on top, and a rising whoop. Letting go early puts it back as it was. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
   - **Uncaptured:** the team is decided the moment the hold starts and shows straight away: the ring fills in its colour and its display lights. Wrong colour? Let go and press again: every press that doesn't capture flips the team for the next press. The first press uses the "first capture" setting, which is random by default.
-  - **H to H+4 s:** a ding each second, then a **pause** at H+4 s (7 s with the default hold). The clocks go back to where they were before the hold, and the paused holder is:
+  - **H to H+4 s:** a ding each second, then a **pause** at H+4 s (7 s with the default hold). The clocks go back to where they were before the hold, and the paused owner is:
     - **was running:** whoever had it before the hold;
     - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);
     - **was paused:** the other team, so each further 6 s hold swaps it.
   - **H+4 to H+9 s:** doom each second, then a **reset** at H+9 s (12 s).
   - **H+9 to H+14 s:** after a second, the displays say "HoLd" "oFF" with a falling tone and the ring drains; at H+14 s (17 s) it **powers off**. Let go before that and it stays on, just reset.
-  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+4 s the button leaves the game pause into a regular pause, holder and clocks unchanged, and works normally from then on (so the page is never required). H+9 s still resets.
+  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+4 s the button leaves the game pause into a regular pause, owner and clocks unchanged, and works normally from then on (so the page is never required). H+9 s still resets.
   - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+9 s resets.
 - **Idle cues:**
   - **Not held, the button shows only the true state.** A hold let go early snaps straight back, so nobody runs off thinking they captured it.
   - **Uncaptured:** a faint white pulse on the ring (0–10 %, 0.5 Hz), no team colour, and neither display highlighted. The team the next press goes for has one colon dot missing: subtle, for admins.
-  - **Paused with a holder:** the ring blinks faintly in their colour, and their display shows a single slow-blinking dot instead of the colon.
-- **After reset:** uncaptured, or held by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
+  - **Paused with an owner:** the ring blinks faintly in their colour, and their display shows a single slow-blinking dot instead of the colon.
+- **After reset:** uncaptured, or owned by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
 - **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.
 - **Power:** see "Power" below.
 - **BOOT:**
@@ -206,11 +207,11 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power. The brightness setting dims the displays too.
 - **Brown-out recovery:** after a brown-out reset, volume and brightness start capped at 30 % (not saved) so the startup sound can't cause another one.
 - **Display brightness:** 1/8 is the GN1650's lowest step. At low settings the highlighted display stays one step above the dim one, so you can still tell them apart.
-- **Displays:** the running holder's display is bright, with its colon flashing at 4 Hz. The others are dim.
+- **Displays:** the running owner's display is bright, with its colon flashing at 4 Hz. The others are dim (two timers) or blank (one timer, teams only).
 - **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
 - **LEDs:**
   - LED1 and LED2 show the team colours at medium brightness.
-  - The ring shows the holder.
+  - The ring shows the owner.
   - Each switch lights its two nearest ring LEDs white.
   - The external strip (16 assumed) mirrors the ring.
 - **Music clip** (optional, see "Building the firmware"): plays only when started from the page. A face press or BOOT stops it.
@@ -230,7 +231,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
     - After 4 h, it powers off.
 - **Turning it off:**
   - Hold the lid for 17 s (hold + 14 s), hold BOOT for 3 s, use the page's Power off, or let it auto-off.
-  - Clocks pause; a teams-only holder stays.
+  - Clocks pause; a teams-only owner stays.
 - **Off:**
   - PWR_EN is low, so only the ESP is powered, and it light-sleeps.
   - BLE keeps advertising slowly, so the page can connect and power it on, or identify it.

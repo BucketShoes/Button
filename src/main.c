@@ -2,11 +2,12 @@
 // over BLE from the web page (docs/index.html).
 //
 // Modes (settings, stored in NVS, set from the page):
-//   teams only   - the ring shows who holds it; no clocks on the displays.
-//   one timer    - only one team's clock runs, while that team holds it
-//                  (break down the wall). Shown only on that team's display.
-//   two timers   - reverse chess clock: the holder's clock runs.
+//   teams only   - the ring shows who owns it; no clocks, dashes on the owner's display.
+//   one timer    - one shared clock that runs while either team owns it; whoever
+//                  owns it when it runs out wins. Shown only on the owner's display.
+//   two timers   - reverse chess clock: the owner's clock runs.
 // Clocks count down (win at 0:00) or up (win at the duration, 0 = no limit).
+// "Own" is the team in control; "hold" is someone pressing the lid.
 //
 // Hand controls (face press = OR of the three face switches; the lid counts
 // as pressed until DEBOUNCE_MS after the last contact). H = hold time
@@ -256,7 +257,7 @@ static void inputs_init(void)
 }
 
 // ---------------------------------------------------------------- game state
-static bool s_running;     // clocks run (for whoever holds it)
+static bool s_running;     // clocks run (for whoever owns it)
 static int s_owner = -1;   // -1 uncaptured, 0 team 1, 1 team 2
 static int s_winner = -1;  // >= 0: game over
 static int32_t s_val[2];   // clock values as shown (ms)
@@ -300,14 +301,22 @@ static uint32_t hold_off_ms(void) { return s_cfg.hold_ms + OFF_EXTRA_MS; }
 static uint32_t hold_off_warn_ms(void) { return hold_reset_ms() + OFF_WARN_DELAY; }
 static bool has_clock(int t)
 {
-    return s_cfg.mode == MODE_TWO_TIMERS || (s_cfg.mode == MODE_ONE_TIMER && t == s_cfg.timer_team);
+    (void)t;
+    return s_cfg.mode != MODE_TEAMS;
+}
+// One timer: a single shared clock, kept in both s_val slots (so the page, set time and
+// the pause undo need no special case) with duration_ms[0] as its length.
+static int32_t duration(int t) { return (int32_t)s_cfg.duration_ms[s_cfg.mode == MODE_ONE_TIMER ? 0 : t]; }
+static void share_clock(int from)
+{
+    if (s_cfg.mode == MODE_ONE_TIMER) s_val[1 - from] = s_val[from];
 }
 // ms until team t wins on its clock, or -1 if it can't.
 static int32_t to_win_ms(int t)
 {
     if (!has_clock(t)) return -1;
     if (!s_cfg.count_up) return s_val[t];
-    return s_cfg.duration_ms[t] ? (int32_t)s_cfg.duration_ms[t] - s_val[t] : -1;
+    return duration(t) ? duration(t) - s_val[t] : -1;
 }
 
 static const char *state_name(void)
@@ -349,7 +358,7 @@ static void game_reset(uint32_t now)
 {
     s_game_paused = false;
     s_next_pick = -1;
-    for (int t = 0; t < 2; t++) s_val[t] = s_cfg.count_up ? 0 : (int32_t)s_cfg.duration_ms[t];
+    for (int t = 0; t < 2; t++) s_val[t] = s_cfg.count_up ? 0 : duration(t);
     s_winner = -1;
     s_win_alarm_until = now;
     s_owner = (int)s_cfg.initial_owner - 1;
@@ -469,13 +478,13 @@ static void hold_progress(uint32_t now, uint32_t held)
     if (s_hold_stage == HS_CAPTURED && held >= h2) {
         s_hold_stage = HS_PAUSED;
         if (s_hold_gp && !won) {
-            // Release from the game pause into a regular pause: holder and clocks as they are.
+            // Release from the game pause into a regular pause: owner and clocks as they are.
             s_game_paused = false;
             s_running = false;
-            ESP_LOGI(TAG, "game pause released by a hold, holder team %d", s_owner + 1);
+            ESP_LOGI(TAG, "game pause released by a hold, owner team %d", s_owner + 1);
         } else if (!won) {
             // Undo this hold's clock changes, then pause (the next hold resumes
-            // with that holder). Who holds it while paused:
+            // with that owner). Who owns it while paused:
             //   was running     -> whoever had it before this hold
             //   was uncaptured  -> the team just picked (pre-set the owner at 10:00)
             //   was paused      -> the other team (each 6 s hold swaps it)
@@ -484,7 +493,7 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_fresh = s_snap.fresh;
             if (s_snap.owner >= 0) s_owner = s_snap.running ? s_snap.owner : 1 - s_snap.owner;
             s_running = false;
-            ESP_LOGI(TAG, "PAUSED, holder team %d", s_owner + 1);
+            ESP_LOGI(TAG, "PAUSED, owner team %d", s_owner + 1);
         }
         if (!won) AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);  // after a win there is nothing to pause
     }
@@ -532,11 +541,12 @@ static void game_tick(uint32_t now, uint32_t dt)
             }
         } else {
             s_val[t] += (int32_t)dt;
-            if (s_cfg.duration_ms[t] && s_val[t] >= (int32_t)s_cfg.duration_ms[t]) {
-                s_val[t] = (int32_t)s_cfg.duration_ms[t];
+            if (duration(t) && s_val[t] >= duration(t)) {
+                s_val[t] = duration(t);
                 game_win(t, now);
             }
         }
+        share_clock(t);
     }
 
     // Win alarm repeats until it times out or a hold silences it.
@@ -643,7 +653,7 @@ static void apply_config(const config_t *in, uint32_t now)
     s_cfg = *in;
     config_sanitise(&s_cfg);
     config_save(&s_cfg);
-    bool structural = old.mode != s_cfg.mode || old.timer_team != s_cfg.timer_team || old.count_up != s_cfg.count_up;
+    bool structural = old.mode != s_cfg.mode || old.count_up != s_cfg.count_up;
     // Before anything has happened, new durations / initial owner apply at
     // once; mid-game they wait for the next reset (or use set time).
     if (structural || s_fresh) game_reset(now);
@@ -1010,6 +1020,7 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
             int32_t v = rd_i32(d + 2);
             s_val[d[1]] = d[0] == OP_SET_TIME ? v : s_val[d[1]] + v;
             clock_changed();
+            share_clock(d[1]);
         }
         break;
     case OP_SET_OWNER:
@@ -1156,41 +1167,52 @@ static void render_displays(uint32_t now)
                 }
             }
             bright = DISP_FULL;
-        } else if (s_cfg.mode != MODE_TEAMS && s_cfg.show_numbers &&
-                   (s_cfg.mode == MODE_TWO_TIMERS || t == s_cfg.timer_team)) {
-            // One timer: only on that team's display, so it reads as a single clock.
-            int src = t;
-            render_clock(seg, s_val[src], !s_cfg.count_up);
-            bool colon = true;
+        } else if (s_cfg.mode == MODE_TEAMS || s_cfg.show_numbers) {
+            // Two timers: both clocks, always. One timer (the shared clock) and teams only
+            // (dashes, as a place for the colon and highlight): only on the owner's display,
+            // the other stays blank, so it reads as one thing that belongs to the owner.
+            // Uncaptured, it's on both and nobody is lit; a hold towards a capture also
+            // lights the team it goes to.
+            const int src = t;
             // Held towards a capture: the old state is gone at once. The new team is
-            // lit; the old holder's clock keeps ticking (dim) until the capture.
+            // lit; the old owner's clock keeps ticking (dim) until the capture.
             bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
-            if (s_winner >= 0) {
-                bright = src == s_winner ? (((now / 250) & 1) ? DISP_FULL : 0) : DISP_DIM;
-            } else if (holding) {
-                bright = src == s_hold_target ? DISP_FULL : DISP_DIM;
-                if (s_running && src == s_owner) colon = (now % 250) >= 125;
-            } else if (s_running && s_owner >= 0) {
-                if (src == s_owner) {
-                    colon = (now % 250) >= 125;  // 4 Hz, so the owner is obvious at a glance
-                    bright = DISP_FULL;
+            bool shown = s_cfg.mode == MODE_TWO_TIMERS ||
+                         (s_winner >= 0 ? src == s_winner : s_owner < 0 || src == s_owner || (holding && src == s_hold_target));
+            if (shown) {
+                if (s_cfg.mode == MODE_TEAMS) {
+                    for (int i = 0; i < 4; i++) seg[i] = display_char('-');
                 } else {
-                    bright = DISP_DIM;
+                    render_clock(seg, s_val[src], !s_cfg.count_up);
                 }
-            } else if (s_owner >= 0) {
-                bright = src == s_owner ? DISP_FULL : DISP_DIM;  // paused: the holder is lit
-            } else {
-                bright = DISP_IDLE;  // uncaptured: nobody is lit
-            }
-            display_colon(seg, colon);
-            if (!holding && s_winner < 0 && !s_running && s_owner == src) {
-                // Paused: a single slow-blinking dot instead of the colon.
-                seg[2] &= (uint8_t)~SEG_COLON;
-                seg[3] = (uint8_t)((seg[3] & ~SEG_COLON) | (((now / 1000) & 1) ? SEG_COLON : 0));
-            } else if (!holding && s_winner < 0 && s_owner < 0 && capture_target() == src) {
-                // Uncaptured: one colon dot missing on the team the next press goes
-                // for. Subtle on purpose: it must never look claimed.
-                seg[2] &= (uint8_t)~SEG_COLON;
+                bool colon = true;
+                if (s_winner >= 0) {
+                    bright = src == s_winner ? (((now / 250) & 1) ? DISP_FULL : 0) : DISP_DIM;
+                } else if (holding) {
+                    bright = src == s_hold_target ? DISP_FULL : DISP_DIM;
+                    if (s_running && src == s_owner) colon = (now % 250) >= 125;
+                } else if (s_running && s_owner >= 0) {
+                    if (src == s_owner) {
+                        colon = (now % 250) >= 125;  // 4 Hz, so the owner is obvious at a glance
+                        bright = DISP_FULL;
+                    } else {
+                        bright = DISP_DIM;
+                    }
+                } else if (s_owner >= 0) {
+                    bright = src == s_owner ? DISP_FULL : DISP_DIM;  // paused: the owner is lit
+                } else {
+                    bright = DISP_IDLE;  // uncaptured: nobody is lit
+                }
+                display_colon(seg, colon);
+                if (!holding && s_winner < 0 && !s_running && s_owner == src) {
+                    // Paused: a single slow-blinking dot instead of the colon.
+                    seg[2] &= (uint8_t)~SEG_COLON;
+                    seg[3] = (uint8_t)((seg[3] & ~SEG_COLON) | (((now / 1000) & 1) ? SEG_COLON : 0));
+                } else if (!holding && s_winner < 0 && s_owner < 0 && capture_target() == src) {
+                    // Uncaptured: one colon dot missing on the team the next press goes
+                    // for. Subtle on purpose: it must never look claimed.
+                    seg[2] &= (uint8_t)~SEG_COLON;
+                }
             }
         }
         display_set(t, seg, identifying(now) ? bright : disp_level(bright));
