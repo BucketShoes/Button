@@ -4,15 +4,18 @@
 // enough to look right: clocks count down, holds fill and capture, the controls do what they say.
 "use strict";
 (() => {
+  // fav: the team that mostly holds this button. steal: how often the other team's hold succeeds
+  // (their other holds give up part way), so each button is mostly one colour over time.
+  // Shrine starts near zero and its holder never loses it, so a win shows up within a minute.
   const DEMOS = [
-    { name: "Bridge", owner: 0, running: true, time: [95000, 140000], batt: 87 },
-    { name: "Shrine", owner: 1, running: true, time: [230000, 48000], batt: 64 },
-    { name: "Gate", owner: -1, running: true, time: [180000, 180000], batt: 92 },
-    { name: "Tower", owner: 0, running: false, time: [130000, 160000], batt: 41 },
-    { name: "Well", owner: 1, running: true, time: [180000, 70000], batt: 18, mode: MODE_ONE, timerTeam: 1 },
+    { name: "Bridge", owner: 0, running: true, time: [512000, 431000], batt: 87, fav: 0, steal: 0.25 },
+    { name: "Shrine", owner: 1, running: true, time: [598000, 40000], batt: 64, fav: 1, steal: 0 },
+    { name: "Gate", owner: -1, running: true, time: [600000, 600000], batt: 92, fav: 1, steal: 0.3 },
+    { name: "Tower", owner: 0, running: false, time: [377000, 489000], batt: 41, fav: 0, steal: 0.2 },
+    { name: "Well", owner: 1, running: true, time: [600000, 375000], batt: 18, fav: 1, steal: 0.35, mode: MODE_ONE, timerTeam: 1 },
   ];
   const TICK = 100, NOTIFY = 250;
-  const HOLD_EVERY = 30000;  // average ms between hold attempts on a button
+  const HOLD_EVERY = 9000;   // average ms between hold attempts on a button
   const sims = [];           // every simulated button's state, for the new-game check below
 
   function makeDevice(d) {
@@ -107,10 +110,11 @@
           s.held = false; s.heldMs = 0;
           s.target = s.owner >= 0 ? 1 - s.owner : 1 - s.target;
         }
-      } else if (!s.won && !s.gamePaused && Math.random() < dt / HOLD_EVERY) {
+      } else if (!s.won && !s.gamePaused && !(s.owner >= 0 && !s.running) && Math.random() < dt / HOLD_EVERY) {
+        // (a paused button is left alone, so the demo always shows one; Start resumes it)
         s.held = true; s.heldMs = 0;
-        s.holdFor = Math.random() < 0.3 ? cfg.holdMs * (0.3 + Math.random() * 0.5) : cfg.holdMs;
-        if (!s.running && s.owner >= 0) s.target = s.owner;
+        const succeeds = s.target === d.fav ? Math.random() < 0.85 : Math.random() < d.steal;
+        s.holdFor = succeeds ? cfg.holdMs : cfg.holdMs * (0.3 + Math.random() * 0.5);
       }
     }
     let lastStep = performance.now(), lastNotify = 0;
@@ -119,10 +123,10 @@
       step(now - lastStep); lastStep = now;
       if (device.gatt.connected && now - lastNotify >= NOTIFY) { lastNotify = now; chrs.state.notify(); }
     }, TICK);
-    sims.push({ s, newGame() {  // a fresh short game: start every clock on a random team
+    sims.push({ s, newGame() {  // back to how the demo opened
       reset();
-      s.time = [60000 + Math.random() * 120000, 60000 + Math.random() * 120000];
-      s.owner = Math.round(Math.random()); s.target = 1 - s.owner; s.running = true;
+      Object.assign(s, { owner: d.owner, running: d.running, time: d.time.slice(), gamePaused: false });
+      s.target = d.owner >= 0 ? 1 - d.owner : d.fav;
     } });
     return device;
   }
@@ -132,10 +136,18 @@
   document.getElementById("unsupported").style.display = "none";
   document.getElementById("add").disabled = true;
   for (const d of DEMOS) new Btn(makeDevice(d));
-  // Like a real game, a won button stays won (nobody resets mid-game). Once every button has run out,
-  // the demo waits a little, then starts a new game on all of them.
+  // Like a real game, a won button stays won (nobody resets mid-game). The demo starts a new game on all
+  // of them together once one has been won for a minute, or once 3 have stopped (won or paused) for 20 s.
+  // Not while game-paused, so the game pause can be tried.
+  let stoppedSince = 0;
   setInterval(() => {
     const now = performance.now();
-    if (sims.every(x => x.s.won && now - x.s.wonAt > 20000)) sims.forEach(x => x.newGame());
+    if (sims.some(x => x.s.gamePaused)) { stoppedSince = 0; return; }
+    const stopped = sims.filter(x => x.s.won || !x.s.running).length >= 3;
+    stoppedSince = stopped ? stoppedSince || now : 0;
+    if (sims.some(x => x.s.won && now - x.s.wonAt > 60000) || (stoppedSince && now - stoppedSince > 20000)) {
+      sims.forEach(x => x.newGame());
+      stoppedSince = 0;
+    }
   }, 1000);
 })();
