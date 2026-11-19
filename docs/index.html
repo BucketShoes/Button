@@ -105,7 +105,7 @@
       <button data-all="gpause" id="g-pause">Pause game</button>
       <button data-all="gresume" id="g-resume">Resume game</button>
       <span id="g-status"></span>
-      <label id="wake-l" class="wake" hidden title="Stops the phone locking while this page is open"><input type="checkbox" id="wake"> Keep screen on</label>
+      <label id="wake-l" class="wake" hidden title="Stops the phone locking while this page is open"><input type="checkbox" id="wake"> Keep screen on <span id="wake-s"></span></label>
     </div>
     <div class="gamebar" style="margin-top:8px">
       <select id="all-sound"></select>
@@ -656,16 +656,22 @@ function tick() {
 setInterval(tick, 200);
 tick();
 // Keep the screen on while the page is in front (on by default; the choice is remembered).
-// The browser drops the lock whenever the page is hidden, so it's taken again on return.
-const wake = { box: document.getElementById("wake"), lock: null };
+// Chrome grants this without a tap, but some browsers only after one, so a refused request is retried on
+// the next tap anywhere. The browser drops the lock whenever the page is hidden; it's taken again on return.
+// The label shows whether the screen is really being kept on.
+const wake = { box: document.getElementById("wake"), lock: null, state: document.getElementById("wake-s") };
 async function updateWake() {
   const want = wake.box.checked && document.visibilityState === "visible";
   if (want && !wake.lock) {
     try {
       wake.lock = await navigator.wakeLock.request("screen");
-      wake.lock.addEventListener("release", () => { wake.lock = null; });
+      wake.lock.addEventListener("release", () => { wake.lock = null; showWake(); });
     } catch (e) { console.warn("wake lock:", e.message); }
   } else if (!want && wake.lock) { wake.lock.release(); wake.lock = null; }
+  showWake();
+}
+function showWake() {
+  wake.state.textContent = !wake.box.checked ? "" : wake.lock ? "(on)" : wake.tapped ? "(not allowed here)" : "(tap anywhere)";
 }
 if ("wakeLock" in navigator) {
   document.getElementById("wake-l").hidden = false;
@@ -675,6 +681,7 @@ if ("wakeLock" in navigator) {
     updateWake();
   });
   document.addEventListener("visibilitychange", updateWake);
+  document.addEventListener("pointerup", () => { if (wake.box.checked && !wake.lock) { wake.tapped = true; updateWake(); } });
   updateWake();
 }
 
