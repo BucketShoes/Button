@@ -79,7 +79,8 @@
   .grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; margin: 8px 0; }
   .grid label { color: var(--muted); }
   footer { text-align: center; padding: 24px 16px 40px; color: var(--muted); }
-  footer img { width: 120px; height: auto; display: block; margin: 0 auto 8px; }
+  footer .logo { display: block; width: 120px; margin: 0 auto 8px; }
+  footer .logo img { width: 120px; height: auto; display: block; }
   footer a, .note a { color: var(--accent); }
   @media (max-width: 420px) { .clock .v { font-size: 28px; } #wall { font-size: 22px; } .tb { font-size: 19px; } .tb .pie { width: 11px; height: 11px; top: 2px; right: 2px; border-width: 1.5px; } }
 </style>
@@ -137,7 +138,7 @@
   </div>
 </main>
 <footer>
-  <a href="https://battlecrylarp.org"><img src="bc-logo-300.avif" alt="Battlecry logo"></a>
+  <a class="logo" href="https://battlecrylarp.org"><img src="bc-logo-300.avif" alt="Battlecry logo"></a>
   Made for <a href="https://battlecrylarp.org">Battlecry LARP</a> ·
   <a href="https://github.com/BucketShoes/Button">source on GitHub</a>
 </footer>
