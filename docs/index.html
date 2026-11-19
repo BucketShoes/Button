@@ -75,7 +75,7 @@
   .grid label { color: var(--muted); }
   footer { text-align: center; padding: 24px 16px 40px; color: var(--muted); }
   footer img { width: 120px; height: auto; display: block; margin: 0 auto 8px; }
-  footer a { color: var(--accent); }
+  footer a, .note a { color: var(--accent); }
   @media (max-width: 420px) { .clock .v { font-size: 28px; } #wall { font-size: 22px; } .tb { font-size: 19px; } .tb .pie { width: 11px; height: 11px; top: 2px; right: 2px; border-width: 1.5px; } }
 </style>
 </head>
@@ -91,8 +91,11 @@
   </div>
   <div class="row">
     <button id="add" class="primary">+ Connect a button</button>
-    <span class="note">Each button you connect gets its own panel. You can connect several.</span>
+    <span class="note">Each button you connect gets its own panel. You can connect several.
+      <span id="demo-link">No buttons? <a href="?demo">Try the demo</a> (simulated buttons).</span></span>
   </div>
+  <div id="demo-note" class="note" hidden>Demo: these buttons are simulated in this page. Holds and captures happen by themselves;
+    the controls work too. <a href="./">Leave the demo</a></div>
   <section id="game" class="card" hidden>
     <div class="gamebar">
       <button data-all="gpause" id="g-pause">Pause game</button>
@@ -646,6 +649,11 @@ function tick() {
 }
 setInterval(tick, 200);
 tick();
+if (new URLSearchParams(location.search).has("demo")) {  // simulated buttons, see demo.js
+  const s = document.createElement("script");
+  s.src = "demo.js";
+  document.body.append(s);
+}
 </script>
 </body>
 </html>
