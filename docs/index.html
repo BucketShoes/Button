@@ -184,7 +184,7 @@
         <label>Volume</label><input type="range" class="f-vol" min="0" max="100" step="5" title="-40 dB at the left end, 0 dB (full) at the right">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
       </div>
-      <p class="note">Pause is at hold + 3 s, reset at hold + 7 s. On an uncaptured button, each press
+      <p class="note">Pause is at hold + 4 s, reset at hold + 9 s, power off at hold + 14 s. On an uncaptured button, each press
         that doesn't capture flips the team for the next press. Durations take effect at
         once if nothing has happened since the last reset, otherwise at the next reset. On USB power alone,
         keep the volume and LEDs at about 50 % or the button can brown out and reboot. "Copy to all" sends
@@ -570,7 +570,7 @@ class Btn {
     else if (s.owner >= 0) { text = `${teamName(s.owner)} ${s.running ? "holds it" : "– paused"}`; col = c.colour[s.owner]; }
     else text = `Uncaptured · next capture: ${s.target >= 0 ? teamName(s.target) : "random"}${s.running ? "" : " · not started"}`;
     if (s.power === 2) text = "Powered off · Power on below, or press its lid";
-    else if (s.power === 1) text = "Peeking (showing battery) · hold its lid 3 s, or Power on";
+    else if (s.power === 1) text = "Peeking (showing battery) · press its lid twice, or hold 1.5 s, or Power on";
     else if (s.dimmed) text += " · idle 1 h+ (dimmed; turns off at 4 h)";
     else if (s.sparse) text += " · idle 10 min+ (half the LEDs)";
     if (s.gamePaused) text += " · game paused";

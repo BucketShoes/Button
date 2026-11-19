@@ -82,13 +82,14 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **Up to H:** the ring fills one LED at a time in the colour of the team about to capture, with a bright spinning LED on top, and a rising whoop. Letting go early puts it back as it was. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
   - **Uncaptured:** the team is decided the moment the hold starts and shows straight away: the ring fills in its colour and its display lights. Wrong colour? Let go and press again: every press that doesn't capture flips the team for the next press. The first press uses the "first capture" setting, which is random by default.
-  - **H to H+3 s:** a ding each second, then a **pause** at H+3 s. The clocks go back to where they were before the hold, and the paused holder is:
+  - **H to H+4 s:** a ding each second, then a **pause** at H+4 s (7 s with the default hold). The clocks go back to where they were before the hold, and the paused holder is:
     - **was running:** whoever had it before the hold;
     - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);
     - **was paused:** the other team, so each further 6 s hold swaps it.
-  - **H+3 to H+7 s:** doom each second, then a **reset** at H+7 s.
-  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+3 s the button leaves the game pause into a regular pause, holder and clocks unchanged, and works normally from then on (so the page is never required). H+7 s still resets.
-  - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+7 s resets.
+  - **H+4 to H+9 s:** doom each second, then a **reset** at H+9 s (12 s).
+  - **H+9 to H+14 s:** after a second, the displays say "HoLd" "oFF" with a falling tone and the ring drains; at H+14 s (17 s) it **powers off**. Let go before that and it stays on, just reset.
+  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+4 s the button leaves the game pause into a regular pause, holder and clocks unchanged, and works normally from then on (so the page is never required). H+9 s still resets.
+  - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+9 s resets.
 - **Idle cues:**
   - **Not held, the button shows only the true state.** A hold let go early snaps straight back, so nobody runs off thinking they captured it.
   - **Uncaptured:** a faint white pulse on the ring (0–10 %, 0.5 Hz), no team colour, and neither display highlighted. The team the next press goes for has one colon dot missing: subtle, for admins.
@@ -126,7 +127,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
     - After 1 h, brightness drops to 10 % (or stays lower if it's already set lower).
     - After 4 h, it powers off.
 - **Turning it off:**
-  - Hold BOOT for 3 s, use the page's Power off, or let it auto-off.
+  - Hold the lid for 17 s (hold + 14 s), hold BOOT for 3 s, use the page's Power off, or let it auto-off.
   - Clocks pause; a teams-only holder stays.
 - **Off:**
   - PWR_EN is low, so only the ESP is powered, and it light-sleeps.
@@ -134,7 +135,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - It checks the battery hourly, briefly powering VSYS to read it.
 - **Peek:**
   - A lid press while off shows the battery for about 6 s.
-  - Anything that looks like trying to wake it turns it on: press again (tap, or several taps), or keep holding for 1 s; the ring fills white.
+  - It turns on only on a clear intent, so a bump doesn't wake it: two more presses during the peek, or a press started during the peek and held for 1.5 s (the ring fills white). The press that woke it doesn't count.
   - Otherwise it goes back to off.
 - **Low battery (not on USB):**
   - Below 3.45 V average while on: a battery warning every 5 min.

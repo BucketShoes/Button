@@ -15,12 +15,14 @@
 //                 uncaptured -> the team shown from the first moment of the
 //                 hold; each press that doesn't capture flips it for the next
 //                 press (first one: the first-capture setting, random by default)
-//   hold H+3 s    pause (undoes the capture)
-//   hold H+7 s    reset
+//   hold H+4 s    pause (undoes the capture)
+//   hold H+9 s    reset
+//   hold H+14 s   power off ("HoLd" "oFF" and a falling tone from H+10 s)
 //   after a win, a hold of H silences the alarm
 //   3 taps        battery
 //   BOOT 3 s      power off ("HoLd" "oFF", falling tone; no need to let go)
-//   when off      a press peeks (battery shown); press again or hold 1 s: on
+//   when off      a press peeks (battery shown); 2 more presses, or a hold of
+//                 1.5 s started during the peek: on
 //   BOOT 8 s      restore default settings
 //
 // No Wi-Fi. BLE is on, also while off (slow adverts). Light sleep when idle.
@@ -53,8 +55,10 @@
 static const char *TAG = "button";
 
 // ---------------------------------------------------------------- tuning
-#define PAUSE_EXTRA_MS   3000  // pause at hold + this
-#define RESET_EXTRA_MS   7000  // reset at hold + this
+#define PAUSE_EXTRA_MS   4000  // pause at hold + this
+#define RESET_EXTRA_MS   9000  // reset at hold + this
+#define OFF_EXTRA_MS     14000 // power off at hold + this (lid held on past the reset)
+#define OFF_WARN_DELAY   1000  // "HoLd" "oFF" and the falling tone start this long after the reset
 #define DEBOUNCE_MS      50    // the lid is assumed still pressed this long after any contact
 #define TAP_MAX_MS       500   // a press shorter than this is a tap
 #define TAP_GAP_MS       500   // max hand-off time between taps; also the wait after the last one
@@ -96,6 +100,7 @@ static const note_t SND_SW[3][1] = {
     {{1500, 1500, 35, W_SQUARE, 180}},
 };
 static note_t s_build[1];  // rising whoop up to the capture; length set per hold
+static note_t s_off_warn[1];  // falling tone from the reset to the lid power-off
 static const note_t SND_TEAM[2][5] = {
     {   // team 1: rising square arpeggio
         {1047, 1047, 100, W_SQUARE, 255}, {1319, 1319, 100, W_SQUARE, 255}, {1568, 1568, 100, W_SQUARE, 255},
@@ -267,7 +272,7 @@ static struct {
     int32_t val[2];
 } s_snap;                  // state when the current hold started
 
-enum { HS_BUILD, HS_CAPTURED, HS_PAUSED, HS_RESET };
+enum { HS_BUILD, HS_CAPTURED, HS_PAUSED, HS_RESET, HS_OFF };
 static int s_hold_stage;
 static int s_hold_target;  // team the capture will go to (decided at the press, shown during the hold)
 static int s_hold_last_sec;
@@ -275,6 +280,8 @@ static bool s_build_started;
 // This hold started during a game pause: no capture. Held to the pause point it
 // releases the button from the game pause into a regular pause, so BLE is never needed.
 static bool s_hold_gp;
+static bool s_off_warn_started;
+static bool s_lid_off_request;  // held to the power-off point; the main loop turns it off
 
 static int s_taps;
 static uint32_t s_last_tap_ms;
@@ -289,6 +296,8 @@ static rgb_t team_colour(int t) { return (rgb_t){s_cfg.colour[t][0], s_cfg.colou
 static uint32_t hold_capture_ms(void) { return s_cfg.hold_ms; }
 static uint32_t hold_pause_ms(void) { return s_cfg.hold_ms + PAUSE_EXTRA_MS; }
 static uint32_t hold_reset_ms(void) { return s_cfg.hold_ms + RESET_EXTRA_MS; }
+static uint32_t hold_off_ms(void) { return s_cfg.hold_ms + OFF_EXTRA_MS; }
+static uint32_t hold_off_warn_ms(void) { return hold_reset_ms() + OFF_WARN_DELAY; }
 static bool has_clock(int t)
 {
     return s_cfg.mode == MODE_TWO_TIMERS || (s_cfg.mode == MODE_ONE_TIMER && t == s_cfg.timer_team);
@@ -387,6 +396,7 @@ static void on_face_press(uint32_t now)
     s_hold_last_sec = 0;
     s_build_started = false;
     s_hold_gp = s_game_paused;
+    s_off_warn_started = false;
 
     if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
     s_hold_target = capture_target();
@@ -405,6 +415,7 @@ static void on_face_press(uint32_t now)
 static void on_face_release(uint32_t held)
 {
     if (s_hold_stage == HS_BUILD) audio_stop(SLOT_BUILD);
+    if (s_hold_stage == HS_RESET) audio_stop(SLOT_DIAG);  // let go before the power-off
     // Uncaptured and let go before the capture: the next press tries the other team.
     if (s_hold_stage == HS_BUILD && s_owner < 0 && s_winner < 0 && !s_hold_gp) s_next_pick = 1 - s_hold_target;
     if (held < TAP_MAX_MS) {
@@ -481,6 +492,18 @@ static void hold_progress(uint32_t now, uint32_t held)
         s_hold_stage = HS_RESET;
         game_reset(now);
         AUDIO_PLAY(SLOT_EVENT, SND_RESET);
+    }
+    // Still held after the reset: "HoLd" "oFF" with a falling tone, then power off.
+    if (s_hold_stage == HS_RESET && held >= hold_off_warn_ms() && !s_off_warn_started) {
+        s_off_warn_started = true;
+        uint32_t ms = hold_off_ms() > held ? hold_off_ms() - held : 1;
+        s_off_warn[0] = (note_t){1200, 300, (uint16_t)ms, W_SQUARE, 150};
+        AUDIO_PLAY(SLOT_DIAG, s_off_warn);
+    }
+    if (s_hold_stage == HS_RESET && held >= hold_off_ms()) {
+        s_hold_stage = HS_OFF;
+        s_lid_off_request = true;
+        ESP_LOGI(TAG, "lid held to power-off");
     }
     // A sound every second after the capture: dings towards pause, doom towards
     // reset. After a win: dings all the way to the reset (nothing to lose).
@@ -642,8 +665,9 @@ static bool any_face_raw(void)
 // ON    everything powered; the CPU light-sleeps between 20 ms loop passes
 //       when nothing is happening (auto light sleep, not on USB).
 // PEEK  woken from OFF by a press or the page: battery shown for a few
-//       seconds. Anything that looks like trying to wake it turns it on: a
-//       second press (tap again, many taps) or holding POWER_ON_HOLD_MS.
+//       seconds. Turns on only on a clear intent: PEEK_ON_PRESSES
+//       presses during the peek, or a press started during it held for
+//       POWER_ON_HOLD_MS (the waking press doesn't count, so a bump can't).
 //       Otherwise back to OFF when the battery display ends.
 // OFF   PWR_EN low (only the ESP powered), light sleep, slow low-power BLE
 //       adverts so the page can still find it. Battery checked hourly.
@@ -652,7 +676,12 @@ static bool any_face_raw(void)
 typedef enum { PWR_ON, PWR_PEEK, PWR_OFF } pwr_t;
 static const char *const PWR_NAME[] = {"on", "peek", "off"};
 
-#define POWER_ON_HOLD_MS   1000
+#define POWER_ON_HOLD_MS   1500  // a hold that starts during a peek turns it on
+#define PEEK_ON_PRESSES    2     // ... or this many presses during the peek
+// Presses during the current peek (the press that woke it doesn't count), and
+// whether the current press started during the peek.
+static int s_peek_presses;
+static bool s_peek_hold;
 // Idle = no press and no page command (game state is kept throughout; a tap
 // brings it straight back). Mid-game something always happens well within these.
 #define IDLE_SPARSE_MS     (10 * 60 * 1000)      // every 2nd ring/strip LED off (LED1/2 stay)
@@ -792,6 +821,8 @@ static void power_set(pwr_t to, uint32_t now)
         ble_set_slow(false);
         s_batt_mv = s_vsys_mv = sense_vsys_mv();
         if (to == PWR_PEEK) {
+            s_peek_presses = 0;
+            s_peek_hold = false;
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
         } else {
@@ -809,7 +840,7 @@ static void power_tick_on(uint32_t now, uint32_t dt)
     if (s_pwr == PWR_PEEK) {
         // Hold to turn on (a second press also does, in the main loop);
         // otherwise drop back to off once the battery display ends.
-        if (s_face.state && input_held_ms(&s_face) >= POWER_ON_HOLD_MS) {
+        if (s_peek_hold && s_face.state && input_held_ms(&s_face) >= POWER_ON_HOLD_MS) {
             power_set(PWR_ON, now);
             return;
         }
@@ -1097,7 +1128,9 @@ static void render_displays(uint32_t now)
     for (int t = 0; t < 2; t++) {
         uint8_t seg[4] = {0};
         int bright = 0;
-        if (s_boot_off_showing) {
+        bool lid_off = s_pwr == PWR_ON && s_face.state && s_hold_stage == HS_RESET &&
+                       input_held_ms(&s_face) >= hold_off_warn_ms();
+        if (s_boot_off_showing || lid_off) {
             static const uint8_t HOLD[4] = {0x76 /*H*/, 0x5C /*o*/, 0x38 /*L*/, 0x5E /*d*/};
             static const uint8_t OFF[4] = {0, 0x5C /*o*/, 0x71 /*F*/, 0x71 /*F*/};
             memcpy(seg, t == 0 ? HOLD : OFF, sizeof seg);
@@ -1213,6 +1246,11 @@ static void render_leds(uint32_t now)
         } else if (s_hold_stage == HS_PAUSED) {
             int n = (int)((held - h2) * 6 / (h3 - h2));
             for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(RED, 160) : (rgb_t){0};
+        } else if (held >= hold_off_warn_ms()) {
+            // Past the reset, still held: the ring drains towards the power-off.
+            uint32_t w = hold_off_warn_ms(), span = hold_off_ms() - w;
+            int n = 6 - (int)((held - w) * 6 / span);
+            for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(WHITE, 120) : (rgb_t){0};
         } else {
             for (int i = 0; i < 6; i++) ring[i] = rgb_scale(WHITE, 120);
         }
@@ -1225,7 +1263,7 @@ static void render_leds(uint32_t now)
         for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(GREEN, 120) : (rgb_t){0};
     }
     // Peek: holding fills the ring white towards power-on.
-    if (s_pwr == PWR_PEEK && s_face.state) {
+    if (s_pwr == PWR_PEEK && s_face.state && s_peek_hold) {
         int n = (int)(input_held_ms(&s_face) * 6 / POWER_ON_HOLD_MS);
         for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(WHITE, 160) : (rgb_t){0};
     }
@@ -1446,14 +1484,20 @@ void app_main(void)
             else ignore_face = false;
         }
         int fe = input_update(&s_face, any_face, now);
-        if (fe > 0 && s_pwr == PWR_PEEK) power_set(PWR_ON, now);  // pressed again: wants it on
-        else if (fe > 0 && s_pwr == PWR_OFF) power_set(PWR_PEEK, now);
+        if (fe > 0 && s_pwr == PWR_PEEK) {
+            s_peek_hold = true;
+            if (++s_peek_presses >= PEEK_ON_PRESSES) power_set(PWR_ON, now);  // tapping away: wants it on
+        } else if (fe > 0 && s_pwr == PWR_OFF) power_set(PWR_PEEK, now);
         if (s_pwr == PWR_ON) {
             if (fe > 0) {
                 on_face_press(now);
                 activity(now);
             }
             if (s_face.state) hold_progress(now, input_held_ms(&s_face));
+            if (s_lid_off_request) {
+                s_lid_off_request = false;
+                power_set(PWR_OFF, now);
+            }
             if (fe < 0) {
                 on_face_release(s_face.last_active_ms - s_face.press_ms);
                 activity(now);

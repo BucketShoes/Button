@@ -50,7 +50,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 5 | u8 | owner after reset: 0 uncaptured, 1 team 1, 2 team 2 |
 | 6 | u8 | first capture of an uncaptured button with no taps: 0 random, 1, 2 |
 | 7 | u8 | volume: 0 mute, 1..255 = -40..0 dB (default 128, about -20 dB) |
-| 8 | u16 | hold ms (500..60000); pause at +3 s, reset at +7 s |
+| 8 | u16 | hold ms (500..60000); pause at +4 s, reset at +9 s, power off at +14 s |
 | 10 | u8 | LED brightness 0..255 (default 128) |
 | 11 | u8 | reserved |
 | 12 | u32 ×2 | durations in ms |
