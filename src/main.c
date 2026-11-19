@@ -256,6 +256,9 @@ static int s_owner = -1;   // -1 uncaptured, 0 team 1, 1 team 2
 static int s_winner = -1;  // >= 0: game over
 static int32_t s_val[2];   // clock values as shown (ms)
 static bool s_fresh = true;  // nothing has happened since the last reset
+// Game pause from the page: remembers whether the clocks were running, so a
+// game resume puts each button back exactly as it was (running or not).
+static bool s_game_paused, s_game_was_running;
 
 static struct {
     bool running;
@@ -332,6 +335,7 @@ static int batt_percent(int mv)
 
 static void game_reset(uint32_t now)
 {
+    s_game_paused = false;
     s_next_pick = -1;
     for (int t = 0; t < 2; t++) s_val[t] = s_cfg.count_up ? 0 : (int32_t)s_cfg.duration_ms[t];
     s_winner = -1;
@@ -438,6 +442,7 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_next_pick = -1;
             s_owner = team;
             s_running = true;
+            s_game_paused = false;
             s_fresh = false;
             AUDIO_PLAY(SLOT_EVENT, SND_TEAM[team]);
             ESP_LOGI(TAG, "CAPTURED by team %d", team + 1);
@@ -548,6 +553,8 @@ enum {
     OP_POWER_OFF = 13,
     OP_POWER_ON = 14,
     OP_REBOOT = 15,
+    OP_GAME_PAUSE = 16,  // pause, remembering whether it was running
+    OP_GAME_RESUME = 17, // undo a game pause (runs again only if it was running)
 };
 
 // Boots since power-on (survives resets, not power loss), to spot brown-outs.
@@ -881,7 +888,7 @@ static void publish_state(uint32_t now)
     uint32_t hm = input_held_ms(&s_face);
     state_pkt_t p = {
         .version = PROTO_VERSION,
-        .flags = (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (held ? 8 : 0) |
+        .flags = (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (s_game_paused ? 4 : 0) | (held ? 8 : 0) |
                            ((int32_t)(s_ident_until - now) > 0 ? 16 : 0) | (s_vbus_mv > 4000 ? 32 : 0) |
                            (audio_pcm_playing() ? 64 : 0)),
         .owner = (int8_t)s_owner,
@@ -927,6 +934,7 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         power_set(PWR_ON, now);
         break;
     case OP_START:
+        s_game_paused = false;
         if (s_winner < 0 && !s_running) {
             s_running = true;
             s_fresh = false;
@@ -967,7 +975,10 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
             if (o < -1 || o > 1) break;
             s_owner = o;
             s_fresh = false;
-            if (o >= 0 && s_cfg.mode == MODE_TEAMS && s_winner < 0) s_running = true;
+            if (o >= 0 && s_cfg.mode == MODE_TEAMS && s_winner < 0) {
+                if (s_game_paused) s_game_was_running = true;  // goes live at the game resume
+                else s_running = true;
+            }
             if (o >= 0) AUDIO_PLAY(SLOT_EVENT, SND_TEAM[o]);
             ESP_LOGI(TAG, "owner set to %d from the page", o + 1);
         }
@@ -978,6 +989,27 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
     case OP_STOP_SOUND:
         audio_stop(SLOT_EVENT);
         audio_pcm_stop();
+        break;
+    case OP_GAME_PAUSE:
+        if (!s_game_paused) {
+            s_game_paused = true;
+            s_game_was_running = s_running;
+            if (s_running) {
+                s_running = false;
+                AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);
+            }
+            ESP_LOGI(TAG, "GAME PAUSE (was %s)", s_game_was_running ? "running" : "stopped");
+        }
+        break;
+    case OP_GAME_RESUME:
+        if (s_game_paused) {
+            s_game_paused = false;
+            if (s_game_was_running && s_winner < 0 && !s_running) {
+                s_running = true;
+                AUDIO_PLAY(SLOT_EVENT, SND_START);
+            }
+            ESP_LOGI(TAG, "GAME RESUME");
+        }
         break;
     case OP_REBOOT:
         ESP_LOGW(TAG, "reboot requested from the page");

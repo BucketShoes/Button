@@ -44,19 +44,27 @@ python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin
 
 [docs/index.html](docs/index.html) is published by GitHub Pages at
 <https://bucketshoes.github.io/Button/>. Open it in Chrome (Android, or Chrome/Edge on a computer) and
-press **Connect a button**. You can connect several buttons; each gets its own panel. Per button:
+press **Connect a button**. You can connect several buttons.
+
+- **Game bar** (top): pause and resume the whole game, and play a sound (whistle by default) on every button. Game resume undoes the game pause: each button goes back to exactly what it was doing, so a button that was paused or uncaptured stays that way.
+- **Overview:** one row per button, sized so about 5 fit on a phone screen. Name and battery on the left, then a box per team (team names once at the top of each column):
+  - thick border in the team colour, filled for the holder;
+  - underlined time while that clock is ticking, blinking on a win;
+  - a small pie fills while someone holds the lid, in the box of the team about to capture;
+  - tap a row to jump to that button's panel.
+- **Each button** gets its own panel below:
 
 - **Controls:** start, pause, reset, identify (displays and ring flash with beeps for 3 s), battery, and power off.
 - **Holder:** set the holder (uncaptured / team 1 / team 2).
 - **Reboot** (in settings), for when something is stuck. Settings are kept; the game state is lost.
 - **Sounds:** play any of the button's sounds, or stop them.
-- **Clocks:** live clocks, ±10 s / ±1 min, or set an exact time, even while running.
+- **Clocks:** live clocks, −1 min / −10 s, +1 min / +10 s, or set an exact time (m:ss), even while running.
 - **Settings (saved on the button):**
   - name and mode (teams only / one timer / two timers), plus which team has the clock in one-timer mode;
   - count down or up, and whether the numbers show on the displays;
   - durations, the holder after reset, the first capture (random / team 1 / team 2), the hold time, the team colours, the volume and the LED brightness;
   - "Copy to all" sends the settings to every connected button, keeping each name.
-- **All connected buttons** (shown when 2+ are connected): resume, pause, identify, play a sound (for example the whistle) or power off on all of them at once.
+- **More for all buttons** (under the overview): identify, power on and power off all of them at once.
 - **Reboots:** the panel shows how many times the button rebooted since power-on, and why (for example BROWN-OUT).
 - **Wall clock** with seconds in the top corner.
 

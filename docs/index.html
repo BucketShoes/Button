@@ -43,9 +43,32 @@
   .clock { border: 2px solid var(--line); border-radius: 10px; padding: 8px; text-align: center; }
   .clock .v { font: 700 34px/1.1 ui-monospace, Consolas, monospace; }
   .clock.live .v { text-decoration: underline; text-underline-offset: 6px; }
-  .clock .row { justify-content: center; margin: 6px 0 0; gap: 4px; }
-  .clock .row button { padding: 6px 8px; }
-  .clock input { width: 80px; text-align: center; }
+  .adj { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; }
+  .adj button { padding: 6px 4px; }
+  .adj input { width: 100%; min-width: 0; text-align: center; padding: 6px 4px; }
+  /* game bar and overview */
+  #game { margin: 12px 0; }
+  .gamebar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .gamebar select { flex: 1; min-width: 110px; }
+  #g-status { font-weight: 700; color: var(--warn); }
+  .ov { display: grid; grid-template-columns: minmax(64px, 0.8fr) 1fr 1fr; gap: 6px; align-items: stretch; margin: 10px 0 4px; }
+  .ov .th { text-align: center; font-size: 13px; color: var(--muted); border-bottom: 3px solid var(--line); padding-bottom: 2px; }
+  .ov .nm { font-size: 12px; line-height: 1.25; overflow: hidden; cursor: pointer; align-self: center; }
+  .ov .nm div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ov .nm .b { color: var(--muted); }
+  .ov .nm .b.low { color: var(--bad); font-weight: 700; }
+  .tb { position: relative; border: 4px solid var(--line); border-radius: 9px; text-align: center; cursor: pointer;
+        font: 700 24px/1.5 ui-monospace, Consolas, monospace; min-height: 44px; }
+  .tb.own { color: #111; }
+  .tb.tick .tv { text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 4px; }
+  .tb.won { animation: blink 0.6s steps(1) infinite; }
+  @keyframes blink { 50% { filter: brightness(1.6); } }
+  .tb .pie { position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 50%;
+             border: 2px solid #fffa; display: none; }
+  .tb.own .pie { border-color: #111a; }
+  .ovr.dim > div { opacity: .45; }
+  .ovr { display: contents; }
+  h3.sect { font-size: 14px; color: var(--muted); font-weight: 600; margin: 18px 0 0; text-transform: uppercase; letter-spacing: .5px; }
   details { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 6px; }
   summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
   .grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; margin: 8px 0; }
@@ -53,7 +76,7 @@
   footer { text-align: center; padding: 24px 16px 40px; color: var(--muted); }
   footer img { width: 120px; height: auto; display: block; margin: 0 auto 8px; }
   footer a { color: var(--accent); }
-  @media (max-width: 420px) { .clock .v { font-size: 28px; } #wall { font-size: 22px; } }
+  @media (max-width: 420px) { .clock .v { font-size: 28px; } #wall { font-size: 22px; } .tb { font-size: 19px; } .tb .pie { width: 11px; height: 11px; top: 2px; right: 2px; border-width: 1.5px; } }
 </style>
 </head>
 <body>
@@ -70,25 +93,34 @@
     <button id="add" class="primary">+ Connect a button</button>
     <span class="note">Each button you connect gets its own panel. You can connect several.</span>
   </div>
-  <section id="all" class="card" hidden>
-    <h2>All connected buttons <span id="all-count" class="muted"></span></h2>
-    <div class="row">
-      <button data-all="start" class="primary">Resume all</button>
-      <button data-all="pause">Pause all</button>
-      <button data-all="identify">Identify all</button>
+  <section id="game" class="card" hidden>
+    <div class="gamebar">
+      <button data-all="gpause" id="g-pause">Pause game</button>
+      <button data-all="gresume" id="g-resume">Resume game</button>
+      <span id="g-status"></span>
     </div>
-    <div class="row">
-      <select id="all-sound" class="grow"></select>
-      <button data-all="play">Play on all</button>
+    <div class="gamebar" style="margin-top:8px">
+      <select id="all-sound"></select>
+      <button data-all="play">Play</button>
       <button data-all="stopsound">Stop</button>
     </div>
-    <div class="row">
-      <button data-all="on">Power on all</button>
-      <button data-all="off" class="danger">Power off all</button>
+    <div class="ov" id="ov">
+      <div></div><div class="th" id="th0">Team 1</div><div class="th" id="th1">Team 2</div>
     </div>
-    <p class="note">Commands go to each button over its own connection, so they land within a fraction
-      of a second of each other. To copy settings, use "Copy to all" in a button's settings.</p>
+    <details>
+      <summary>More for all buttons <span id="all-count"></span></summary>
+      <div class="row">
+        <button data-all="identify">Identify all</button>
+        <button data-all="on">Power on all</button>
+        <button data-all="off" class="danger">Power off all</button>
+      </div>
+      <p class="note">Game pause stops every clock; game resume puts each button back as it was, so a
+        button that was paused or uncaptured stays that way. A capture during the pause takes that button
+        out of it. Commands go to each button over its own connection, so they land within a fraction
+        of a second of each other. To copy settings, use "Copy to all" in a button's settings.</p>
+    </details>
   </section>
+  <h3 class="sect" id="det-title" hidden>Each button</h3>
   <div id="cards"></div>
 </main>
 <footer>
@@ -177,7 +209,8 @@ const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
 const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4);
 const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
-             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15 };
+             PLAY_SOUND: 8, STOP_SOUND: 9, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15,
+             GAME_PAUSE: 16, GAME_RESUME: 17 };
 const POWER = ["on", "peek", "off"];
 const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
                        8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
@@ -188,7 +221,7 @@ const MODE_TEAMS = 0, MODE_ONE = 1, MODE_TWO = 2;
 function parseState(dv) {
   const f = dv.getUint8(1);
   return {
-    version: dv.getUint8(0), running: !!(f & 1), won: !!(f & 2), locked: !!(f & 4), held: !!(f & 8),
+    version: dv.getUint8(0), running: !!(f & 1), won: !!(f & 2), gamePaused: !!(f & 4), held: !!(f & 8),
     identifying: !!(f & 16), usb: !!(f & 32), clip: !!(f & 64),
     owner: dv.getInt8(2), winner: dv.getInt8(3), target: dv.getInt8(4), holdStage: dv.getUint8(5),
     heldMs: dv.getUint16(6, true), time: [dv.getInt32(8, true), dv.getInt32(12, true)],
@@ -261,8 +294,18 @@ class Btn {
     this.queue = Promise.resolve();
     this.closed = false;
     this.el = document.getElementById("card-tpl").content.firstElementChild.cloneNode(true);
-    document.getElementById("cards").prepend(this.el);
+    document.getElementById("cards").append(this.el);
     $(this.el, ".name").textContent = device.name || "Button";
+    // Overview row: name and battery, then one box per team.
+    this.row = document.createElement("div");
+    this.row.className = "ovr";
+    this.row.innerHTML = `<div class="nm"><div class="n"></div><div class="b"></div></div>` +
+      [0, 1].map(t => `<div class="tb" data-team="${t}"><span class="tv"></span><span class="pie"></span></div>`).join("");
+    this.row.addEventListener("click", () => {
+      $(this.el, "details").open = false;
+      this.el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    document.getElementById("ov").append(this.row);
     const sel = $(this.el, ".sound");
     SOUNDS.forEach((n, i) => sel.add(new Option(n, i)));
     this.bind();
@@ -312,6 +355,7 @@ class Btn {
     clearTimeout(this.timer);
     if (this.device.gatt.connected) this.device.gatt.disconnect();
     this.el.remove();
+    this.row.remove();
     buttons.delete(this);
   }
   setStatus(text) { const o = $(this.el, ".owner"); o.textContent = text; o.style.background = ""; o.style.color = ""; }
@@ -411,13 +455,11 @@ class Btn {
       <div class="clock" data-team="${t}" style="border-color:${c.colour[t]}">
         <div class="muted">${teamName(t)}</div>
         <div class="v">--:--</div>
-        <div class="row">
+        <div class="adj">
           <button data-team="${t}" data-adj="-60000">−1m</button>
           <button data-team="${t}" data-adj="-10000">−10s</button>
-          <button data-team="${t}" data-adj="10000">+10s</button>
           <button data-team="${t}" data-adj="60000">+1m</button>
-        </div>
-        <div class="row">
+          <button data-team="${t}" data-adj="10000">+10s</button>
           <input class="set-${t}" placeholder="m:ss" inputmode="numeric">
           <button data-team="${t}" data-set="1">Set</button>
         </div>
@@ -485,8 +527,36 @@ class Btn {
     return Math.max(0, v);
   }
 
+  renderRow() {
+    const r = this.row, s = this.state, c = this.cfg, live = !!(this.device.gatt.connected && s && c);
+    $(r, ".n").textContent = this.label();
+    const b = $(r, ".b");
+    b.textContent = !this.device.gatt.connected ? "not connected" : !live ? "connecting…"
+      : s.power === 2 ? "off" + (s.battMv ? ` ${(s.battMv / 1000).toFixed(2)} V` : "")
+      : (s.usb ? "USB " : "") + `${s.batt}%` + (s.power === 1 ? " peek" : "") + (s.gamePaused ? " ⏸" : "");
+    b.classList.toggle("low", live && s.battLow);
+    r.classList.toggle("dim", !live || s.power === 2);
+    [0, 1].forEach(t => {
+      const box = r.children[t + 1], col = c ? c.colour[t] : "";
+      const own = live && s.owner === t, timed = c && (c.mode === MODE_TWO || (c.mode === MODE_ONE && c.timerTeam === t));
+      box.style.borderColor = col;
+      box.style.background = own ? col : "";
+      box.classList.toggle("own", own);
+      box.classList.toggle("tick", live && s.running && s.owner === t && !s.won && s.power !== 2);
+      box.classList.toggle("won", live && s.won && s.winner === t);
+      $(box, ".tv").textContent = !live ? "--:--" : timed ? fmtMs(this.liveTime(t), !c.countUp) : "–";
+      const pie = $(box, ".pie");
+      if (live && s.held && s.holdStage === 0 && !s.won && s.target === t) {
+        const ms = s.heldMs + (performance.now() - s.rx), deg = Math.min(360, 360 * ms / c.holdMs);
+        pie.style.background = `conic-gradient(${own ? "#111" : col} ${deg}deg, #0006 0)`;
+        pie.style.display = "block";
+      } else pie.style.display = "none";
+    });
+  }
+
   render() {
     const s = this.state, c = this.cfg, e = this.el;
+    this.renderRow();
     if (!s || !c || !this.device.gatt.connected) return;
     $(e, ".name").textContent = this.label();
     const pct = s.batt, v = (s.vsys / 1000).toFixed(2);
@@ -503,6 +573,7 @@ class Btn {
     else if (s.power === 1) text = "Peeking (showing battery) · hold its lid 3 s, or Power on";
     else if (s.dimmed) text += " · idle 1 h+ (dimmed; turns off at 4 h)";
     else if (s.sparse) text += " · idle 10 min+ (half the LEDs)";
+    if (s.gamePaused) text += " · game paused";
     if (s.held) text += ` · being held ${(s.heldMs / 1000).toFixed(1)} s`;
     o.textContent = text;
     o.style.background = col && (s.running || s.won) ? col : "";
@@ -540,14 +611,14 @@ document.getElementById("add").addEventListener("click", async () => {
 const allSound = document.getElementById("all-sound");
 SOUNDS.forEach((n, i) => allSound.add(new Option(n, i)));
 allSound.value = SOUNDS.indexOf("Whistle");
-document.getElementById("all").addEventListener("click", ev => {
+document.getElementById("game").addEventListener("click", ev => {
   const b = ev.target.closest("button[data-all]");
   if (!b) return;
   const live = [...buttons].filter(x => x.device.gatt.connected);
   let data;
   switch (b.dataset.all) {
-    case "start": data = cmd(OP.START); break;
-    case "pause": data = cmd(OP.PAUSE); break;
+    case "gpause": data = cmd(OP.GAME_PAUSE); break;
+    case "gresume": data = cmd(OP.GAME_RESUME); break;
     case "identify": data = cmd(OP.IDENTIFY, ["u16", 3000]); break;
     case "play": data = cmd(OP.PLAY_SOUND, ["u8", +allSound.value]); break;
     case "stopsound": data = cmd(OP.STOP_SOUND); break;
@@ -563,8 +634,14 @@ function tick() {
   const d = new Date();
   document.getElementById("wall").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   const n = [...buttons].filter(x => x.device.gatt.connected).length;
-  document.getElementById("all").hidden = buttons.size < 2;
+  document.getElementById("game").hidden = document.getElementById("det-title").hidden = buttons.size === 0;
   document.getElementById("all-count").textContent = `(${n} connected)`;
+  const live = [...buttons].filter(x => x.device.gatt.connected && x.state), gp = live.filter(x => x.state.gamePaused).length;
+  document.getElementById("g-status").textContent = !gp ? "" : gp === live.length ? "Game paused" : `Game paused on ${gp} of ${live.length}`;
+  document.getElementById("g-resume").classList.toggle("primary", gp > 0);
+  document.getElementById("g-pause").classList.toggle("primary", gp === 0 && live.length > 0);
+  const first = [...buttons].find(x => x.cfg);
+  for (const t of [0, 1]) document.getElementById("th" + t).style.borderBottomColor = first ? first.cfg.colour[t] : "";
   for (const b of buttons) b.render();
 }
 setInterval(tick, 200);
