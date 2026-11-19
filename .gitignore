@@ -9,3 +9,12 @@ build/
 *.mp3
 *.wav
 audio/*.bin
+
+# 3D models: fetch with tools/fetch_3d_models.py
+pcb/3d/
+pcb/EASYEDA_MODELS/
+# KiCad local state and backups
+pcb/*.kicad_prl
+pcb/*-backups/
+pcb/~*.lck
+pcb/fp-info-cache

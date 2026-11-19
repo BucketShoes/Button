@@ -1,0 +1,9 @@
+(version 1)
+# JLC 4-layer: plated-hole annular ring >= 0.15 mm (vias may go to 0.05 mm via the board minimum)
+(rule "PTH annular ring"
+	(condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole'")
+	(constraint annular_width (min 0.15mm)))
+# JLC: plated hole to track >= 0.28 mm
+(rule "PTH to track"
+	(condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && B.Type == 'Track'")
+	(constraint hole_clearance (min 0.28mm)))

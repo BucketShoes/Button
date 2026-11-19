@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "LARP")(type "KiCad")(uri "${KIPRJMOD}/LARP.kicad_sym")(options "")(descr "LARP capture timer symbols"))
+)
