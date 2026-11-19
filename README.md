@@ -73,7 +73,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Hold**, where H is the hold time (default 3 s):
   - **Up to H:** the ring fills one LED at a time in the colour of the team about to capture, with a bright spinning LED on top, and a rising whoop. Letting go early puts it back as it was. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
-  - **Uncaptured:** 1 tap then hold gives team 1, and 2 taps then hold gives team 2. A plain hold uses the "first capture" setting, which is random by default. The team is decided the moment the hold starts and shows straight away (ring colour, and that team's display lit). Don't like it? Let go and hold again within 10 s for the other team.
+  - **Uncaptured:** the team is decided the moment the hold starts and shows straight away: the ring fills in its colour and its display lights. Wrong colour? Let go and press again: every press that doesn't capture flips the team for the next press. The first press uses the "first capture" setting, which is random by default.
   - **H to H+3 s:** a ding each second, then a **pause** at H+3 s. The clocks go back to where they were before the hold, and the paused holder is:
     - **was running:** whoever had it before the hold;
     - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);
@@ -81,7 +81,8 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **H+3 to H+7 s:** doom each second, then a **reset** at H+7 s.
   - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+7 s resets.
 - **Idle cues:**
-  - **Uncaptured:** the ring pulses faintly (0–10 %, 0.5 Hz) in the next capture's colour, alternating colours if random. That team's display is lit, with the colour steady.
+  - **Not held, the button shows only the true state.** A hold let go early snaps straight back, so nobody runs off thinking they captured it.
+  - **Uncaptured:** a faint white pulse on the ring (0–10 %, 0.5 Hz), no team colour, and neither display highlighted. The team the next press goes for has one colon dot missing: subtle, for admins.
   - **Paused with a holder:** the ring blinks faintly in their colour, and their display shows a single slow-blinking dot instead of the colon.
 - **After reset:** uncaptured, or held by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
 - **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.

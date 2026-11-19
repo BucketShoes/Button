@@ -12,8 +12,9 @@
 // as pressed until DEBOUNCE_MS after the last contact). H = hold time
 // setting, default 3 s:
 //   hold H        capture: running -> other team; paused -> same team again;
-//                 uncaptured -> 1 tap first = team 1, 2 taps = team 2,
-//                 no taps = default capture setting (random by default)
+//                 uncaptured -> the team shown from the first moment of the
+//                 hold; each press that doesn't capture flips it for the next
+//                 press (first one: the first-capture setting, random by default)
 //   hold H+3 s    pause (undoes the capture)
 //   hold H+7 s    reset
 //   after a win, a hold of H silences the alarm
@@ -301,18 +302,16 @@ static const char *state_name(void)
     return s_owner >= 0 ? "paused" : "idle";
 }
 
-static int s_retry_team = -1;    // uncaptured hold let go early: the next try gets the other team
-static uint32_t s_retry_until;
-#define RETRY_MS 10000
-// Who the next capture goes to, given the taps just before the hold.
-static int capture_target(int taps)
+// Uncaptured: the team the next press goes for. Every press that doesn't
+// capture flips it, so "that's the wrong colour, let go, press again" works.
+// -1 = not decided yet (use the first-capture setting).
+static int s_next_pick = -1;
+// Who the next capture goes to (-1 = random, decided at the press).
+static int capture_target(void)
 {
     if (s_owner >= 0) return s_running ? 1 - s_owner : s_owner;
-    if (taps == 1) return 0;
-    if (taps == 2) return 1;
-    // Just let go of a hold: the next try gets the other team.
-    if (s_retry_team >= 0 && (int32_t)(s_retry_until - (uint32_t)(esp_timer_get_time() / 1000)) > 0) return 1 - s_retry_team;
-    return (int)s_cfg.default_capture - 1;  // -1 = random
+    if (s_next_pick >= 0) return s_next_pick;
+    return (int)s_cfg.default_capture - 1;
 }
 
 // Rough Li-ion state of charge from voltage: 3.3 V = 0 %, 4.2 V = 100 %, with
@@ -333,7 +332,7 @@ static int batt_percent(int mv)
 
 static void game_reset(uint32_t now)
 {
-    s_retry_team = -1;
+    s_next_pick = -1;
     for (int t = 0; t < 2; t++) s_val[t] = s_cfg.count_up ? 0 : (int32_t)s_cfg.duration_ms[t];
     s_winner = -1;
     s_win_alarm_until = now;
@@ -382,12 +381,9 @@ static void on_face_press(uint32_t now)
     s_build_started = false;
 
     if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
-    s_hold_target = capture_target(s_taps);
-    if (s_owner < 0 && s_winner < 0) {
-        // Uncaptured: decide the team now, so the ring and displays show it from
-        // the start. Let go and hold again (within RETRY_MS) for the other team.
-        if (s_hold_target < 0) s_hold_target = (int)(esp_random() & 1);
-    }
+    s_hold_target = capture_target();
+    // Random is decided now, so the hold shows the team from the first moment.
+    if (s_hold_target < 0) s_hold_target = (int)(esp_random() & 1);
 
     audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
@@ -400,10 +396,8 @@ static void on_face_press(uint32_t now)
 static void on_face_release(uint32_t held)
 {
     if (s_hold_stage == HS_BUILD) audio_stop(SLOT_BUILD);
-    if (s_hold_stage == HS_BUILD && held >= TAP_MAX_MS && s_owner < 0 && s_winner < 0) {
-        s_retry_team = s_hold_target;
-        s_retry_until = s_face.last_active_ms + RETRY_MS;
-    }
+    // Uncaptured and let go before the capture: the next press tries the other team.
+    if (s_hold_stage == HS_BUILD && s_owner < 0 && s_winner < 0) s_next_pick = 1 - s_hold_target;
     if (held < TAP_MAX_MS) {
         s_taps++;
         s_last_tap_ms = s_face.last_active_ms;
@@ -441,7 +435,7 @@ static void hold_progress(uint32_t now, uint32_t held)
             }
         } else {
             int team = s_hold_target >= 0 ? s_hold_target : (int)(esp_random() & 1);
-            s_retry_team = -1;
+            s_next_pick = -1;
             s_owner = team;
             s_running = true;
             s_fresh = false;
@@ -565,7 +559,7 @@ typedef struct __attribute__((packed)) {
     uint8_t flags;        //  1 bit0 running, 1 won, 2 locked, 3 face held, 4 identifying, 5 usb, 6 clip playing
     int8_t owner;         //  2 -1 uncaptured, 0, 1
     int8_t winner;        //  3 -1 none
-    int8_t target;        //  4 next capture with no taps (-1 random); while held: the hold's target
+    int8_t target;        //  4 next capture (-1 random); while held: the hold's target
     uint8_t hold_stage;   //  5 HS_* while held
     uint16_t held_ms;     //  6
     int32_t time_ms[2];   //  8, 12 clock values as shown
@@ -892,7 +886,7 @@ static void publish_state(uint32_t now)
                            (audio_pcm_playing() ? 64 : 0)),
         .owner = (int8_t)s_owner,
         .winner = (int8_t)s_winner,
-        .target = (int8_t)(held ? s_hold_target : capture_target(0)),
+        .target = (int8_t)(held ? s_hold_target : capture_target()),
         .hold_stage = (uint8_t)(held ? s_hold_stage : 0),
         .held_ms = (uint16_t)(hm > 65535 ? 65535 : hm),
         .time_ms = {s_val[0], s_val[1]},
@@ -1091,8 +1085,14 @@ static void render_displays(uint32_t now)
             int src = t;
             render_clock(seg, s_val[src], !s_cfg.count_up);
             bool colon = true;
+            // Held towards a capture: the old state is gone at once. The new team is
+            // lit; the old holder's clock keeps ticking (dim) until the capture.
+            bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0;
             if (s_winner >= 0) {
                 bright = src == s_winner ? (((now / 250) & 1) ? DISP_FULL : 0) : DISP_DIM;
+            } else if (holding) {
+                bright = src == s_hold_target ? DISP_FULL : DISP_DIM;
+                if (s_running && src == s_owner) colon = (now % 250) >= 125;
             } else if (s_running && s_owner >= 0) {
                 if (src == s_owner) {
                     colon = (now % 250) >= 125;  // 4 Hz, so the owner is obvious at a glance
@@ -1100,17 +1100,20 @@ static void render_displays(uint32_t now)
                 } else {
                     bright = DISP_DIM;
                 }
+            } else if (s_owner >= 0) {
+                bright = src == s_owner ? DISP_FULL : DISP_DIM;  // paused: the holder is lit
             } else {
-                // Not running: the display of whoever the next capture goes to is lit
-                // (while held: the team this hold will give it to).
-                int target = s_face.state && s_hold_stage == HS_BUILD ? s_hold_target : capture_target(0);
-                bright = target < 0 ? DISP_IDLE : target == src ? DISP_FULL : DISP_DIM;
+                bright = DISP_IDLE;  // uncaptured: nobody is lit
             }
             display_colon(seg, colon);
-            if (s_winner < 0 && !s_running && s_owner == src) {
+            if (!holding && s_winner < 0 && !s_running && s_owner == src) {
                 // Paused: a single slow-blinking dot instead of the colon.
                 seg[2] &= (uint8_t)~SEG_COLON;
                 seg[3] = (uint8_t)((seg[3] & ~SEG_COLON) | (((now / 1000) & 1) ? SEG_COLON : 0));
+            } else if (!holding && s_winner < 0 && s_owner < 0 && capture_target() == src) {
+                // Uncaptured: one colon dot missing on the team the next press goes
+                // for. Subtle on purpose: it must never look claimed.
+                seg[2] &= (uint8_t)~SEG_COLON;
             }
         }
         display_set(t, seg, identifying(now) ? bright : disp_level(bright));
@@ -1136,13 +1139,11 @@ static void render_leds(uint32_t now)
         if ((now / 500) & 1)
             for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(s_owner), PAUSED_LEVEL);
     } else {
-        // Uncaptured: slow (0.5 Hz) faint pulse in the colour the next capture
-        // gives; random alternates the two colours each pulse.
-        int target = capture_target(0);
-        int c = target >= 0 ? target : (int)((now / 2000) & 1);
+        // Uncaptured: slow (0.5 Hz) faint white pulse. No team colour, so it can
+        // never be mistaken for claimed.
         float ph = (float)(now % 2000) / 2000.0f;
         int level = (int)(UNCAPTURED_LEVEL * 0.5f * (1.0f - cosf(2.0f * (float)M_PI * ph)) + 0.5f);
-        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(c), level);
+        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(WHITE, level);
     }
 
     // Hold progress.
