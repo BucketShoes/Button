@@ -59,6 +59,9 @@ Everything was ordered from JLC: the board assembled by JLCPCB, and the case pri
 - **Some soldering is still needed.** JLC wouldn't place the 8 WS2812B LEDs: they're moisture class MSL 5a,
   even though they're listed as available for economic assembly. The 18650 holder on the back and any external
   wires (speaker, pedals, LED strip) are also hand-soldered.
+- **A pouch cell instead of the 18650** works fine, but connect it through a plug (JBAT1 takes a 2-pin PH 2.0
+  connector) rather than soldering it straight on. The ESP is always powered from the cell, so a hard-wired cell
+  leaves no way to power-cycle a stuck button.
 - **Order the case** from [`case/larp-v43 print.step`](case): the shell (and sleeve) in 9600 white resin, the lid in 8001 clear resin, untreated.
 - **Flash the firmware** over USB-C (see below), then connect from the control page.
 - **Before ordering**, read [`docs/next-revision.md`](docs/next-revision.md): the first articles showed fit,
@@ -97,7 +100,10 @@ which brings its own ESP-IDF; nothing else to install).
 1. Install VS Code and its PlatformIO extension, then open this folder. The first build downloads the toolchain,
    which takes a few minutes.
 2. Plug the board in by USB-C and pick its port in the status bar.
-3. Run the PlatformIO **Upload** task. If it can't connect, take the cell out, then hold BOOT (inside the case) while plugging in USB, and try again.
+3. Run the PlatformIO **Upload** task. The ESP32-C6's native USB usually just works, but not on every module. If it won't
+   connect, or keeps dropping out, hold BOOT (inside the case) while plugging in USB, then upload. That keeps the chip in its
+   bootloader. It matters most with no cell fitted: on USB alone the power peaks at startup can reset the chip in a loop,
+   and BOOT stops the loop long enough to flash.
 4. Open the control page and connect. Settings (name, mode, durations, colours and so on) are set from the page and
    saved on the button, so there's nothing to configure in the code.
 

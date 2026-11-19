@@ -64,4 +64,4 @@ Rounded to the nearest A$5.
 - Export A−B / B−A volume diffs vs previous version.
 
 ## Open questions
-- Battery holder: a replacement must fit the existing footprint, including its locating-peg hole. LCSC shipping to Australia is about A$45; look for the same part number elsewhere, or keep using a pouch cell taped in and wired to the battery pads.
+- Battery holder: a replacement must fit the existing footprint, including its locating-peg hole. LCSC shipping to Australia is about A$45; look for the same part number elsewhere, or keep using a pouch cell taped in and wired to the battery pads. Wire a pouch cell through a connector (JBAT1 is a 2-pin PH 2.0 footprint), not straight to the board: the ESP is always powered from the cell, so a hard-wired cell leaves no way to power-cycle a stuck button.
