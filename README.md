@@ -10,11 +10,12 @@ standing next to it holding up a flag so players could see the score from a dist
 up for itself, and a capture takes a deliberate hold rather than the instant slap of a chess clock.
 
 <p align="center"><a href="https://bucketshoes.github.io/Button/"><b>Open the control page</b></a>
-&nbsp;·&nbsp; <a href="https://bucketshoes.github.io/Button/?demo">try the demo (no hardware needed)</a></p>
+&nbsp;·&nbsp; <a href="https://bucketshoes.github.io/Button/?demo"><b>Try the demo</b></a> (no hardware needed)</p>
 
 The control page runs in Chrome on a phone and talks to the buttons over Bluetooth. From it a ref can see every
 button at once, pause and resume the whole game, adjust clocks and change settings. The buttons work
-fine without it.
+fine without it. **The demo** runs five simulated buttons in your browser, with clocks ticking and captures happening
+by themselves. Every control works on them, so open a button's settings and try things out.
 
 | | |
 |---|---|
@@ -23,8 +24,6 @@ fine without it.
 | ![KiCad render of the board](docs/images/pcb-render.png) | ![Section through the case](docs/images/case-section.webp) |
 | The b43 board (KiCad) | Case section: lid, return spring and pushers over the shell |
 
-<p align="center"><img src="docs/images/control-page.jpg" width="320" alt="Control page with four buttons connected"></p>
-
 Photos of it powered on don't come out: the displays and charge LED blow out, so the photos above show it off.
 
 ## What's in it
@@ -32,7 +31,9 @@ Photos of it powered on don't come out: the displays and charge LED blow out, so
 - **ESP32-C6** module, two 4-digit 7-segment displays (one per team), 8 WS2812 LEDs in a ring,
   three switches under the lid, a speaker, USB-C charging and an 18650 cell.
 - A **3D-printed case**: a translucent lid that presses the switches through printed pushers, over a shell
-  that holds the board with a twist-lock.
+  that holds the board with a twist-lock. The shell is JLC3DP's 9600 white resin, thin enough that the
+  LEDs glow out through its sides. The lid is 8001 clear resin: without any smoothing treatment it's a little
+  diffuse, but the large displays read easily through it.
 - **Firmware** in C on ESP-IDF, with a Bluetooth LE protocol for the control page.
 
 ## What's in this repo
@@ -58,7 +59,7 @@ Everything was ordered from JLC: the board assembled by JLCPCB, and the case pri
 - **Some soldering is still needed.** JLC wouldn't place the 8 WS2812B LEDs: they're moisture class MSL 5a,
   even though they're listed as available for economic assembly. The 18650 holder on the back and any external
   wires (speaker, pedals, LED strip) are also hand-soldered.
-- **Order the case** from [`case/larp-v43 print.step`](case). The lid in the photos is translucent resin, and the shell is white.
+- **Order the case** from [`case/larp-v43 print.step`](case): the shell (and sleeve) in 9600 white resin, the lid in 8001 clear resin, untreated.
 - **Flash the firmware** over USB-C (see below), then connect from the control page.
 - **Before ordering**, read [`docs/next-revision.md`](docs/next-revision.md): the first articles showed fit,
   spring and rattle problems in the case, and a few board changes.

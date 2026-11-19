@@ -1,19 +1,26 @@
 # Capture button — next-revision list (from first articles, b43 / case v43)
 
-Parts arrived 2026-11-18. Not yet powered; WS2812s and battery not fitted.
+Overall, quite happy. If doing another revision, there are some tweaks to improve: mostly a stronger return spring,
+a lid that's easier to fit and remove, and tighter tolerances on the sliding parts. For the battery holder, LCSC's
+shipping is pricey and the chosen part wasn't available locally, so plan for a local replacement; pouch cells work fine meanwhile.
+
+Parts arrived 2026-11-18. The boards power up and run the firmware; the WS2812s and battery holder aren't fitted yet.
 
 ## Cost reference (5 sets)
-- Total A$193 + A$34 shipping: lid, shell, chimney extension (sleeve), PCB, PCBA. Still to add: WS2812s, battery holder, cells.
-- PCB A$11.63 (special offer).
-- Economic PCBA A$123.48: setup 11.97, stencil 2.25, components (23 lines) 69.71, extended components fee 26.94, SMT assembly 3.16, hand-soldering labour 5.25, manual assembly 2.88, nitrogen reflow 1.32.
-- So prints ≈ A$58 for 5 sets (≈ A$11.60/set). All-in ≈ A$45/unit before LEDs/cell.
+Rounded to the nearest A$5.
+
+- Total about A$195, plus A$35 shipping: lid, shell, chimney extension (sleeve), PCB and PCBA. Still to add: WS2812s, battery holder, cells.
+- PCB about A$10 (a special offer).
+- Economic PCBA about A$125: setup and stencil A$15, components (23 lines) A$70, extended-part fees A$25, assembly and hand-soldering A$15.
+- So the prints are about A$60 for 5 sets (about A$12 a set). All-in, about A$45 a unit before LEDs and cell.
 - Fixed-per-order items (setup, stencil, extended fees, shipping) are why 2 units cost nearly as much as 5.
 
 ## What worked
 - Overall wall thickness: doesn't feel like it bends. Outer catches strong.
-- White shell resin is much more rigid than feared; PCB twist-lock works and latches.
+- Materials: shell (and sleeve) in JLC3DP 9600 white resin, lid in 8001 clear resin.
+- The 9600 shell is much more rigid than feared, and translucent enough that the LEDs glow out through the sides. The PCB twist-lock works and latches.
 - Endstops feel fairly solid.
-- Displays legible through the lid even though the lid is more diffuse than wanted.
+- The untreated 8001 lid is a little diffuse (no smoothing or polishing), but the large displays read easily through it.
 - Speaker chimney holes printed (just), see below.
 
 ## Lid / shell fit
@@ -52,10 +59,9 @@ Parts arrived 2026-11-18. Not yet powered; WS2812s and battery not fitted.
 ## Size
 - Would like it smaller; unsure what to take the size from.
 
-## Carried over from earlier notes
+## CAD housekeeping (for whoever edits the case model)
 - Fix print-file growth from the shelf polygon rebuild (v41+); v39 shell was ~180 faces.
 - Export A−B / B−A volume diffs vs previous version.
 
 ## Open questions
-- Two holes near the NE switch: which is the pillar landing (H1), what is the other? Needs the b43 board file.
-- Battery holder: a replacement must fit the existing footprint, including any locating-peg hole. LCSC ~A$45 shipping to AU; look for the same MPN elsewhere, or use a pouch cell taped in and wired.
+- Battery holder: a replacement must fit the existing footprint, including its locating-peg hole. LCSC shipping to Australia is about A$45; look for the same part number elsewhere, or keep using a pouch cell taped in and wired to the battery pads.
