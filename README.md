@@ -91,42 +91,41 @@ Fabrication Toolkit settings. It needs KiCad 10.
 
 ## Building the firmware
 
-Built with PlatformIO, framework **ESP-IDF 5.5.1** (pioarduino platform 55.03.31).
-Chip options are in `sdkconfig.defaults`. Delete the generated `sdkconfig.button`
-after editing it. The flash layout is in `partitions.csv`: a 3 MB app and a 4 MB `audio` partition.
+The firmware is C on **ESP-IDF 5.5.1**, built with [PlatformIO](https://platformio.org) (the pioarduino platform 55.03.31,
+which brings its own ESP-IDF; nothing else to install).
 
-In VS Code, use the PlatformIO **Upload** task with the port picked in the status bar.
-`custom_audio` in `platformio.ini` sets what that Upload does with the audio partition, on the same port:
+1. Install VS Code and its PlatformIO extension, then open this folder. The first build downloads the toolchain,
+   which takes a few minutes.
+2. Plug the board in by USB-C and pick its port in the status bar.
+3. Run the PlatformIO **Upload** task. If it can't connect, take the cell out, then hold BOOT (inside the case) while plugging in USB, and try again.
+4. Open the control page and connect. Settings (name, mode, durations, colours and so on) are set from the page and
+   saved on the button, so there's nothing to configure in the code.
 
-- `keep`: leave the audio partition alone, for fast uploads.
-- `upload`: also write `audio/test_audio.bin` (about 3.8 MB, so the upload is slower).
-- `erase`: also blank the clip header, so nothing plays at power-up.
+From a terminal: `pio run -t upload --upload-port <port>`, then `pio device monitor --port <port>` for the serial log
+(a status line every second and an event log). On Windows `pio` usually isn't on PATH; it's
+`~\.platformio\penv\Scripts\pio.exe`.
 
-Set it to `upload` once per board, then back to `keep`. From a terminal, `pio` isn't
-on PATH, so use the full path:
+Chip options are in `sdkconfig.defaults`; delete the generated `sdkconfig.button` after editing it.
+The flash layout is in `partitions.csv`: a 3 MB app and a 4 MB `audio` partition.
+
+<details>
+<summary>Optional: a music clip</summary>
+
+The `audio` partition can hold a clip of about 40 s, played from the page with the "Music clip" sound. It was added as a
+speaker test, and the button works fine without it. Upload leaves it alone unless `custom_audio` in `platformio.ini` says otherwise:
+`upload` also writes `audio/test_audio.bin`, and `erase` blanks it. Set it back to `keep` afterwards, because the clip makes uploads slow.
+
+To make the clip from any MP3 (`transcode.ps1` uses Windows' own decoder, so no ffmpeg is needed):
 
 ```
-~\.platformio\penv\Scripts\pio.exe run -t upload --upload-port COM5
-~\.platformio\penv\Scripts\pio.exe device monitor --port COM5
+powershell -File tools	ranscode.ps1 -Src "song.mp3" -OutDir <dir> -OutName music.wav
+python tools\make_test_audio.py <dir>\music.wav audio	est_audio.bin
 ```
 
-## Speaker-test clip
-
-`audio/test_audio.bin` is raw 16-bit mono PCM at 48 kHz (the firmware's audio rate) with a 16-byte header. It's
-gitignored, so regenerate it from any MP3:
-
-```
-powershell -File tools\transcode.ps1 -Src "music test.mp3" -OutDir <dir> -OutName music.wav
-python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin
-```
-
-- `transcode.ps1` uses Windows' built-in decoder, so no ffmpeg is needed.
-- `make_test_audio.py` takes 40 s from the very start of the song (`--seconds`; `--start <s>`, `--start auto` to skip leading silence, or `--start loudest`). That's about the most that fits in 4 MB at 48 kHz.
-  - By default it does no high-pass and no compression, just a level normalise and 10 ms de-click ramps at the ends, so it's a clean speaker test.
-  - `--hp` sets a high-pass in Hz; 0 turns it off.
-  - `--compress` is `none`, `light` or `heavy`.
-- It also writes **`audio/test_audio.wav`**: the exact samples the ESP plays, so you can listen on a PC.
-  - What the board adds after that: the PDM high-pass (~35 Hz), the RC filter (~16 kHz), the amp and the speaker.
+`make_test_audio.py` takes the first 40 s and normalises the level (see `--help` for the start point, high-pass and
+compression). It also writes `audio/test_audio.wav`, the exact samples the button plays, for listening on a PC.
+The format is raw 16-bit mono PCM at 48 kHz with a 16-byte header.
+</details>
 
 ## Control page (Web Bluetooth)
 
@@ -200,7 +199,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - The ring shows the holder.
   - Each switch lights its two nearest ring LEDs white.
   - The external strip (16 assumed) mirrors the ring.
-- **Music clip:** no longer plays at power-up; play it from the page. A face press or BOOT stops it.
+- **Music clip** (optional, see "Building the firmware"): plays only when started from the page. A face press or BOOT stops it.
 - **Serial:** a status line every second plus an event log.
 
 Not used yet: the pedals (only logged), storage-charge management on USB, coded PHY or a mesh between buttons, and the event log/timeline. See [docs/plans.md](docs/plans.md).
