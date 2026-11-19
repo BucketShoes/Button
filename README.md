@@ -1,7 +1,94 @@
-# Capture button firmware
+# Capture button
 
-Firmware for the LARP capture button (ESP32-C6, board b43). See
-[docs/design-notes.md](docs/design-notes.md) and [docs/hardware.md](docs/hardware.md).
+A capture point for LARP battle games, made for [Battlecry LARP](https://battlecrylarp.org). Two teams fight
+over a hand-sized button. To take it you hold its lid down for a few seconds, which is long enough
+for an enemy nearby to hit you first. The button shows who holds it with a ring of team-coloured
+lights, and can run a clock for each team, like a reverse chess clock: whoever holds it longest wins.
+
+We used to mark points with scrunchies or flags on a pole, or with a chess clock, which needed a ref
+standing next to it holding up a flag so players could see the score from a distance. The button lights
+up for itself, and a capture takes a deliberate hold rather than the instant slap of a chess clock.
+
+<p align="center"><a href="https://bucketshoes.github.io/Button/"><b>Open the control page</b></a>
+&nbsp;·&nbsp; <a href="https://bucketshoes.github.io/Button/?demo">try the demo (no hardware needed)</a></p>
+
+The control page runs in Chrome on a phone and talks to the buttons over Bluetooth. From it a ref can see every
+button at once, pause and resume the whole game, adjust clocks and change settings. The buttons work
+fine without it.
+
+| | |
+|---|---|
+| ![Assembled button, lid on](docs/images/assembled.jpg) | ![Board, lid and shell as they arrive from JLC](docs/images/parts-from-jlc.jpg) |
+| Assembled, lid on (displays off) | Board, lid and shell as delivered by JLCPCB / JLC3DP |
+| ![KiCad render of the board](docs/images/pcb-render.png) | ![Section through the case](docs/images/case-section.webp) |
+| The b43 board (KiCad) | Case section: lid, return spring and pushers over the shell |
+
+<p align="center"><img src="docs/images/control-page.jpg" width="320" alt="Control page with four buttons connected"></p>
+
+Photos of it powered on don't come out: the displays and charge LED blow out, so the photos above show it off.
+
+## What's in it
+
+- **ESP32-C6** module, two 4-digit 7-segment displays (one per team), 8 WS2812 LEDs in a ring,
+  three switches under the lid, a speaker, USB-C charging and an 18650 cell.
+- A **3D-printed case**: a translucent lid that presses the switches through printed pushers, over a shell
+  that holds the board with a twist-lock.
+- **Firmware** in C on ESP-IDF, with a Bluetooth LE protocol for the control page.
+
+## What's in this repo
+
+| Where | What |
+|---|---|
+| [`src/`](src) | Firmware (ESP-IDF via PlatformIO): see [Building the firmware](#building-the-firmware) |
+| [`docs/index.html`](docs/index.html) | The control page, served by GitHub Pages ([`demo.js`](docs/demo.js) is its demo mode) |
+| [`docs/ble-protocol.md`](docs/ble-protocol.md) | The Bluetooth protocol, if you want to write your own controller |
+| [`docs/hardware.md`](docs/hardware.md) | Pin map, power, displays, LEDs and audio, as built on board b43 |
+| [`docs/design-notes.md`](docs/design-notes.md), [`docs/plans.md`](docs/plans.md) | Design notes, game ideas, and what's planned |
+| [`pcb/`](pcb) | KiCad 10 project for board b43, and the JLC production files |
+| [`case/`](case) | Case STEP (lid, shell and sleeve, v43) as sent to JLC3DP |
+| [`docs/next-revision.md`](docs/next-revision.md) | **Read this before building your own:** what we'd change after the first boards and cases arrived, and the cost |
+
+## Building one
+
+Everything was ordered from JLC: the board assembled by JLCPCB, and the case printed in resin by JLC3DP.
+
+- **Every assembled part has an LCSC part number** in the board file (`LCSC Part #`), so the BOM and placement files
+  in [`pcb/production b43.zip`](pcb) go straight into a JLCPCB assembly order. They're mostly basic and
+  promotional parts, so the extended-part fees stay low.
+- **Some soldering is still needed.** JLC wouldn't place the 8 WS2812B LEDs: they're moisture class MSL 5a,
+  even though they're listed as available for economic assembly. The 18650 holder on the back and any external
+  wires (speaker, pedals, LED strip) are also hand-soldered.
+- **Order the case** from [`case/larp-v43 print.step`](case). The lid in the photos is translucent resin, and the shell is white.
+- **Flash the firmware** over USB-C (see below), then connect from the control page.
+- **Before ordering**, read [`docs/next-revision.md`](docs/next-revision.md): the first articles showed fit,
+  spring and rattle problems in the case, and a few board changes.
+
+### Opening the board in KiCad
+
+[`pcb/`](pcb) has the schematic, board, project libraries (`LARP.kicad_sym`, `LARP.pretty`), design rules and
+Fabrication Toolkit settings. It needs KiCad 10.
+
+- **3D models:** the EasyEDA/LCSC models aren't in the repo, because their redistribution terms are unclear. Fetch them with:
+
+  ```
+  pip install easyeda2kicad
+  python tools/fetch_3d_models.py
+  ```
+
+  The script puts each model where the board expects it, and checks it against [`pcb/models.sha256`](pcb/models.sha256), the exact files
+  the board was designed with. The board file and gerbers don't depend on them; only the 3D view does.
+- **Schematic:** it matches the b43 board, except that USBC1 uses a different 16-pin USB-C footprint on the board.
+  The mounting holes and a net tie are on the board only.
+- **How the files were made:** scripts generated the KiCad files with the parts and nets but no layout. The
+  layout was then done by hand in KiCad, and later tweaks were a mix of KiCad edits and direct edits to the files,
+  so the files here, not the scripts, are the source.
+
+## Licence
+
+- **Firmware, control page and tools:** [GPL-3.0-or-later](LICENSE).
+- **Hardware (`pcb/`, `case/`) and documentation:** [CC BY-SA 4.0](LICENSE-hardware.md).
+
+## Building the firmware
 
 Built with PlatformIO, framework **ESP-IDF 5.5.1** (pioarduino platform 55.03.31).
 Chip options are in `sdkconfig.defaults`. Delete the generated `sdkconfig.button`
@@ -44,7 +131,8 @@ python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin
 
 [docs/index.html](docs/index.html) is published by GitHub Pages at
 <https://bucketshoes.github.io/Button/>. Open it in Chrome (Android, or Chrome/Edge on a computer) and
-press **Connect a button**. You can connect several buttons.
+press **Connect a button**. You can connect several buttons. With no hardware, add `?demo` to the address for five simulated buttons
+(<https://bucketshoes.github.io/Button/?demo>).
 
 - **Game bar** (top): pause and resume the whole game, and play a sound (whistle by default) on every button. Game resume undoes the game pause: each button goes back to exactly what it was doing, so a button that was paused or uncaptured stays that way.
 - **Overview:** one row per button, sized so about 5 fit on a phone screen. Name and battery on the left, then a box per team (team names once at the top of each column):
