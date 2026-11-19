@@ -71,9 +71,9 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
 - **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
 - **Hold**, where H is the hold time (default 3 s):
-  - **Up to H:** the ring spins in the colour of the team about to capture (white if random), with a rising whoop. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
+  - **Up to H:** the ring fills one LED at a time in the colour of the team about to capture, with a bright spinning LED on top, and a rising whoop. Letting go early puts it back as it was. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
-  - **Uncaptured:** 1 tap then hold gives team 1, and 2 taps then hold gives team 2. A plain hold uses the "first capture" setting, which is random by default.
+  - **Uncaptured:** 1 tap then hold gives team 1, and 2 taps then hold gives team 2. A plain hold uses the "first capture" setting, which is random by default. The team is decided the moment the hold starts and shows straight away (ring colour, and that team's display lit). Don't like it? Let go and hold again within 10 s for the other team.
   - **H to H+3 s:** a ding each second, then a **pause** at H+3 s. The clocks go back to where they were before the hold, and the paused holder is:
     - **was running:** whoever had it before the hold;
     - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);

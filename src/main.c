@@ -265,7 +265,7 @@ static struct {
 
 enum { HS_BUILD, HS_CAPTURED, HS_PAUSED, HS_RESET };
 static int s_hold_stage;
-static int s_hold_target;  // team the capture will go to, -1 = random
+static int s_hold_target;  // team the capture will go to (decided at the press, shown during the hold)
 static int s_hold_last_sec;
 static bool s_build_started;
 
@@ -301,12 +301,17 @@ static const char *state_name(void)
     return s_owner >= 0 ? "paused" : "idle";
 }
 
+static int s_retry_team = -1;    // uncaptured hold let go early: the next try gets the other team
+static uint32_t s_retry_until;
+#define RETRY_MS 10000
 // Who the next capture goes to, given the taps just before the hold.
 static int capture_target(int taps)
 {
     if (s_owner >= 0) return s_running ? 1 - s_owner : s_owner;
     if (taps == 1) return 0;
     if (taps == 2) return 1;
+    // Just let go of a hold: the next try gets the other team.
+    if (s_retry_team >= 0 && (int32_t)(s_retry_until - (uint32_t)(esp_timer_get_time() / 1000)) > 0) return 1 - s_retry_team;
     return (int)s_cfg.default_capture - 1;  // -1 = random
 }
 
@@ -328,6 +333,7 @@ static int batt_percent(int mv)
 
 static void game_reset(uint32_t now)
 {
+    s_retry_team = -1;
     for (int t = 0; t < 2; t++) s_val[t] = s_cfg.count_up ? 0 : (int32_t)s_cfg.duration_ms[t];
     s_winner = -1;
     s_win_alarm_until = now;
@@ -377,6 +383,11 @@ static void on_face_press(uint32_t now)
 
     if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
     s_hold_target = capture_target(s_taps);
+    if (s_owner < 0 && s_winner < 0) {
+        // Uncaptured: decide the team now, so the ring and displays show it from
+        // the start. Let go and hold again (within RETRY_MS) for the other team.
+        if (s_hold_target < 0) s_hold_target = (int)(esp_random() & 1);
+    }
 
     audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
@@ -389,6 +400,10 @@ static void on_face_press(uint32_t now)
 static void on_face_release(uint32_t held)
 {
     if (s_hold_stage == HS_BUILD) audio_stop(SLOT_BUILD);
+    if (s_hold_stage == HS_BUILD && held >= TAP_MAX_MS && s_owner < 0 && s_winner < 0) {
+        s_retry_team = s_hold_target;
+        s_retry_until = s_face.last_active_ms + RETRY_MS;
+    }
     if (held < TAP_MAX_MS) {
         s_taps++;
         s_last_tap_ms = s_face.last_active_ms;
@@ -426,6 +441,7 @@ static void hold_progress(uint32_t now, uint32_t held)
             }
         } else {
             int team = s_hold_target >= 0 ? s_hold_target : (int)(esp_random() & 1);
+            s_retry_team = -1;
             s_owner = team;
             s_running = true;
             s_fresh = false;
@@ -1085,8 +1101,9 @@ static void render_displays(uint32_t now)
                     bright = DISP_DIM;
                 }
             } else {
-                // Not running: the display of whoever the next capture goes to is lit.
-                int target = capture_target(0);
+                // Not running: the display of whoever the next capture goes to is lit
+                // (while held: the team this hold will give it to).
+                int target = s_face.state && s_hold_stage == HS_BUILD ? s_hold_target : capture_target(0);
                 bright = target < 0 ? DISP_IDLE : target == src ? DISP_FULL : DISP_DIM;
             }
             display_colon(seg, colon);
