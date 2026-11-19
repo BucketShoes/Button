@@ -18,7 +18,7 @@ void config_defaults(config_t *c)
     c->default_capture = 0;  // random
     // Half volume and LED brightness: full volume browns out on USB-only power
     // (the 400 mA charger feeds VSYS). Turn them up when running on a cell.
-    c->volume = 128;
+    c->volume = 192;
     c->led_level = 128;
     c->hold_ms = 3000;
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;

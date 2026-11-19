@@ -214,8 +214,8 @@ static void render_block(void)
 //   If the start of sounds is still clipped, raise AMP_WAKE_MS; if nothing
 //   is clipped, try lowering it.
 // Light-sleep wake itself is well under 1 ms; it isn't part of this.
-#define QUIET_MS      1000
-#define AMP_WAKE_MS   50
+#define QUIET_MS      1100
+#define AMP_WAKE_MS   120
 
 static volatile bool s_allowed = true;  // false while VSYS is off (powered down)
 static volatile bool s_keep_awake;

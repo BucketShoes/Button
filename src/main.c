@@ -1271,11 +1271,11 @@ void app_main(void)
              (unsigned long)s_boot_count);
     config_load(&s_cfg);
     if (s_reset_reason == ESP_RST_BROWNOUT) {
-        // Don't brown out again on the startup sound: 30 % volume and brightness
+        // Don't brown out again on the startup sound: 50 % volume and brightness
         // until changed (not saved, so the stored settings are untouched).
-        if (s_cfg.volume > 77) s_cfg.volume = 77;
-        if (s_cfg.led_level > 77) s_cfg.led_level = 77;
-        ESP_LOGW(TAG, "brown-out reset: volume and brightness capped at 30 %% for now");
+        if (s_cfg.volume > 128) s_cfg.volume = 128;
+        if (s_cfg.led_level > 128) s_cfg.led_level = 128;
+        ESP_LOGW(TAG, "brown-out reset: volume and brightness capped at 50 %% for now");
     }
     inputs_init();
     sounds_init();
