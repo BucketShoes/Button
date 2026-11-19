@@ -208,13 +208,14 @@ static void render_block(void)
 // them awake (final minute of a countdown). Waking takes a fixed time, so
 // the first sound of an interaction is always late by the same amount, and
 // nothing is lost: sounds wait in the queue until the speaker is ready.
-//   PDM_SETTLE_MS  PDM midpoint settles through CIN1 (10 ms tau) with the amp
-//                  still off, so turning the amp on doesn't pop
-//   AMP_WAKE_MS    amp turn-on time after CTRL goes high (silent zeros meanwhile)
+//   PDM and amp start together (the PDM midpoint settling through CIN1 can
+//   give a small click; a click beats a longer delay). Then AMP_WAKE_MS of
+//   silence covers the amp's own turn-on, so the sound isn't cut short.
+//   If the start of sounds is still clipped, raise AMP_WAKE_MS; if nothing
+//   is clipped, try lowering it.
 // Light-sleep wake itself is well under 1 ms; it isn't part of this.
 #define QUIET_MS      1000
-#define PDM_SETTLE_MS 40
-#define AMP_WAKE_MS   80
+#define AMP_WAKE_MS   50
 
 static volatile bool s_allowed = true;  // false while VSYS is off (powered down)
 static volatile bool s_keep_awake;
@@ -244,17 +245,14 @@ static void write_zeros_until(int64_t t_us)
 
 static void wake(void)
 {
+    if (s_i2s_on && s_amp_on) return;
     int64_t t0 = esp_timer_get_time();
     if (!s_i2s_on) {
         i2s_channel_enable(s_tx);
         s_i2s_on = true;
-        write_zeros_until(t0 + PDM_SETTLE_MS * 1000);
-        t0 = esp_timer_get_time();
     }
-    if (!s_amp_on) {
-        amp(true);
-        write_zeros_until(t0 + AMP_WAKE_MS * 1000);
-    }
+    amp(true);
+    write_zeros_until(t0 + AMP_WAKE_MS * 1000);
 }
 
 static void i2s_off(void)
@@ -320,6 +318,9 @@ void audio_init(void)
 
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;  // underrun -> zeros -> 50% PDM -> silence
+    // 4 x 5 ms DMA buffers: 20 ms of buffering (latency), two 10 ms blocks of slack.
+    cc.dma_desc_num = 4;
+    cc.dma_frame_num = SR / 200;
     ESP_ERROR_CHECK(i2s_new_channel(&cc, &s_tx, NULL));
 
     i2s_pdm_tx_config_t pc = {

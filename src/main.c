@@ -258,6 +258,7 @@ static bool s_fresh = true;  // nothing has happened since the last reset
 
 static struct {
     bool running;
+    bool fresh;
     int owner;
     int32_t val[2];
 } s_snap;                  // state when the current hold started
@@ -366,6 +367,7 @@ static void clock_changed(void)
 static void on_face_press(uint32_t now)
 {
     s_snap.running = s_running;
+    s_snap.fresh = s_fresh;
     s_snap.owner = s_owner;
     s_snap.val[0] = s_val[0];
     s_snap.val[1] = s_val[1];
@@ -434,13 +436,17 @@ static void hold_progress(uint32_t now, uint32_t held)
     if (s_hold_stage == HS_CAPTURED && held >= h2) {
         s_hold_stage = HS_PAUSED;
         if (!won) {
-            // Undo this hold entirely, then pause. The owner stays, and the
-            // next hold resumes with them.
+            // Undo this hold's clock changes, then pause (the next hold resumes
+            // with that holder). Who holds it while paused:
+            //   was running     -> whoever had it before this hold
+            //   was uncaptured  -> the team just picked (pre-set the owner at 10:00)
+            //   was paused      -> the other team (each 6 s hold swaps it)
             s_val[0] = s_snap.val[0];
             s_val[1] = s_snap.val[1];
-            s_owner = s_snap.owner;
+            s_fresh = s_snap.fresh;
+            if (s_snap.owner >= 0) s_owner = s_snap.running ? s_snap.owner : 1 - s_snap.owner;
             s_running = false;
-            ESP_LOGI(TAG, "PAUSED");
+            ESP_LOGI(TAG, "PAUSED, holder team %d", s_owner + 1);
         }
         if (!won) AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);  // after a win there is nothing to pause
     }

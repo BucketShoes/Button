@@ -74,7 +74,10 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **Up to H:** the ring spins in the colour of the team about to capture (white if random), with a rising whoop. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
   - **Uncaptured:** 1 tap then hold gives team 1, and 2 taps then hold gives team 2. A plain hold uses the "first capture" setting, which is random by default.
-  - **H to H+3 s:** a ding each second, then a **pause** at H+3 s (the capture is undone).
+  - **H to H+3 s:** a ding each second, then a **pause** at H+3 s. The clocks go back to where they were before the hold, and the paused holder is:
+    - **was running:** whoever had it before the hold;
+    - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);
+    - **was paused:** the other team, so each further 6 s hold swaps it.
   - **H+3 to H+7 s:** doom each second, then a **reset** at H+7 s.
   - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+7 s resets.
 - **Idle cues:**
@@ -107,7 +110,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **On:**
   - Everything is powered.
   - Between loop passes (20 ms when idle), the CPU light-sleeps.
-  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. Waking takes a fixed ~120 ms (PDM settle plus amp turn-on), so the first sound of an interaction is always that much late, never cut short. Quick follow-ups (taps, holds) aren't delayed. In the last 61 s of a countdown the speaker stays awake.
+  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. The PDM and amp then start together, which may give a small click. The first sound of an interaction waits a fixed ~70 ms (50 ms for the amp's turn-on, `AMP_WAKE_MS` in `src/audio.c`, plus 20 ms of DMA buffering), so it's late but never cut short. Quick follow-ups (taps, holds) aren't delayed. In the last 61 s of a countdown the speaker stays awake.
   - **Idle** means no press and no page command; the game state is kept throughout, and a tap brings it straight back.
     - After 10 min, every second ring and strip LED goes off (LED1 and LED2 stay).
     - After 1 h, brightness drops to 10 % (or stays lower if it's already set lower).
