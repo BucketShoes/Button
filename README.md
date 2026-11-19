@@ -146,6 +146,7 @@ press **Connect a button**. You can connect several buttons. With no hardware, a
 - **iPhone:** no iPhone browser has Web Bluetooth (they're all Safari underneath, including Chrome), so the page
   can't connect, installed or not. A Web Bluetooth browser app such as Bluefy may work; it hasn't been tested.
 
+- **Keep screen on** (in the game bar, on by default): stops the phone locking while the page is in front, so a ref can glance at it mid-game. Untick it to save battery; the choice is remembered.
 - **Game bar** (top): pause and resume the whole game, and play a sound (whistle by default) on every button. Game resume undoes the game pause: each button goes back to exactly what it was doing, so a button that was paused or uncaptured stays that way.
 - **Overview:** one row per button, sized so about 5 fit on a phone screen. Name and battery on the left, then a box per team (team names once at the top of each column):
   - thick border in the team colour, filled for the holder;

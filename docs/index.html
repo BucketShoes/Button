@@ -53,6 +53,7 @@
   #game { margin: 12px 0; }
   .gamebar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .gamebar select { flex: 1; min-width: 110px; }
+  .wake { margin-left: auto; color: var(--muted); font-size: 13px; white-space: nowrap; }
   #g-status { font-weight: 700; color: var(--warn); }
   .ov { display: grid; grid-template-columns: minmax(64px, 0.8fr) 1fr 1fr; gap: 6px; align-items: stretch; margin: 10px 0 4px; }
   .ov .th { text-align: center; font-size: 13px; color: var(--muted); border-bottom: 3px solid var(--line); padding-bottom: 2px; }
@@ -104,6 +105,7 @@
       <button data-all="gpause" id="g-pause">Pause game</button>
       <button data-all="gresume" id="g-resume">Resume game</button>
       <span id="g-status"></span>
+      <label id="wake-l" class="wake" hidden title="Stops the phone locking while this page is open"><input type="checkbox" id="wake"> Keep screen on</label>
     </div>
     <div class="gamebar" style="margin-top:8px">
       <select id="all-sound"></select>
@@ -653,6 +655,29 @@ function tick() {
 }
 setInterval(tick, 200);
 tick();
+// Keep the screen on while the page is in front (on by default; the choice is remembered).
+// The browser drops the lock whenever the page is hidden, so it's taken again on return.
+const wake = { box: document.getElementById("wake"), lock: null };
+async function updateWake() {
+  const want = wake.box.checked && document.visibilityState === "visible";
+  if (want && !wake.lock) {
+    try {
+      wake.lock = await navigator.wakeLock.request("screen");
+      wake.lock.addEventListener("release", () => { wake.lock = null; });
+    } catch (e) { console.warn("wake lock:", e.message); }
+  } else if (!want && wake.lock) { wake.lock.release(); wake.lock = null; }
+}
+if ("wakeLock" in navigator) {
+  document.getElementById("wake-l").hidden = false;
+  try { wake.box.checked = localStorage.getItem("keepScreenOn") !== "0"; } catch { wake.box.checked = true; }
+  wake.box.addEventListener("change", () => {
+    try { localStorage.setItem("keepScreenOn", wake.box.checked ? "1" : "0"); } catch {}
+    updateWake();
+  });
+  document.addEventListener("visibilitychange", updateWake);
+  updateWake();
+}
+
 if ("serviceWorker" in navigator && location.protocol !== "file:")  // offline copy and "install as app", see sw.js
   navigator.serviceWorker.register("sw.js").catch(e => console.warn("service worker:", e));
 if (new URLSearchParams(location.search).has("demo")) {  // simulated buttons, see demo.js
