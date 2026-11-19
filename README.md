@@ -47,7 +47,8 @@ python tools\make_test_audio.py <dir>\music.wav audio\test_audio.bin
 press **Connect a button**. You can connect several buttons; each gets its own panel. Per button:
 
 - **Controls:** start, pause, reset, identify (displays and ring flash with beeps for 3 s), battery, and power off.
-- **Holder:** set the holder (uncaptured / team 1 / team 2), and lock the button so holds do nothing (taps still show the battery).
+- **Holder:** set the holder (uncaptured / team 1 / team 2).
+- **Reboot** (in settings), for when something is stuck. Settings are kept; the game state is lost.
 - **Sounds:** play any of the button's sounds, or stop them.
 - **Clocks:** live clocks, ±10 s / ±1 min, or set an exact time, even while running.
 - **Settings (saved on the button):**
@@ -70,23 +71,25 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
 - **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
 - **Hold**, where H is the hold time (default 3 s):
-  - **Up to H:** the ring spins in the colour of the team about to capture (white if random), with a rising whoop. For holds over 4 s, it ticks each second and the whoop covers the last 3 s.
+  - **Up to H:** the ring spins in the colour of the team about to capture (white if random), with a rising whoop. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
   - **Uncaptured:** 1 tap then hold gives team 1, and 2 taps then hold gives team 2. A plain hold uses the "first capture" setting, which is random by default.
   - **H to H+3 s:** a ding each second, then a **pause** at H+3 s (the capture is undone).
   - **H+3 to H+7 s:** doom each second, then a **reset** at H+7 s.
-  - **After a win**, the fanfare repeats for 20 s. Holding dings every second: H silences the fanfare, and H+7 s resets.
+  - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+7 s resets.
 - **Idle cues:**
   - **Uncaptured:** the ring pulses faintly (0–10 %, 0.5 Hz) in the next capture's colour, alternating colours if random. That team's display is lit, with the colour steady.
-  - **Paused with a holder:** the ring blinks faintly in their colour.
+  - **Paused with a holder:** the ring blinks faintly in their colour, and their display shows a single slow-blinking dot instead of the colon.
 - **After reset:** uncaptured, or held by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
 - **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.
 - **Power:** see "Power" below.
 - **BOOT:**
-  - Tap: diagnostic sound.
-  - Hold 1.5 s (low beep) and release: **power off**.
-  - Hold 5 s: restore the default settings.
+  - Hold: the displays say "HoLd" "oFF" with a falling tone, and at 3 s it **powers off** (no need to let go).
+  - Keep holding to 8 s: restore the default settings (it wakes briefly to play the sound).
+  - A press while the music clip plays only stops the clip.
 - **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power. The brightness setting dims the displays too.
+- **Brown-out recovery:** after a brown-out reset, volume and brightness start capped at 30 % (not saved) so the startup sound can't cause another one.
+- **Display brightness:** 1/8 is the GN1650's lowest step. At low settings the highlighted display stays one step above the dim one, so you can still tell them apart.
 - **Displays:** the running holder's display is bright, with its colon flashing at 4 Hz. The others are dim.
 - **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
 - **LEDs:**
@@ -104,13 +107,13 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **On:**
   - Everything is powered.
   - Between loop passes (20 ms when idle), the CPU light-sleeps.
-  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. The first sound of each interaction therefore always comes about 60 ms late; quick follow-ups (taps, holds) don't.
+  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. Waking takes a fixed ~120 ms (PDM settle plus amp turn-on), so the first sound of an interaction is always that much late, never cut short. Quick follow-ups (taps, holds) aren't delayed. In the last 61 s of a countdown the speaker stays awake.
   - **Idle** means no press and no page command; the game state is kept throughout, and a tap brings it straight back.
     - After 10 min, every second ring and strip LED goes off (LED1 and LED2 stay).
-    - After 1 h, everything drops to 10 % of the brightness setting.
+    - After 1 h, brightness drops to 10 % (or stays lower if it's already set lower).
     - After 4 h, it powers off.
 - **Turning it off:**
-  - Release BOOT after 1.5–5 s, use the page's Power off, or let it auto-off.
+  - Hold BOOT for 3 s, use the page's Power off, or let it auto-off.
   - Clocks pause; a teams-only holder stays.
 - **Off:**
   - PWR_EN is low, so only the ESP is powered, and it light-sleeps.
@@ -118,7 +121,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - It checks the battery hourly, briefly powering VSYS to read it.
 - **Peek:**
   - A lid press while off shows the battery for about 6 s.
-  - Keep holding (or hold again) for 3 s to turn it on; the ring fills white.
+  - Anything that looks like trying to wake it turns it on: press again (tap, or several taps), or keep holding for 1 s; the ring fills white.
   - Otherwise it goes back to off.
 - **Low battery (not on USB):**
   - Below 3.45 V average while on: a battery warning every 5 min.

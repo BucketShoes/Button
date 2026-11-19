@@ -9,6 +9,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "audio";
 
@@ -203,12 +204,20 @@ static void render_block(void)
 }
 
 // Power: amp and PDM both stop QUIET_MS after the last sound (a running PDM
-// holds a lock that stops the chip light-sleeping). The first sound after
-// that always waits ~60 ms for the PDM midpoint to settle before the amp
-// wakes; sounds in quick succession (taps, holds) have no delay.
-#define QUIET_MS 1000
+// holds a lock that stops the chip light-sleeping), unless main asks to keep
+// them awake (final minute of a countdown). Waking takes a fixed time, so
+// the first sound of an interaction is always late by the same amount, and
+// nothing is lost: sounds wait in the queue until the speaker is ready.
+//   PDM_SETTLE_MS  PDM midpoint settles through CIN1 (10 ms tau) with the amp
+//                  still off, so turning the amp on doesn't pop
+//   AMP_WAKE_MS    amp turn-on time after CTRL goes high (silent zeros meanwhile)
+// Light-sleep wake itself is well under 1 ms; it isn't part of this.
+#define QUIET_MS      1000
+#define PDM_SETTLE_MS 40
+#define AMP_WAKE_MS   80
 
 static volatile bool s_allowed = true;  // false while VSYS is off (powered down)
+static volatile bool s_keep_awake;
 static bool s_i2s_on, s_amp_on;
 
 static bool busy(void)
@@ -226,15 +235,26 @@ static void amp(bool on)
     gpio_set_level(PIN_AMP_EN, on);
 }
 
-static void i2s_on(void)
+static void write_zeros_until(int64_t t_us)
 {
-    if (s_i2s_on) return;
-    i2s_channel_enable(s_tx);
-    s_i2s_on = true;
-    // Let the PDM midpoint settle through CIN1 (10 ms tau) before the amp wakes.
     memset(s_buf, 0, sizeof s_buf);
     size_t w;
-    for (int i = 0; i < 6; i++) i2s_channel_write(s_tx, s_buf, sizeof s_buf, &w, portMAX_DELAY);
+    while (esp_timer_get_time() < t_us) i2s_channel_write(s_tx, s_buf, sizeof s_buf, &w, portMAX_DELAY);
+}
+
+static void wake(void)
+{
+    int64_t t0 = esp_timer_get_time();
+    if (!s_i2s_on) {
+        i2s_channel_enable(s_tx);
+        s_i2s_on = true;
+        write_zeros_until(t0 + PDM_SETTLE_MS * 1000);
+        t0 = esp_timer_get_time();
+    }
+    if (!s_amp_on) {
+        amp(true);
+        write_zeros_until(t0 + AMP_WAKE_MS * 1000);
+    }
 }
 
 static void i2s_off(void)
@@ -259,25 +279,29 @@ static void audio_task(void *arg)
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
-        if (!s_i2s_on) {
-            if (!busy()) {
-                ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // sleep until audio_play / pcm start
-                continue;
-            }
-            i2s_on();
+        if (!s_i2s_on && !busy() && !s_keep_awake) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // sleep until audio_play / pcm start / keep awake
+            continue;
         }
-        if (busy()) {
+        if (busy() || s_keep_awake) {
             quiet_ms = 0;
-            amp(true);
+            wake();  // no-op when already awake
         }
         render_block();
         size_t w;
         i2s_channel_write(s_tx, s_buf, sizeof(s_buf), &w, portMAX_DELAY);
-        if (!busy()) {
+        if (!busy() && !s_keep_awake) {
             quiet_ms += 10;
             if (quiet_ms >= QUIET_MS) i2s_off();  // amp first, then PDM
         }
     }
+}
+
+void audio_keep_awake(bool on)
+{
+    if (on == s_keep_awake) return;
+    s_keep_awake = on;
+    if (on && s_task) xTaskNotifyGive(s_task);
 }
 
 void audio_init(void)

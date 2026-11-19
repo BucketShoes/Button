@@ -18,11 +18,11 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | Offset | Type | Field |
 |---|---|---|
 | 0 | u8 | protocol version (3) |
-| 1 | u8 | flags: bit0 running, bit1 won, bit2 locked, bit3 face held, bit4 identifying, bit5 USB power, bit6 music clip playing |
+| 1 | u8 | flags: bit0 running, bit1 won, bit2 unused (was lock), bit3 face held, bit4 identifying, bit5 USB power, bit6 music clip playing |
 | 2 | i8 | owner (-1 uncaptured, 0 team 1, 1 team 2) |
 | 3 | i8 | winner (-1 none) |
 | 4 | i8 | next capture target with no taps, or the current hold's target while held (-1 random) |
-| 5 | u8 | hold stage while held: 0 building, 1 captured, 2 paused, 3 reset, 4 locked |
+| 5 | u8 | hold stage while held: 0 building, 1 captured, 2 paused, 3 reset |
 | 6 | u16 | held ms |
 | 8 | i32 ×2 | team 1 and team 2 clock values in ms, as shown |
 | 16 | u16 | VSYS mV |
@@ -75,11 +75,12 @@ The first byte is the opcode.
 | 7 | i8 owner | set holder (-1 uncaptured) |
 | 8 | u8 id | play a sound (see below) |
 | 9 | | stop sounds and the music clip |
-| 10 | u8 0/1 | lock: holds do nothing, but taps still work |
+| 10 | | (removed: was lock) |
 | 11 | | show battery |
 | 12 | | restore default settings |
 | 13 | | power off |
 | 14 | | power on |
+| 15 | | reboot (settings kept) |
 
 Sound ids:
 

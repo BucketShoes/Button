@@ -119,7 +119,6 @@
       <button data-owner="-1">Uncaptured</button>
       <button data-owner="0" class="t1">Team 1</button>
       <button data-owner="1" class="t2">Team 2</button>
-      <button data-op="lock" class="lock">Lock button</button>
     </div>
     <div class="row">
       <select class="sound grow"></select>
@@ -162,6 +161,7 @@
         <button data-op="save" class="primary">Save settings</button>
         <button data-op="copyall">Copy to all</button>
         <button data-op="factory" class="danger">Default settings</button>
+        <button data-op="reboot" class="danger">Reboot</button>
         <span class="grow"></span>
         <button data-op="off" class="danger">Power off</button>
         <button data-op="disconnect">Disconnect</button>
@@ -175,9 +175,9 @@
 // ---- protocol (see docs/ble-protocol.md) --------------------------------
 const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
 const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4);
-const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42;
+const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
-             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14 };
+             PLAY_SOUND: 8, STOP_SOUND: 9, LOCK: 10, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15 };
 const POWER = ["on", "peek", "off"];
 const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
                        8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
@@ -285,6 +285,7 @@ class Btn {
       await this.chr.state.startNotifications();
       await this.chr.config.startNotifications();
       this.retry = 0;
+      if (!this.state) this.setStatus("Connected, waiting for the button's state…");
       this.el.classList.remove("off");
       $(this.el, ".dot").classList.add("ok");
     } catch (e) {
@@ -321,7 +322,15 @@ class Btn {
       if (!this.device.gatt.connected) throw new Error("not connected");
       const c = this.chr[chr];
       return c.writeValueWithResponse ? c.writeValueWithResponse(data) : c.writeValue(data);
-    }).catch(e => { console.warn(e); alert(`${this.label()}: ${e.message}`); });
+    }).catch(e => {
+      console.warn(e);
+      if (!this.device.gatt.connected) {
+        this.scheduleReconnect();
+        alert(`${this.label()} isn't connected right now (out of range, or reconnecting). Try again in a moment.`);
+      } else {
+        alert(`${this.label()}: that didn't go through (${e.message}). Try again.`);
+      }
+    });
     return this.queue;
   }
   send(op, ...parts) { return this.write("cmd", cmd(op, ...parts)); }
@@ -337,7 +346,23 @@ class Btn {
     this.render();
   }
   onState(dv) {
-    if (dv.getUint8(0) !== PROTO_VERSION) return;
+    const v = dv.getUint8(0);
+    if (v === PROTO_VERSION && dv.byteLength < STATE_LEN) {
+      // Notification cut to the link's MTU: read the whole value instead (at most 4 per second).
+      const t = performance.now();
+      if (!this.lastFullRead || t - this.lastFullRead > 250) {
+        this.lastFullRead = t;
+        this.queue = this.queue.then(() => this.chr.state.readValue()).then(d => d.byteLength >= STATE_LEN && this.onState(d)).catch(() => {});
+      }
+      return;
+    }
+    if (v !== PROTO_VERSION) {
+      this.state = null;
+      this.setStatus(v > PROTO_VERSION
+        ? `This page is older than the button (protocol v${v}, page v${PROTO_VERSION}). Reload the page; GitHub Pages can take a few minutes to update.`
+        : `The button's firmware is older than this page (protocol v${v}, page v${PROTO_VERSION}). Update the firmware.`);
+      return;
+    }
     this.state = parseState(dv);
     this.render();
   }
@@ -360,12 +385,12 @@ class Btn {
         case "reset": if (confirm(`Reset ${this.label()}?`)) this.send(OP.RESET); return;
         case "identify": return this.send(OP.IDENTIFY, ["u16", 3000]);
         case "battery": return this.send(OP.SHOW_BATTERY);
-        case "lock": return this.send(OP.LOCK, ["u8", this.state && this.state.locked ? 0 : 1]);
         case "play": return this.send(OP.PLAY_SOUND, ["u8", +$(e, ".sound").value]);
         case "stopsound": return this.send(OP.STOP_SOUND);
         case "save": return this.saveSettings();
         case "factory": if (confirm(`Restore default settings on ${this.label()}?`)) this.send(OP.FACTORY_RESET); return;
         case "on": return this.send(OP.POWER_ON);
+        case "reboot": if (confirm(`Reboot ${this.label()}? The game state is lost; settings are kept.`)) this.send(OP.REBOOT); return;
         case "copyall": return this.copyToAll();
         case "off": if (confirm(`Power off ${this.label()}? A press on its lid wakes it.`)) this.send(OP.POWER_OFF); return;
         case "disconnect": return this.close();
@@ -479,7 +504,6 @@ class Btn {
     else if (s.dimmed) text += " · idle 1 h+ (dimmed; turns off at 4 h)";
     else if (s.sparse) text += " · idle 10 min+ (half the LEDs)";
     if (s.held) text += ` · being held ${(s.heldMs / 1000).toFixed(1)} s`;
-    if (s.locked) text += " · LOCKED";
     o.textContent = text;
     o.style.background = col && (s.running || s.won) ? col : "";
     o.style.color = col && (s.running || s.won) ? "#111" : "";
@@ -490,9 +514,6 @@ class Btn {
       el.classList.toggle("live", s.running && s.owner === t && !s.won);
     });
     e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
-    const lock = $(e, ".lock");
-    lock.classList.toggle("on", s.locked);
-    lock.textContent = s.locked ? "Unlock button" : "Lock button";
     $(e, ".poweron").hidden = s.power === 0;
     e.classList.toggle("off", s.power === 2);
     $(e, ".t1").style.borderColor = c.colour[0];

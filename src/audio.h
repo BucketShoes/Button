@@ -31,6 +31,7 @@ void audio_play(int slot, const note_t *notes, int n);  // replaces whatever the
 void audio_stop(int slot);
 void audio_set_volume(int v);  // 0 mute, 1..255 = -40..0 dB
 void audio_set_allowed(bool on);  // false while VSYS is off: amp + PDM off, sounds dropped
+void audio_keep_awake(bool on);   // keep amp + PDM running (no wake delay), e.g. the last minute of a countdown
 
 // Raw PCM clip in the "audio" flash partition (speaker / music test).
 // Header "PCM1", u32 rate (must match SR in audio.c, 48000), u32 samples, u32 reserved, then int16 LE.

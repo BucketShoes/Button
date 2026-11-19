@@ -18,10 +18,9 @@
 //   hold H+7 s    reset
 //   after a win, a hold of H silences the alarm
 //   3 taps        battery
-//   BOOT tap      diagnostic sound
-//   BOOT 1.5-5 s  power off on release (see "power" below)
-//   when off      a press peeks (battery shown); hold 3 s to turn on
-//   BOOT 5 s      restore default settings
+//   BOOT 3 s      power off ("HoLd" "oFF", falling tone; no need to let go)
+//   when off      a press peeks (battery shown); press again or hold 1 s: on
+//   BOOT 8 s      restore default settings
 //
 // No Wi-Fi. BLE is on, also while off (slow adverts). Light sleep when idle.
 
@@ -55,8 +54,6 @@ static const char *TAG = "button";
 // ---------------------------------------------------------------- tuning
 #define PAUSE_EXTRA_MS   3000  // pause at hold + this
 #define RESET_EXTRA_MS   7000  // reset at hold + this
-#define LONG_HOLD_MS     4000  // longer holds tick each second, then the usual 3 s whoop
-#define BUILD_MS         3000
 #define DEBOUNCE_MS      50    // the lid is assumed still pressed this long after any contact
 #define TAP_MAX_MS       500   // a press shorter than this is a tap
 #define TAP_GAP_MS       500   // max hand-off time between taps; also the wait after the last one
@@ -66,8 +63,8 @@ static const char *TAG = "button";
 #define UNCAPTURED_LEVEL 25    // ring pulse peak while uncaptured (~10 %)
 #define BATT_SHOW_MS     6000
 #define IDENT_MS         3000
-#define FACTORY_HOLD_MS  5000  // BOOT held this long restores default settings
-#define OFF_HOLD_MS      1500  // BOOT released between this and FACTORY_HOLD_MS powers off
+#define BOOT_OFF_MS      3000  // BOOT held this long powers off
+#define BOOT_FACTORY_MS  8000  // ... and this long restores default settings
 #define STATE_PUBLISH_MS 200
 #define LOOP_MS          5
 
@@ -98,7 +95,6 @@ static const note_t SND_SW[3][1] = {
     {{1500, 1500, 35, W_SQUARE, 180}},
 };
 static note_t s_build[1];  // rising whoop up to the capture; length set per hold
-static const note_t SND_TICK[] = {{500, 500, 25, W_SQUARE, 150}};  // each second of a long hold
 static const note_t SND_TEAM[2][5] = {
     {   // team 1: rising square arpeggio
         {1047, 1047, 100, W_SQUARE, 255}, {1319, 1319, 100, W_SQUARE, 255}, {1568, 1568, 100, W_SQUARE, 255},
@@ -133,11 +129,10 @@ static const note_t SND_BOOT[] = {  // diagnostic: sine 440 / 880 / 1760, then n
 static const note_t SND_STARTUP[] = {{600, 1800, 150, W_TRI, 200}, {1800, 1800, 60, W_TRI, 200}};
 static const note_t SND_START[] = {{880, 880, 80, W_SQUARE, 220}, {0, 0, 40, W_SQUARE, 0}, {1760, 1760, 200, W_SQUARE, 255}};
 static const note_t SND_BATT[] = {{1000, 1000, 60, W_SINE, 200}, {1500, 1500, 60, W_SINE, 200}};
-static const note_t SND_DENIED[] = {{150, 150, 250, W_SQUARE, 200}};
 static const note_t SND_FACTORY[] = {
     {2000, 500, 300, W_SQUARE, 220}, {0, 0, 60, W_SQUARE, 0}, {2000, 500, 300, W_SQUARE, 220},
 };
-static const note_t SND_OFF_READY[] = {{400, 400, 120, W_SQUARE, 200}};  // BOOT held long enough to power off
+static const note_t SND_OFF_WARN[] = {{1200, 300, 3000, W_SQUARE, 150}};  // BOOT held: falling to power-off
 static const note_t SND_OFF[] = {{1200, 200, 500, W_SQUARE, 220}};
 static const note_t SND_HORN[] = {{220, 220, 900, W_SQUARE, 255}, {0, 0, 120, W_SQUARE, 0}, {220, 220, 900, W_SQUARE, 255}};
 #define WHISTLE_NOTES 32
@@ -260,7 +255,6 @@ static int s_owner = -1;   // -1 uncaptured, 0 team 1, 1 team 2
 static int s_winner = -1;  // >= 0: game over
 static int32_t s_val[2];   // clock values as shown (ms)
 static bool s_fresh = true;  // nothing has happened since the last reset
-static bool s_locked;      // page lock-out: holds do nothing (taps still show battery)
 
 static struct {
     bool running;
@@ -268,7 +262,7 @@ static struct {
     int32_t val[2];
 } s_snap;                  // state when the current hold started
 
-enum { HS_BUILD, HS_CAPTURED, HS_PAUSED, HS_RESET, HS_LOCKED };
+enum { HS_BUILD, HS_CAPTURED, HS_PAUSED, HS_RESET };
 static int s_hold_stage;
 static int s_hold_target;  // team the capture will go to, -1 = random
 static int s_hold_last_sec;
@@ -278,7 +272,8 @@ static int s_taps;
 static uint32_t s_last_tap_ms;
 static uint32_t s_batt_until, s_ident_until;
 static uint32_t s_win_alarm_until, s_win_next_sound;
-static uint32_t s_boot_factory_done;
+static uint32_t s_boot_factory_done, s_boot_off_done;
+static bool s_boot_off_showing;  // BOOT held towards power-off: displays say "HoLd" "oFF"
 
 static int s_vsys_mv, s_vbus_mv;
 
@@ -383,10 +378,6 @@ static void on_face_press(uint32_t now)
 
     audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
-    if (s_locked) {
-        s_hold_stage = HS_LOCKED;
-        AUDIO_PLAY(SLOT_BUILD, SND_DENIED);
-    }
     ESP_LOGI(TAG, "face press (%s, owner %d, taps %d, target %d)", state_name(), s_owner + 1, s_taps,
              s_hold_target + 1);
 }
@@ -407,13 +398,12 @@ static void on_face_release(uint32_t held)
 
 static void hold_progress(uint32_t now, uint32_t held)
 {
-    if (s_hold_stage == HS_LOCKED) return;
     const uint32_t h1 = hold_capture_ms(), h2 = hold_pause_ms(), h3 = hold_reset_ms();
     const bool won = s_winner >= 0;
 
-    // Rising whoop into the capture: the whole hold for short holds, the last
-    // 3 s of a long one (ticks each second before that).
-    if (s_hold_stage == HS_BUILD && !won && !s_build_started && (h1 <= LONG_HOLD_MS || held + BUILD_MS >= h1)) {
+    // Rising whoop into the capture, stretched over the whole hold time, so it
+    // means the same thing at 3 s or 20 s.
+    if (s_hold_stage == HS_BUILD && !won && !s_build_started) {
         s_build_started = true;
         uint32_t ms = h1 > held ? h1 - held : 1;
         s_build[0] = (note_t){250, 1200, (uint16_t)ms, W_SQUARE, 140};
@@ -452,21 +442,24 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_running = false;
             ESP_LOGI(TAG, "PAUSED");
         }
-        AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);
+        if (!won) AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);  // after a win there is nothing to pause
     }
     if (s_hold_stage == HS_PAUSED && held >= h3) {
         s_hold_stage = HS_RESET;
         game_reset(now);
         AUDIO_PLAY(SLOT_EVENT, SND_RESET);
     }
-    // A sound every second: ticks before a long hold's whoop (or all the way
-    // after a win, where there is no whoop), dings towards pause, doom towards reset.
+    // A sound every second after the capture: dings towards pause, doom towards
+    // reset. After a win: dings all the way to the reset (nothing to lose).
     int sec = (int)(held / 1000);
     if (sec != s_hold_last_sec && (uint32_t)sec * 1000 != h1 && (uint32_t)sec * 1000 != h2) {
-        if (s_hold_stage == HS_BUILD && won) AUDIO_PLAY(SLOT_CLICK, SND_DING);
-        else if (s_hold_stage == HS_BUILD && held + BUILD_MS < h1) AUDIO_PLAY(SLOT_CLICK, SND_TICK);
-        if (s_hold_stage == HS_CAPTURED) AUDIO_PLAY(SLOT_CLICK, SND_DING);
-        if (s_hold_stage == HS_PAUSED) AUDIO_PLAY(SLOT_CLICK, SND_DOOM);
+        if (won) {
+            if (s_hold_stage < HS_RESET) AUDIO_PLAY(SLOT_CLICK, SND_DING);
+        } else if (s_hold_stage == HS_CAPTURED) {
+            AUDIO_PLAY(SLOT_CLICK, SND_DING);
+        } else if (s_hold_stage == HS_PAUSED) {
+            AUDIO_PLAY(SLOT_CLICK, SND_DOOM);
+        }
     }
     s_hold_last_sec = sec;
 }
@@ -533,11 +526,12 @@ enum {
     OP_SET_OWNER = 7,    // i8 owner (-1 uncaptured, 0, 1)
     OP_PLAY_SOUND = 8,   // u8 id
     OP_STOP_SOUND = 9,
-    OP_LOCK = 10,        // u8 0/1
+    // 10 was "lock" (removed: a stuck lock was a failure mode)
     OP_SHOW_BATTERY = 11,
     OP_FACTORY_RESET = 12,
     OP_POWER_OFF = 13,
     OP_POWER_ON = 14,
+    OP_REBOOT = 15,
 };
 
 // Boots since power-on (survives resets, not power loss), to spot brown-outs.
@@ -613,22 +607,23 @@ static bool any_face_raw(void)
 // ON    everything powered; the CPU light-sleeps between 20 ms loop passes
 //       when nothing is happening (auto light sleep, not on USB).
 // PEEK  woken from OFF by a press or the page: battery shown for a few
-//       seconds; hold POWER_ON_HOLD_MS to turn on, otherwise back to OFF.
+//       seconds. Anything that looks like trying to wake it turns it on: a
+//       second press (tap again, many taps) or holding POWER_ON_HOLD_MS.
+//       Otherwise back to OFF when the battery display ends.
 // OFF   PWR_EN low (only the ESP powered), light sleep, slow low-power BLE
 //       adverts so the page can still find it. Battery checked hourly.
 // Low battery (not on USB): deep sleep. Below BATT_LOW_MV a press wakes it
-// to show "LO" and sleep again; below BATT_DEAD_MV only USB wakes it.
+// to show "bAtt Lo" and sleep again; below BATT_DEAD_MV only USB wakes it.
 typedef enum { PWR_ON, PWR_PEEK, PWR_OFF } pwr_t;
 static const char *const PWR_NAME[] = {"on", "peek", "off"};
 
-#define PEEK_MS            6000
-#define POWER_ON_HOLD_MS   3000
+#define POWER_ON_HOLD_MS   1000
 // Idle = no press and no page command (game state is kept throughout; a tap
 // brings it straight back). Mid-game something always happens well within these.
 #define IDLE_SPARSE_MS     (10 * 60 * 1000)      // every 2nd ring/strip LED off (LED1/2 stay)
 #define IDLE_DIM_MS        (60 * 60 * 1000)      // probably forgotten: 10 % brightness
 #define AUTO_OFF_MS        (4 * 60 * 60 * 1000)  // then off
-#define DIM_LEVEL          26                    // /255 of the brightness setting while dimmed
+#define DIM_LEVEL          26                    // brightness cap while dimmed (10 %)
 #define OFF_BATT_CHECK_MS  (60 * 60 * 1000)
 #define OFF_RECHECK_MS     60000             // a low reading is confirmed once before acting
 #define BATT_TAU_MS        60000             // averaging while on, so speaker/LED dips don't count
@@ -642,7 +637,6 @@ static const char *const PWR_NAME[] = {"on", "peek", "off"};
 
 static pwr_t s_pwr = PWR_ON;
 static bool s_periph_on;
-static uint32_t s_peek_until;
 static uint32_t s_last_activity;
 static int64_t s_off_since_us;
 static uint32_t s_next_batt_check, s_next_batt_warn;
@@ -763,7 +757,6 @@ static void power_set(pwr_t to, uint32_t now)
         ble_set_slow(false);
         s_batt_mv = s_vsys_mv = sense_vsys_mv();
         if (to == PWR_PEEK) {
-            s_peek_until = now + PEEK_MS;
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
         } else {
@@ -779,13 +772,14 @@ static void power_set(pwr_t to, uint32_t now)
 static void power_tick_on(uint32_t now, uint32_t dt)
 {
     if (s_pwr == PWR_PEEK) {
-        // Hold to turn on; otherwise drop back to off once nothing is showing.
+        // Hold to turn on (a second press also does, in the main loop);
+        // otherwise drop back to off once the battery display ends.
         if (s_face.state && input_held_ms(&s_face) >= POWER_ON_HOLD_MS) {
             power_set(PWR_ON, now);
             return;
         }
-        if (s_face.state || audio_pcm_playing() || (int32_t)(s_ident_until - now) > 0) s_peek_until = now + 2000;
-        if ((int32_t)(now - s_peek_until) >= 0) power_set(PWR_OFF, now);
+        if (s_face.state || audio_pcm_playing() || (int32_t)(s_ident_until - now) > 0) s_batt_until = now + 1000;
+        if ((int32_t)(now - s_batt_until) >= 0) power_set(PWR_OFF, now);
         return;
     }
 
@@ -871,7 +865,7 @@ static void publish_state(uint32_t now)
     uint32_t hm = input_held_ms(&s_face);
     state_pkt_t p = {
         .version = PROTO_VERSION,
-        .flags = (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (s_locked ? 4 : 0) | (held ? 8 : 0) |
+        .flags = (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (held ? 8 : 0) |
                            ((int32_t)(s_ident_until - now) > 0 ? 16 : 0) | (s_vbus_mv > 4000 ? 32 : 0) |
                            (audio_pcm_playing() ? 64 : 0)),
         .owner = (int8_t)s_owner,
@@ -897,7 +891,6 @@ static void factory_reset(uint32_t now)
 {
     config_t d;
     config_defaults(&d);
-    s_locked = false;
     apply_config(&d, now);
     game_reset(now);
     AUDIO_PLAY(SLOT_EVENT, SND_FACTORY);
@@ -970,9 +963,10 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         audio_stop(SLOT_EVENT);
         audio_pcm_stop();
         break;
-    case OP_LOCK:
-        if (n >= 2) s_locked = d[1] != 0;
-        ESP_LOGI(TAG, "button %s", s_locked ? "locked" : "unlocked");
+    case OP_REBOOT:
+        ESP_LOGW(TAG, "reboot requested from the page");
+        vTaskDelay(pdMS_TO_TICKS(100));  // let the write response go out
+        esp_restart();
         break;
     case OP_SHOW_BATTERY:
         s_batt_until = now + BATT_SHOW_MS;
@@ -1009,12 +1003,17 @@ static void ble_service(uint32_t now)
 }
 
 // Brightness after the setting and idle dimming: LEDs 0..255, displays 1..8 (0 = off).
-static int led_level(void) { return s_dim ? s_cfg.led_level * DIM_LEVEL / 255 : s_cfg.led_level; }
+// Dimmed means "at most 10 %", not "10 % of the setting" (which could be invisible).
+static int led_level(void) { return s_dim && s_cfg.led_level > DIM_LEVEL ? DIM_LEVEL : s_cfg.led_level; }
 static int disp_level(int bright)
 {
     if (bright <= 0) return 0;
     int b = (bright * led_level() + 254) / 255;
-    return b < 1 ? 1 : b;
+    if (b < 1) b = 1;
+    // 1/8 is the GN1650's lowest step: keep highlighted displays one step above
+    // dim ones so the difference survives a low brightness setting.
+    if (bright > DISP_DIM && b < 2) b = 2;
+    return b;
 }
 
 // ---------------------------------------------------------------- rendering
@@ -1038,7 +1037,12 @@ static void render_displays(uint32_t now)
     for (int t = 0; t < 2; t++) {
         uint8_t seg[4] = {0};
         int bright = 0;
-        if (identifying(now)) {
+        if (s_boot_off_showing) {
+            static const uint8_t HOLD[4] = {0x76 /*H*/, 0x5C /*o*/, 0x38 /*L*/, 0x5E /*d*/};
+            static const uint8_t OFF[4] = {0, 0x5C /*o*/, 0x71 /*F*/, 0x71 /*F*/};
+            memcpy(seg, t == 0 ? HOLD : OFF, sizeof seg);
+            bright = DISP_FULL;
+        } else if (identifying(now)) {
             memset(seg, 0xFF, sizeof seg);
             bright = ((now / 125) & 1) ? DISP_FULL : 0;
         } else if (batt_showing(now)) {
@@ -1080,6 +1084,11 @@ static void render_displays(uint32_t now)
                 bright = target < 0 ? DISP_IDLE : target == src ? DISP_FULL : DISP_DIM;
             }
             display_colon(seg, colon);
+            if (s_winner < 0 && !s_running && s_owner == src) {
+                // Paused: a single slow-blinking dot instead of the colon.
+                seg[2] &= (uint8_t)~SEG_COLON;
+                seg[3] = (uint8_t)((seg[3] & ~SEG_COLON) | (((now / 1000) & 1) ? SEG_COLON : 0));
+            }
         }
         display_set(t, seg, identifying(now) ? bright : disp_level(bright));
     }
@@ -1117,9 +1126,7 @@ static void render_leds(uint32_t now)
     if (s_face.state) {
         uint32_t held = input_held_ms(&s_face);
         uint32_t h1 = hold_capture_ms(), h2 = hold_pause_ms(), h3 = hold_reset_ms();
-        if (s_hold_stage == HS_LOCKED) {
-            for (int i = 0; i < 6; i++) ring[i] = rgb_scale(RED, 40);
-        } else if (s_winner >= 0 && s_hold_stage < HS_RESET) {
+        if (s_winner >= 0 && s_hold_stage < HS_RESET) {
             int n = (int)(held * 6 / h3);
             for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(RED, 160) : (rgb_t){0};
         } else if (s_hold_stage == HS_BUILD) {
@@ -1197,7 +1204,7 @@ static void status_line(uint32_t now)
            now / 1000.0, PWR_NAME[s_pwr], state_name(), s_cfg.mode, s_owner + 1, t1, t2, (unsigned long)input_held_ms(&s_face),
            s_in[IN_FACE1].state, s_in[IN_FACE2].state, s_in[IN_FACE3].state, s_in[IN_BOOT].state,
            s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, s_vbus_mv, ble_connections(),
-           s_locked ? " LOCKED" : "", (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1),
+           "", (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 }
 
@@ -1257,6 +1264,13 @@ void app_main(void)
              s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from low-battery sleep)" : "",
              (unsigned long)s_boot_count);
     config_load(&s_cfg);
+    if (s_reset_reason == ESP_RST_BROWNOUT) {
+        // Don't brown out again on the startup sound: 30 % volume and brightness
+        // until changed (not saved, so the stored settings are untouched).
+        if (s_cfg.volume > 77) s_cfg.volume = 77;
+        if (s_cfg.led_level > 77) s_cfg.led_level = 77;
+        ESP_LOGW(TAG, "brown-out reset: volume and brightness capped at 30 %% for now");
+    }
     inputs_init();
     sounds_init();
     sense_init();
@@ -1302,7 +1316,7 @@ void app_main(void)
     ESP_LOGI(TAG, "VSYS %d mV, VBUS %d mV, display NAKs %lu/%lu", s_vsys_mv, s_vbus_mv,
              (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1));
 
-    uint32_t boot_ready_press = 0, boot_skip_press = 0;
+    uint32_t boot_skip_press = 0;
     uint32_t next_led = 0, next_disp = 0, next_adc = 0, next_status = 0, next_refresh = 0, next_ble = 0;
     bool ignore_face = false;
     pwr_t prev_pwr = s_pwr;
@@ -1331,22 +1345,23 @@ void app_main(void)
                 audio_pcm_stop();
                 boot_skip_press = s_in[IN_BOOT].press_ms;  // that press only stops the clip
             }
-            if (e < 0 && i == IN_BOOT && boot_skip_press != s_in[IN_BOOT].press_ms &&
-                s_boot_factory_done != s_in[IN_BOOT].press_ms) {
-                uint32_t held = s_in[IN_BOOT].last_active_ms - s_in[IN_BOOT].press_ms;
-                if (held >= OFF_HOLD_MS) power_set(PWR_OFF, now);
-                else AUDIO_PLAY(SLOT_DIAG, SND_BOOT);  // a tap: diagnostic sound
-            }
+            else if (e > 0 && i == IN_BOOT && s_pwr != PWR_OFF) AUDIO_PLAY(SLOT_DIAG, SND_OFF_WARN);
+            if (e < 0 && i == IN_BOOT && s_boot_off_done != s_in[IN_BOOT].press_ms) audio_stop(SLOT_DIAG);
         }
-        // BOOT held: a beep at 1.5 s (release now to power off), defaults at 5 s.
+        // BOOT held: "HoLd" / "oFF" with a falling tone, off at 3 s (no need to
+        // let go). Still held at 8 s: default settings (it wakes briefly to say so).
+        s_boot_off_showing = false;
         if (s_in[IN_BOOT].state && boot_skip_press != s_in[IN_BOOT].press_ms) {
             uint32_t held = input_held_ms(&s_in[IN_BOOT]);
-            if (held >= OFF_HOLD_MS && boot_ready_press != s_in[IN_BOOT].press_ms) {
-                boot_ready_press = s_in[IN_BOOT].press_ms;
-                AUDIO_PLAY(SLOT_DIAG, SND_OFF_READY);
+            uint32_t press = s_in[IN_BOOT].press_ms;
+            s_boot_off_showing = s_pwr != PWR_OFF && held < BOOT_OFF_MS;
+            if (held >= BOOT_OFF_MS && s_boot_off_done != press) {
+                s_boot_off_done = press;
+                power_set(PWR_OFF, now);
             }
-            if (held >= FACTORY_HOLD_MS && s_boot_factory_done != s_in[IN_BOOT].press_ms) {
-                s_boot_factory_done = s_in[IN_BOOT].press_ms;
+            if (held >= BOOT_FACTORY_MS && s_boot_factory_done != press) {
+                s_boot_factory_done = press;
+                power_set(PWR_PEEK, now);
                 factory_reset(now);
             }
         }
@@ -1359,7 +1374,8 @@ void app_main(void)
             else ignore_face = false;
         }
         int fe = input_update(&s_face, any_face, now);
-        if (s_pwr == PWR_OFF && fe > 0) power_set(PWR_PEEK, now);
+        if (fe > 0 && s_pwr == PWR_PEEK) power_set(PWR_ON, now);  // pressed again: wants it on
+        else if (fe > 0 && s_pwr == PWR_OFF) power_set(PWR_PEEK, now);
         if (s_pwr == PWR_ON) {
             if (fe > 0) {
                 on_face_press(now);
@@ -1375,6 +1391,9 @@ void app_main(void)
         ble_service(now);
         game_tick(now, dt);
         if (s_pwr == PWR_ON) countdown_blips();
+        // Final minute of a countdown: keep the speaker awake so the blips are on time.
+        int32_t tw = s_owner >= 0 ? to_win_ms(s_owner) : -1;
+        audio_keep_awake(s_pwr == PWR_ON && s_running && s_winner < 0 && s_cfg.show_numbers && tw >= 0 && tw <= 61000);
 
         if ((int32_t)(now - next_adc) >= 0) {
             next_adc = now + 250;
