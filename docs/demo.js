@@ -5,13 +5,15 @@
 "use strict";
 (() => {
   const DEMOS = [
-    { name: "Bridge", owner: 0, running: true, time: [512000, 431000], batt: 87 },
-    { name: "Shrine", owner: 1, running: true, time: [598000, 264000], batt: 64 },
-    { name: "Gate", owner: -1, running: true, time: [600000, 600000], batt: 92 },
-    { name: "Tower", owner: 0, running: false, time: [377000, 489000], batt: 41 },
-    { name: "Well", owner: 1, running: true, time: [600000, 75000], batt: 18, mode: MODE_ONE, timerTeam: 1 },
+    { name: "Bridge", owner: 0, running: true, time: [95000, 140000], batt: 87 },
+    { name: "Shrine", owner: 1, running: true, time: [230000, 48000], batt: 64 },
+    { name: "Gate", owner: -1, running: true, time: [180000, 180000], batt: 92 },
+    { name: "Tower", owner: 0, running: false, time: [130000, 160000], batt: 41 },
+    { name: "Well", owner: 1, running: true, time: [180000, 70000], batt: 18, mode: MODE_ONE, timerTeam: 1 },
   ];
   const TICK = 100, NOTIFY = 250;
+  const HOLD_EVERY = 30000;  // average ms between hold attempts on a button
+  const sims = [];           // every simulated button's state, for the new-game check below
 
   function makeDevice(d) {
     const cfg = {
@@ -95,7 +97,6 @@
         s.time[s.owner] -= dt;
         if (s.time[s.owner] <= 0) { s.time[s.owner] = 0; s.won = true; s.winner = s.owner; s.running = false; s.wonAt = now; }
       }
-      if (s.won && now - s.wonAt > 15000) { reset(); s.time = [180000 + Math.random() * 400000, 180000 + Math.random() * 400000]; s.running = true; }
       if (s.held) {
         s.heldMs += dt;
         if (s.heldMs >= s.holdFor) {
@@ -106,7 +107,7 @@
           s.held = false; s.heldMs = 0;
           s.target = s.owner >= 0 ? 1 - s.owner : 1 - s.target;
         }
-      } else if (!s.won && !s.gamePaused && Math.random() < dt / 9000) {
+      } else if (!s.won && !s.gamePaused && Math.random() < dt / HOLD_EVERY) {
         s.held = true; s.heldMs = 0;
         s.holdFor = Math.random() < 0.3 ? cfg.holdMs * (0.3 + Math.random() * 0.5) : cfg.holdMs;
         if (!s.running && s.owner >= 0) s.target = s.owner;
@@ -118,6 +119,11 @@
       step(now - lastStep); lastStep = now;
       if (device.gatt.connected && now - lastNotify >= NOTIFY) { lastNotify = now; chrs.state.notify(); }
     }, TICK);
+    sims.push({ s, newGame() {  // a fresh short game: start every clock on a random team
+      reset();
+      s.time = [60000 + Math.random() * 120000, 60000 + Math.random() * 120000];
+      s.owner = Math.round(Math.random()); s.target = 1 - s.owner; s.running = true;
+    } });
     return device;
   }
 
@@ -126,4 +132,10 @@
   document.getElementById("unsupported").style.display = "none";
   document.getElementById("add").disabled = true;
   for (const d of DEMOS) new Btn(makeDevice(d));
+  // Like a real game, a won button stays won (nobody resets mid-game). Once every button has run out,
+  // the demo waits a little, then starts a new game on all of them.
+  setInterval(() => {
+    const now = performance.now();
+    if (sims.every(x => x.s.won && now - x.s.wonAt > 20000)) sims.forEach(x => x.newGame());
+  }, 1000);
 })();
