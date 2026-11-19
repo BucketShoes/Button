@@ -283,6 +283,7 @@ function parseTime(str) {  // "m", "m:ss" or "h:mm:ss" -> ms (null if bad)
   else for (const x of p) s = s * 60 + x;
   return Math.round(s * 1000);
 }
+const battIcon = s => s.battLow ? "\u{1FAAB}" : "\u{1F50B}";  // low battery / battery emoji
 const teamName = t => t === 0 ? "Team 1" : t === 1 ? "Team 2" : "Uncaptured";
 
 // ---- one connected button ---------------------------------------------------
@@ -536,7 +537,7 @@ class Btn {
     const b = $(r, ".b");
     b.textContent = !this.device.gatt.connected ? "not connected" : !live ? "connecting…"
       : s.power === 2 ? "off" + (s.battMv ? ` ${(s.battMv / 1000).toFixed(2)} V` : "")
-      : (s.usb ? "USB " : "") + `${s.batt}%` + (s.power === 1 ? " peek" : "") + (s.gamePaused ? " ⏸" : "");
+      : (s.usb ? "USB " : "") + battIcon(s) + `${s.batt}%` + (s.power === 1 ? " peek" : "") + (s.gamePaused ? " ⏸" : "");
     b.classList.toggle("low", live && s.battLow);
     r.classList.toggle("dim", !live || s.power === 2);
     [0, 1].forEach(t => {
@@ -565,7 +566,7 @@ class Btn {
     const pct = s.batt, v = (s.vsys / 1000).toFixed(2);
     const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
     const avg = !s.usb && s.battMv ? ` (avg ${(s.battMv / 1000).toFixed(2)} V)` : "";
-    const volts = s.power === 2 ? (s.usb ? "on USB" : s.battMv ? `${(s.battMv / 1000).toFixed(2)} V at rest` : "") : `${pct}% · ${v} V${avg}`;
+    const volts = s.power === 2 ? (s.usb ? "on USB" : s.battMv ? `${(s.battMv / 1000).toFixed(2)} V at rest` : "") : `${battIcon(s)}${pct}% · ${v} V${avg}`;
     $(e, ".batt").textContent = `${volts}${s.usb && s.power !== 2 ? " · USB" : ""}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
     const o = $(e, ".owner");
     let text, col = null;
