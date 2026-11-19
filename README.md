@@ -87,6 +87,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
     - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);
     - **was paused:** the other team, so each further 6 s hold swaps it.
   - **H+3 to H+7 s:** doom each second, then a **reset** at H+7 s.
+  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+3 s the button leaves the game pause into a regular pause, holder and clocks unchanged, and works normally from then on (so the page is never required). H+7 s still resets.
   - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+7 s resets.
 - **Idle cues:**
   - **Not held, the button shows only the true state.** A hold let go early snaps straight back, so nobody runs off thinking they captured it.

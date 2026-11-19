@@ -18,7 +18,7 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | Offset | Type | Field |
 |---|---|---|
 | 0 | u8 | protocol version (3) |
-| 1 | u8 | flags: bit0 running, bit1 won, bit2 game paused (op 16, until op 17, a capture, start or reset), bit3 face held, bit4 identifying, bit5 USB power, bit6 music clip playing |
+| 1 | u8 | flags: bit0 running, bit1 won, bit2 game paused (op 16; ends with op 17, start, reset, or a hold to the pause point on the button itself, which leaves it in a regular pause), bit3 face held, bit4 identifying, bit5 USB power, bit6 music clip playing |
 | 2 | i8 | owner (-1 uncaptured, 0 team 1, 1 team 2) |
 | 3 | i8 | winner (-1 none) |
 | 4 | i8 | next capture target with no taps, or the current hold's target while held (-1 random) |

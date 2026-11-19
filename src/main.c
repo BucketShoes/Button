@@ -272,6 +272,9 @@ static int s_hold_stage;
 static int s_hold_target;  // team the capture will go to (decided at the press, shown during the hold)
 static int s_hold_last_sec;
 static bool s_build_started;
+// This hold started during a game pause: no capture. Held to the pause point it
+// releases the button from the game pause into a regular pause, so BLE is never needed.
+static bool s_hold_gp;
 
 static int s_taps;
 static uint32_t s_last_tap_ms;
@@ -383,6 +386,7 @@ static void on_face_press(uint32_t now)
     s_hold_stage = HS_BUILD;
     s_hold_last_sec = 0;
     s_build_started = false;
+    s_hold_gp = s_game_paused;
 
     if (s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) s_taps = 0;
     s_hold_target = capture_target();
@@ -391,6 +395,7 @@ static void on_face_press(uint32_t now)
 
     audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
+    if (s_hold_gp) AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);  // "the game is paused"
     ESP_LOGI(TAG, "face press (%s, owner %d, taps %d, target %d)", state_name(), s_owner + 1, s_taps,
              s_hold_target + 1);
 }
@@ -401,7 +406,7 @@ static void on_face_release(uint32_t held)
 {
     if (s_hold_stage == HS_BUILD) audio_stop(SLOT_BUILD);
     // Uncaptured and let go before the capture: the next press tries the other team.
-    if (s_hold_stage == HS_BUILD && s_owner < 0 && s_winner < 0) s_next_pick = 1 - s_hold_target;
+    if (s_hold_stage == HS_BUILD && s_owner < 0 && s_winner < 0 && !s_hold_gp) s_next_pick = 1 - s_hold_target;
     if (held < TAP_MAX_MS) {
         s_taps++;
         s_last_tap_ms = s_face.last_active_ms;
@@ -418,7 +423,7 @@ static void hold_progress(uint32_t now, uint32_t held)
 
     // Rising whoop into the capture, stretched over the whole hold time, so it
     // means the same thing at 3 s or 20 s.
-    if (s_hold_stage == HS_BUILD && !won && !s_build_started) {
+    if (s_hold_stage == HS_BUILD && !won && !s_hold_gp && !s_build_started) {
         s_build_started = true;
         uint32_t ms = h1 > held ? h1 - held : 1;
         s_build[0] = (note_t){250, 1200, (uint16_t)ms, W_SQUARE, 140};
@@ -428,7 +433,9 @@ static void hold_progress(uint32_t now, uint32_t held)
     if (s_hold_stage == HS_BUILD && held >= h1) {
         s_hold_stage = HS_CAPTURED;
         audio_stop(SLOT_BUILD);
-        if (won) {
+        if (s_hold_gp && !won) {
+            AUDIO_PLAY(SLOT_CLICK, SND_DING);  // game paused: no capture, dings towards the release
+        } else if (won) {
             if ((int32_t)(s_win_alarm_until - now) > 0) {
                 s_win_alarm_until = now;
                 audio_stop(SLOT_EVENT);
@@ -450,7 +457,12 @@ static void hold_progress(uint32_t now, uint32_t held)
     }
     if (s_hold_stage == HS_CAPTURED && held >= h2) {
         s_hold_stage = HS_PAUSED;
-        if (!won) {
+        if (s_hold_gp && !won) {
+            // Release from the game pause into a regular pause: holder and clocks as they are.
+            s_game_paused = false;
+            s_running = false;
+            ESP_LOGI(TAG, "game pause released by a hold, holder team %d", s_owner + 1);
+        } else if (!won) {
             // Undo this hold's clock changes, then pause (the next hold resumes
             // with that holder). Who holds it while paused:
             //   was running     -> whoever had it before this hold
@@ -1119,7 +1131,7 @@ static void render_displays(uint32_t now)
             bool colon = true;
             // Held towards a capture: the old state is gone at once. The new team is
             // lit; the old holder's clock keeps ticking (dim) until the capture.
-            bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0;
+            bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
             if (s_winner >= 0) {
                 bright = src == s_winner ? (((now / 250) & 1) ? DISP_FULL : 0) : DISP_DIM;
             } else if (holding) {
@@ -1185,6 +1197,10 @@ static void render_leds(uint32_t now)
         if (s_winner >= 0 && s_hold_stage < HS_RESET) {
             int n = (int)(held * 6 / h3);
             for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(RED, 160) : (rgb_t){0};
+        } else if (s_hold_gp && s_hold_stage <= HS_CAPTURED) {
+            // Game paused: a slow white fill towards the release, never a team colour.
+            int n = (int)(held * 6 / h2);
+            for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(WHITE, 70) : (rgb_t){0};
         } else if (s_hold_stage == HS_BUILD) {
             rgb_t c = s_hold_target >= 0 ? team_colour(s_hold_target) : WHITE;
             int n = (int)(held * 6 / h1);

@@ -115,8 +115,8 @@
         <button data-all="off" class="danger">Power off all</button>
       </div>
       <p class="note">Game pause stops every clock; game resume puts each button back as it was, so a
-        button that was paused or uncaptured stays that way. A capture during the pause takes that button
-        out of it. Commands go to each button over its own connection, so they land within a fraction
+        button that was paused or uncaptured stays that way. While game-paused a button can't be captured; a 6 s hold on it takes it
+        out of the game pause into a regular pause. Commands go to each button over its own connection, so they land within a fraction
         of a second of each other. To copy settings, use "Copy to all" in a button's settings.</p>
     </details>
   </section>
@@ -546,7 +546,7 @@ class Btn {
       box.classList.toggle("won", live && s.won && s.winner === t);
       $(box, ".tv").textContent = !live ? "--:--" : timed ? fmtMs(this.liveTime(t), !c.countUp) : "–";
       const pie = $(box, ".pie");
-      if (live && s.held && s.holdStage === 0 && !s.won && s.target === t) {
+      if (live && s.held && s.holdStage === 0 && !s.won && !s.gamePaused && s.target === t) {
         const ms = s.heldMs + (performance.now() - s.rx), deg = Math.min(360, 360 * ms / c.holdMs);
         pie.style.background = `conic-gradient(${own ? "#111" : col} ${deg}deg, #0006 0)`;
         pie.style.display = "block";
