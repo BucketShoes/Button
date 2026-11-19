@@ -101,9 +101,9 @@ which brings its own ESP-IDF; nothing else to install).
    which takes a few minutes.
 2. Plug the board in by USB-C and pick its port in the status bar.
 3. Run the PlatformIO **Upload** task. The ESP32-C6's native USB usually just works, but not on every module. If it won't
-   connect, or keeps dropping out, hold BOOT (inside the case) while plugging in USB, then upload. That keeps the chip in its
-   bootloader. It matters most with no cell fitted: on USB alone the power peaks at startup can reset the chip in a loop,
-   and BOOT stops the loop long enough to flash.
+   connect, or keeps dropping out, power it fully down first: take out the 18650, or unplug the pouch cell. Then hold
+   BOOT (inside the case) while plugging in USB, and upload. That keeps the chip in its bootloader. On USB alone the
+   power peaks at startup can reset the chip in a loop, and BOOT stops the loop long enough to flash.
 4. Open the control page and connect. Settings (name, mode, durations, colours and so on) are set from the page and
    saved on the button, so there's nothing to configure in the code.
 
