@@ -110,7 +110,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **On:**
   - Everything is powered.
   - Between loop passes (20 ms when idle), the CPU light-sleeps.
-  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. The PDM and amp then start together, which may give a small click. The first sound of an interaction waits a fixed ~70 ms (50 ms for the amp's turn-on, `AMP_WAKE_MS` in `src/audio.c`, plus 20 ms of DMA buffering), so it's late but never cut short. Quick follow-ups (taps, holds) aren't delayed. In the last 61 s of a countdown the speaker stays awake.
+  - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. The PDM and amp then start together, which may give a small click. The first sound of an interaction is queued behind exactly 50 ms of silence (`AMP_WAKE_MS` in `src/audio.c`) that plays while the amp starts, so it's a fixed 50 ms late but never cut short. Sounds that start while already awake wait behind up to 30 ms of DMA buffering. Quick follow-ups (taps, holds) aren't delayed. In the last 61 s of a countdown the speaker stays awake.
   - **Idle** means no press and no page command; the game state is kept throughout, and a tap brings it straight back.
     - After 10 min, every second ring and strip LED goes off (LED1 and LED2 stay).
     - After 1 h, brightness drops to 10 % (or stays lower if it's already set lower).

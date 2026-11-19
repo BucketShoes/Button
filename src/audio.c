@@ -236,23 +236,24 @@ static void amp(bool on)
     gpio_set_level(PIN_AMP_EN, on);
 }
 
-static void write_zeros_until(int64_t t_us)
+// Queue ms of silence. Latency is set by what's queued ahead of a sound, not
+// by waiting, so the sound written next starts exactly this much later.
+static void write_zeros_ms(int ms)
 {
     memset(s_buf, 0, sizeof s_buf);
     size_t w;
-    while (esp_timer_get_time() < t_us) i2s_channel_write(s_tx, s_buf, sizeof s_buf, &w, portMAX_DELAY);
+    for (int i = 0; i < ms / 10; i++) i2s_channel_write(s_tx, s_buf, sizeof s_buf, &w, portMAX_DELAY);
 }
 
 static void wake(void)
 {
     if (s_i2s_on && s_amp_on) return;
-    int64_t t0 = esp_timer_get_time();
     if (!s_i2s_on) {
         i2s_channel_enable(s_tx);
         s_i2s_on = true;
     }
     amp(true);
-    write_zeros_until(t0 + AMP_WAKE_MS * 1000);
+    write_zeros_ms(AMP_WAKE_MS);
 }
 
 static void i2s_off(void)
@@ -318,8 +319,9 @@ void audio_init(void)
 
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;  // underrun -> zeros -> 50% PDM -> silence
-    // 4 x 5 ms DMA buffers: 20 ms of buffering (latency), two 10 ms blocks of slack.
-    cc.dma_desc_num = 4;
+    // 6 x 5 ms DMA buffers (the IDF default): 30 ms of margin against the task
+    // being held up. It only adds latency to sounds that start while already awake.
+    cc.dma_desc_num = 6;
     cc.dma_frame_num = SR / 200;
     ESP_ERROR_CHECK(i2s_new_channel(&cc, &s_tx, NULL));
 
