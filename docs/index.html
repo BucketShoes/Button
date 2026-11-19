@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#16131c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>Capture Buttons</title>
 <style>
   :root {
@@ -650,6 +653,8 @@ function tick() {
 }
 setInterval(tick, 200);
 tick();
+if ("serviceWorker" in navigator && location.protocol !== "file:")  // offline copy and "install as app", see sw.js
+  navigator.serviceWorker.register("sw.js").catch(e => console.warn("service worker:", e));
 if (new URLSearchParams(location.search).has("demo")) {  // simulated buttons, see demo.js
   const s = document.createElement("script");
   s.src = "demo.js";

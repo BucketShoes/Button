@@ -41,7 +41,7 @@ Photos of it powered on don't come out: the displays and charge LED blow out, so
 | Where | What |
 |---|---|
 | [`src/`](src) | Firmware (ESP-IDF via PlatformIO): see [Building the firmware](#building-the-firmware) |
-| [`docs/index.html`](docs/index.html) | The control page, served by GitHub Pages ([`demo.js`](docs/demo.js) is its demo mode) |
+| [`docs/index.html`](docs/index.html) | The control page, served by GitHub Pages ([`demo.js`](docs/demo.js) is its demo mode; [`sw.js`](docs/sw.js) and the manifest make it installable and usable offline) |
 | [`docs/ble-protocol.md`](docs/ble-protocol.md) | The Bluetooth protocol, if you want to write your own controller |
 | [`docs/hardware.md`](docs/hardware.md) | Pin map, power, displays, LEDs and audio, as built on board b43 |
 | [`docs/design-notes.md`](docs/design-notes.md), [`docs/plans.md`](docs/plans.md) | Design notes, game ideas, and what's planned |
@@ -139,6 +139,12 @@ The format is raw 16-bit mono PCM at 48 kHz with a 16-byte header.
 <https://bucketshoes.github.io/Button/>. Open it in Chrome (Android, or Chrome/Edge on a computer) and
 press **Connect a button**. You can connect several buttons. With no hardware, add `?demo` to the address for five simulated buttons
 (<https://bucketshoes.github.io/Button/?demo>).
+
+- **Install it as an app** (optional): in Chrome's menu, **Add to Home screen** on Android or **Install** on a computer.
+  It then opens full-screen from its own icon. Installed or not, it also works with no internet once it has been opened
+  once, which helps at game sites with no reception. With a connection it always loads the newest version.
+- **iPhone:** no iPhone browser has Web Bluetooth (they're all Safari underneath, including Chrome), so the page
+  can't connect, installed or not. A Web Bluetooth browser app such as Bluefy may work; it hasn't been tested.
 
 - **Game bar** (top): pause and resume the whole game, and play a sound (whistle by default) on every button. Game resume undoes the game pause: each button goes back to exactly what it was doing, so a button that was paused or uncaptured stays that way.
 - **Overview:** one row per button, sized so about 5 fit on a phone screen. Name and battery on the left, then a box per team (team names once at the top of each column):
