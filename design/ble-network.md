@@ -1,0 +1,234 @@
+# All-BLE button network: plan
+
+Internal design notes, kept out of `docs/` because that folder is the public GitHub Pages site.
+This covers admin one-to-many control and game state. Player tracking comes at the end, as a later stage.
+
+## Goals
+
+- **Every button knows every other button's state**, whether or not an admin is watching.
+  Later game rules depend on it: tug-of-war frontiers, "build the ram before the gate".
+- **An admin connected to any one button sees and controls the whole network.**
+  The page can still connect to several buttons at once, for debugging and for walking across the field.
+- **Admin clients are all treated the same way.** Chrome, a future app, and Wi-Fi if that happens all carry the same
+  frames over a different transport.
+- **The network adapts to topology changes.** Buttons may be stretched out, partitioned, or carried around
+  ("grab the treasure and run").
+
+## Where the code is now (2026-11-21)
+
+- **Advertising and PHY:** legacy advertising only, on 1M. Nothing renegotiates the PHY after connecting;
+  `src/ble.c` has no PHY update. The `sdkconfig.defaults` comment still says "coded PHY / extended adverts come later".
+- **Roles and connections:** peripheral only (`CONFIG_BT_NIMBLE_ROLE_CENTRAL` off), with `MAX_CONNECTIONS=4`.
+- **State notifications:** 5 Hz while running, 1 Hz when not.
+- **The page:** buttons are added one at a time through the Chrome picker, and several can be connected at once.
+  "All buttons" commands loop over the ones you've added.
+  When a state notification arrives, the page stamps it with `rx = performance.now()` and extrapolates
+  `heldMs` and the clocks from that, so it assumes zero latency.
+
+## Radio plan
+
+- **Two advertising sets** (needs NimBLE 5.0 / extended advertising):
+  - **Legacy 1M connectable**, at about 100–150 ms. Chrome can only connect through this one.
+  - **Extended connectable, primary and secondary Coded S=8**, at about 500 ms. Buttons and a future app connect
+    through this one. It carries the 16-bit node id, so a scanner knows whose advert it heard.
+- **PHY renegotiation on every connection, whoever the central is.** On connect, the button requests Coded
+  (`ble_gap_set_prefered_le_phy`, Coded S=8, perhaps S=2 for admins). If the phone's controller doesn't support it,
+  the link stays on 1M.
+  - Log which PHY each connection ends up on.
+  - Show it on the page per connection, so we learn which phones accept Coded.
+- **Connection parameters:**
+  - **Button↔button:** 250 ms interval, supervision timeout about 20 s (the spec maximum is 32 s), so links ride out fades.
+  - **Admin:** the button requests about 50 ms on 1M, or about 100 ms on Coded (Coded events cost about 5× more),
+    with a long supervision timeout too.
+- **Scanning:**
+  - Mostly legacy. Players come later; for now legacy scanning just fills the time Coded scanning doesn't use.
+  - **Every button does a Coded scan now and then**, whether or not it is lonely, otherwise two halves of the
+    network could stay split forever. For example 600 ms (more than one advert interval) every 10–20 s, which is
+    a 3–6 % duty.
+  - Faster Coded adverts (500 ms) pay for rarer scans.
+- **Who connects:** whoever hears an unlinked button's Coded advert initiates, so a lonely button can join on its
+  own scan. If the pair ends up with two links, keep the one whose central has the lower address and drop the other.
+- **Healing:** a dropped button link is re-initiated straight to the peer's known address on Coded. Gossip already
+  carries everyone's address, so it doesn't wait for a discovery scan.
+- **Connection count:** raise `MAX_CONNECTIONS` to about 9 (4 buttons, plus admins, plus spare).
+
+## Identity
+
+- **Node id:** u16, the last two bytes of the BT MAC (the same as the `Button-XXXX` name). Ids aren't positions,
+  so when two partitions merge there's nothing to renumber, and no split-brain over "who is bit 0".
+- **Neighbour lists:** lists of node ids (2 B each), not bitmaps.
+- **If two buttons share an id:** show it on the page, and fall back to 3 bytes.
+- **Admin clients:** each page or app session picks a random u16 origin id, checked against the origins already
+  known, and gets a new one on every load.
+
+## Network time
+
+- **The clock:** each node keeps `net_ms = local_ms + offset`. Every frame header carries the sender's `net_ms`.
+  When a received value is ahead of mine, I jump forward to it. My clock only moves forward.
+  - All clocks converge on the furthest-ahead one, with no leader election, and partitions merge on their own.
+  - Error is up to about one connection interval (the stamp is taken when queued, not when sent). That's fine for
+    expiry (seconds) and for the timeline (5 s resolution).
+  - It can be refined later with a ping round trip.
+- **Wall time:** when an admin connects, the page sends its Unix time once. A button that knows the mapping
+  "net X = Unix Y" gossips it in the slow tier, so the timeline can be shown in wall-clock time.
+- **Timestamps inside records:** items carry the time they were *generated*, for example "hold started at net T",
+  so the page extrapolates correctly however many hops an item took.
+  A relayer's frame header is its own time, not the origin's, which is why the stamp lives in the item.
+
+## State and commands
+
+A button is the only authority on its own state (clocks, owner, hold). **Admins never write state; they send
+operations.** The target button applies operations in the order it receives them and publishes the result.
+
+- **Example:** "set owner purple" racing with a capture on the button is resolved by the button. Whatever it
+  processes last wins, and everyone sees the outcome in its next state record. This is the same as with direct BLE
+  today.
+- **Exactly once:** "add 10 s" has to apply exactly once per click, so operations need ids and dedup. Absolute
+  operations (set owner, start, pause) get the same treatment, so all operations behave alike.
+
+### Streams
+
+Everything on the wire is an item `(origin u16, stream u8, seq u16, payload)`. Each origin's version counter goes
+up on every change to any of its streams.
+
+| Stream | Kind | Payload | When |
+|---|---|---|---|
+| hot | latest wins | flags, owner, winner, target, hold stage, hold start (net ms), clocks + "as of" net ms. About 18 B | on change, plus every 5–10 s |
+| slow | latest wins | battery, uptime, reset reason, centrals, neighbour list with link RSSI and PHY, wall-time mapping | on neighbour change, otherwise every 30–60 s |
+| config | latest wins | `config_t` (42 B) | on change |
+| commands | append log, expiring | target (u16, 0xFFFF = all), expiry (net ms), op + args | admin origins only |
+| timeline | append log, kept for the round | ownership/hold/pause events: net ms, kind, team | on event |
+
+- **Latest-wins streams:** keep only the highest seq. A repeat or an older copy is dropped harmlessly.
+- **Command stream: in order, exactly once, per admin origin.**
+  - The receiver keeps `H`, the highest seq it has contiguously from that origin.
+  - It accepts only `H+1`, then advances `H`.
+  - Anything `≤ H` is a duplicate and is dropped.
+  - Anything past a gap is buffered until the gap fills. If the gap doesn't fill within the longest TTL (about
+    10 s), the missing item is skipped.
+  - So "a later one, then an earlier one" still applies both, in click order.
+- **Expiry:**
+  - Each command carries an absolute expiry in net time, which the page sets to about now + 10 s.
+  - An expired command still advances `H`, so the stream stays contiguous, but it isn't executed.
+  - Expiry depends only on the network clock, not on how long an item sat in a NimBLE queue.
+  - Long-lived operations (config, set owner) can carry a longer expiry.
+- **Timeline:**
+  - Each button keeps its own log of owner changes, holds and pauses for the round, in a ring in RTC RAM or flash.
+  - Events are sparse (about 1 per minute), so an hour is a few hundred bytes. That's cheaper than sampling every 5 s.
+  - A button that joins late or reboots, or a page that arrives late, catches up by pulling the missing seqs.
+  - This merges with the "timeline / audit log" stage in plans.md.
+
+### Sync and suppression
+
+- **Each link is reliable and in order while it's up.** The link layer acks and retransmits, and ATT keeps order.
+  Data in flight when a link drops is lost, and there's no telling which part arrived. So:
+  - **Senders send each stream to a neighbour in seq order,** starting from what that neighbour has, so order holds
+    on every path.
+  - **Heartbeat once a second on each button link:** `net_ms` plus `(origin, version)` for every known origin,
+    about 4 B per origin. If a version doesn't match, the two sides exchange per-stream seqs and send what's missing.
+    The heartbeat also tells a node whether the link is actually delivering (the host doesn't see empty connection
+    events).
+- **Suppression rule (start with only this): don't send origin O's items to neighbour N if N lists a fresh direct
+  link to O.**
+  - A link counts as fresh if a heartbeat crossed it in the last 2–3 s.
+  - When a link goes stale or drops, both ends republish their neighbour list right away, and the neighbours start
+    relaying to them again from the summaries.
+  - **Full mesh:** zero relays.
+  - **A line** (A–B–C–D–E): exactly one copy per hop, which is optimal.
+  - **Redundancy** happens only in partial meshes, where several of N's neighbours could each be its route to O.
+    With 5 buttons that's bounded and cheap. If measurements show it matters, add a shortest-path relay tree that
+    every node computes the same way from the neighbour lists, breaking ties by lowest id.
+- **Batching:** pack all pending items for a neighbour into one packet per connection event, with DLE up to 251 B.
+  The fixed per-packet cost dominates on Coded.
+- **Admin links:** they get every item from every origin, but not the timeline, which is sent on request.
+  Admins are leaves, so they never take part in the relay rule, and any number of admins on any buttons works the same.
+
+## Admin page and app
+
+- **Merging:** each connected button streams items from all origins. The page merges by `(origin, seq)`, so it
+  doesn't matter whether an item arrived directly or was relayed.
+- **The button list is the whole network,** including buttons never picked in the Chrome picker. Those can be
+  commanded through relays.
+- **Several connections at once,** as now. Commands go out through one "active" connection: the freshest one,
+  or one the admin picks. If it hasn't delivered anything for about 1–2 s, the page resends the same command id
+  through another. Dedup makes that safe, and it covers walking out of range of one button while a long supervision
+  timeout keeps its dead link "up".
+- **Pending commands:** a command shows as pending until the connected button's summary says it has it, and the
+  effect shows in the target's state.
+- **Two admins in one Chrome:** each tab has its own origin id. Chrome shares one GATT connection per device
+  between tabs, so both tabs get the notifications.
+  - Unverified: does `disconnect()` in one tab drop the link for the other tab?
+- **Protocol v4:**
+  - a "network" notify characteristic carrying frames of items;
+  - a "send" write characteristic taking frames (command items with the admin's origin);
+  - keep v3 state/config/command for now, as a direct per-button debug view.
+- **Same frames everywhere:** the same frame format goes over BLE (Chrome or app) and over Wi-Fi if that happens.
+
+## Airtime estimates (Coded S=8, per button's radio)
+
+Packet cost: 376 µs fixed, plus 64 µs per byte (header, payload and CRC). An empty connection event (both sides)
+is about 1.6 ms. One 20 B item adds about 1.7 ms.
+
+| Item | Per second | Share |
+|---|---|---|
+| 4 button links, 250 ms, idle | 16 events × 1.6 ms | 2.6 % |
+| 1-s heartbeat with summary, 4 links | 4 × ~1.5 ms | 0.6 % |
+| 2 admins on Coded, 100 ms, idle (on 1M at 50 ms: about 0.6 % each) | 20 × 1.6 ms | 3.2 % |
+| Legacy adverts, 100 ms | 10 × ~1.2 ms | 1.2 % |
+| Coded extended adverts, 500 ms | 2 × ~7 ms | 1.4 % |
+| Busy data: 5 changes/s across the network, received from 4, sent to 4 buttons, all 5 forwarded to 2 admins | ~18 × 1.7 ms | 3 % |
+| Same, without suppression in a full mesh (each relays to 3, hears 12 duplicates) | +24 × 1.7 ms | +4 % |
+
+- **Totals:** about 12 % busy with suppression, about 16 % without, and the rest goes to scanning.
+- **Why the network isn't one collision domain:** connections hop over 37 data channels with independent hop
+  sequences. Two links only collide when they land on the same channel at the same moment, and retransmission covers
+  that.
+- **What really runs out is each node's own radio time.** When B is peripheral on two links whose anchors happen to
+  overlap, its controller skips one event, which costs latency (one interval), not bandwidth.
+- **The 3 primary advertising channels are shared by everything** (5 buttons, phones, later trackers). That's why
+  Coded adverts stay slow, with bulk moved to AUX on data channels.
+
+## Stages
+
+1. **Coded on what exists:**
+   - turn on 5.0 features;
+   - two advertising sets (legacy + Coded connectable);
+   - PHY update request and connection-parameter request on connect;
+   - show the PHY and interval per connection on the page;
+   - range-test two buttons; check which phones end up on Coded.
+2. **Button links:**
+   - central role;
+   - occasional Coded scans on every button;
+   - connect, duplicate-link rule, long supervision timeout;
+   - neighbour lists;
+   - show the link graph on the page (read only).
+3. **Network time, plus hot/slow/config streams,** with the suppression rule and heartbeat summaries. The page shows
+   every button from one connection.
+4. **Commands:** admin origins, in-order exactly-once delivery, expiry, page failover across connections.
+5. **Timeline stream,** with catch-up for late joiners.
+6. **Later, opportunistic:** player counts (below), then tags and teams.
+
+## Player tracking (later stages, not now)
+
+- **First:** per-button counts only. Near/far × team 1 / unassigned / team 2 is 6 numbers, all shown in the overview.
+  Counts come from legacy sightings over a window, excluding buttons and connected admins. They're about 6 B in the
+  slow tier, and scanning stays opportunistic.
+- **Teams later:**
+  - phones mostly stay "unassigned", because rotating addresses (about 15 min) break any team inference;
+  - only stable-address tags can carry a team across a rotation;
+  - the respawn heuristic is ambiguous (dead and respawning vs fighting near the enemy respawn);
+  - a phone user also carrying a tag counts twice.
+- **Enrolment** maps a tag to a small index, so byte k of a compact RSSI list is tag k. It's only for special tags
+  (for example the flag), not for every player.
+- **Before relying on the trackers,** test them: do they advertise unconnected, how often, is the address stable,
+  and do they stop after a while?
+- **Device lists** (address, RSSI): on request from one admin, routed back to that admin only, never flooded.
+- **Button GPS:** the page stamps a button's location from the phone into config, slow-gossiped, for a field map.
+
+## Open questions
+
+- Do iPhones and the Android phones in use accept a PHY update to Coded from Chrome? Does Windows Chrome?
+- Coding for admin links: S=8 (range) or S=2 (about half the airtime)? Is it worth choosing per link by RSSI?
+- Is the real busy rate 5 changes/s, or much lower? Measure it once stage 3 logs item counts.
+- Does a shortest-path relay tree ever earn its complexity over the simple suppression rule?
+- Command expiry defaults per operation (identify and sounds short; config and owner long?).
