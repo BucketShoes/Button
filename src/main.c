@@ -51,6 +51,7 @@
 #include "audio.h"
 #include "ble.h"
 #include "board.h"
+#include "mesh.h"
 #include "config.h"
 #include "display.h"
 #include "leds.h"
@@ -663,6 +664,7 @@ static void apply_config(const config_t *in, uint32_t now)
     if (strcmp(old.name, s_cfg.name) != 0) apply_name();
     audio_set_volume(s_cfg.volume);
     ble_publish_config(&s_cfg, sizeof s_cfg);
+    mesh_publish_config(&s_cfg, sizeof s_cfg);
     ESP_LOGI(TAG, "settings: mode %d, hold %u ms, %s, numbers %s, durations %lu/%lu s, volume %d, leds %d",
              s_cfg.mode, s_cfg.hold_ms, s_cfg.count_up ? "up" : "down", s_cfg.show_numbers ? "shown" : "hidden",
              (unsigned long)(s_cfg.duration_ms[0] / 1000), (unsigned long)(s_cfg.duration_ms[1] / 1000), s_cfg.volume,
@@ -938,15 +940,31 @@ static void wake_rearm(void)
         if (gpio_get_level(FACE_PINS[i])) gpio_intr_enable(FACE_PINS[i]);
 }
 
+static uint8_t state_flags(uint32_t now)
+{
+    return (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (s_game_paused ? 4 : 0) |
+                     (s_face.state ? 8 : 0) | ((int32_t)(s_ident_until - now) > 0 ? 16 : 0) |
+                     (s_vbus_mv > 4000 ? 32 : 0) | (audio_pcm_playing() ? 64 : 0));
+}
+static uint8_t state_flags2(void)
+{
+    return (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) |
+                     (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0));
+}
+// Phones (and anything else not a button) connected to this button.
+static int phone_links(void)
+{
+    int n = ble_connections() - mesh_button_links();
+    return n < 0 ? 0 : n;
+}
+
 static void publish_state(uint32_t now)
 {
     bool held = s_face.state;
     uint32_t hm = input_held_ms(&s_face);
     state_pkt_t p = {
         .version = PROTO_VERSION,
-        .flags = (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (s_game_paused ? 4 : 0) | (held ? 8 : 0) |
-                           ((int32_t)(s_ident_until - now) > 0 ? 16 : 0) | (s_vbus_mv > 4000 ? 32 : 0) |
-                           (audio_pcm_playing() ? 64 : 0)),
+        .flags = state_flags(now),
         .owner = (int8_t)s_owner,
         .winner = (int8_t)s_winner,
         .target = (int8_t)(held ? s_hold_target : capture_target()),
@@ -956,15 +974,79 @@ static void publish_state(uint32_t now)
         .reset_reason = s_reset_reason,
         .boots = s_boot_count,
         .power = (uint8_t)s_pwr,
-        .flags2 = (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) | (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0)),
+        .flags2 = state_flags2(),
         .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
         .vsys_mv = (uint16_t)s_vsys_mv,
         .vbus_mv = (uint16_t)s_vbus_mv,
         .batt_pct = (int16_t)batt_percent(s_vsys_mv),
-        .connections = (uint8_t)ble_connections(),
+        .connections = (uint8_t)phone_links(),
         .uptime_s = now / 1000,
     };
     ble_publish_state(&p, sizeof p);
+}
+
+// The network copy of the state: sent when something changes (clocks and the hold time are
+// extrapolated by whoever receives it), plus every 10 s. Status every 30 s and when the phone
+// count changes.
+#define HOT_EVERY_MS 10000
+#define STATUS_EVERY_MS 30000
+#define CLOCK_SLACK_MS 300
+static mesh_hot_t s_hot_last;
+static uint32_t s_hot_last_ms, s_status_next;
+static bool s_hot_sent;
+static int s_status_phones = -1;
+
+static void net_publish(uint32_t now)
+{
+    bool held = s_face.state;
+    uint32_t hm = input_held_ms(&s_face);
+    mesh_hot_t h = {
+        .flags = state_flags(now),
+        .owner = (int8_t)s_owner,
+        .winner = (int8_t)s_winner,
+        .target = (int8_t)(held ? s_hold_target : capture_target()),
+        .hold_stage = (uint8_t)(held ? s_hold_stage : 0),
+        .held_ms = (uint16_t)(hm > 65535 ? 65535 : hm),
+        .time_ms = {s_val[0], s_val[1]},
+        .power = (uint8_t)s_pwr,
+        .flags2 = state_flags2(),
+    };
+    bool send = !s_hot_sent || now - s_hot_last_ms >= HOT_EVERY_MS;
+    if (!send) {
+        mesh_hot_t a = h, b = s_hot_last;
+        a.held_ms = b.held_ms = 0;
+        a.time_ms[0] = a.time_ms[1] = b.time_ms[0] = b.time_ms[1] = 0;
+        send = memcmp(&a, &b, sizeof a) != 0;
+        // A clock that moved other than by running (set or add time): its own change.
+        uint32_t e = now - s_hot_last_ms;
+        for (int t = 0; t < 2 && !send; t++) {
+            int32_t d = h.time_ms[t] - s_hot_last.time_ms[t];
+            uint32_t ad = (uint32_t)(d < 0 ? -d : d);
+            send = ad > CLOCK_SLACK_MS && (ad > e ? ad - e : e - ad) > CLOCK_SLACK_MS;
+        }
+    }
+    if (send) {
+        mesh_publish_hot(&h);
+        s_hot_last = h;
+        s_hot_last_ms = now;
+        s_hot_sent = true;
+    }
+    int phones = phone_links();
+    if (phones != s_status_phones || (int32_t)(now - s_status_next) >= 0) {
+        s_status_phones = phones;
+        s_status_next = now + STATUS_EVERY_MS;
+        mesh_status_t s = {
+            .vsys_mv = (uint16_t)s_vsys_mv,
+            .vbus_mv = (uint16_t)s_vbus_mv,
+            .batt_pct = (int16_t)batt_percent(s_vsys_mv),
+            .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
+            .phones = (uint8_t)phones,
+            .reset_reason = s_reset_reason,
+            .uptime_s = now / 1000,
+            .boots = s_boot_count,
+        };
+        mesh_publish_status(&s);
+    }
 }
 static void factory_reset(uint32_t now)
 {
@@ -1345,6 +1427,24 @@ static void status_line(uint32_t now)
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
+// A command for this button that came through the network (from an admin on any button).
+static void on_mesh_cmd(uint8_t kind, const uint8_t *d, int n)
+{
+    uint32_t now = now_ms();
+    if (kind == MESH_CMD_CONFIG) {
+        if (n == sizeof(config_t) && d[0] == CONFIG_VERSION) {
+            config_t c;
+            memcpy(&c, d, sizeof c);
+            apply_config(&c, now);
+        } else {
+            ESP_LOGW(TAG, "network config ignored (%d bytes, version %d)", n, n ? d[0] : 0);
+        }
+    } else if (kind == MESH_CMD_OP) {
+        handle_command(d, n, now);
+    }
+    activity(now);
+}
+
 // ---------------------------------------------------------------- startup
 static void power_pins_init(void)
 {
@@ -1492,6 +1592,8 @@ void app_main(void)
     }
     ble_init(name);
     ble_publish_config(&s_cfg, sizeof s_cfg);
+    mesh_init(on_mesh_cmd);
+    mesh_publish_config(&s_cfg, sizeof s_cfg);
 
     uint32_t last = now_ms();
     game_reset(last);
@@ -1601,7 +1703,9 @@ void app_main(void)
         }
 
         ble_service(now);
+        mesh_tick(now);
         game_tick(now, dt);
+        net_publish(now);
         if (s_pwr == PWR_ON) countdown_blips();
         // Final minute of a countdown: keep the speaker awake so the blips are on time.
         int32_t tw = s_owner >= 0 ? to_win_ms(s_owner) : -1;

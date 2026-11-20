@@ -21,7 +21,7 @@ CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# BLE (NimBLE host), peripheral only for now. Two advertising sets through the
+# BLE (NimBLE host). Two advertising sets through the
 # extended advertising API: legacy 1M (Chrome can only connect through that) and
 # connectable Coded PHY (range). Links are moved to Coded after connecting.
 CONFIG_BT_ENABLED=y
@@ -34,9 +34,12 @@ CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=251
 # CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV is not set
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
-# CONFIG_BT_NIMBLE_ROLE_CENTRAL is not set
-# CONFIG_BT_NIMBLE_ROLE_OBSERVER is not set
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+# Central + observer: buttons scan for each other on Coded and connect (src/mesh.c).
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+# Other buttons plus phones; 2 are kept free for phones (ble.c PHONE_SLOTS).
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=9
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=8
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
 
 # Light sleep: auto light sleep with tickless idle, BLE controller sleep
