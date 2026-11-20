@@ -29,8 +29,15 @@ This covers admin one-to-many control and game state. Player tracking comes at t
 
 - **Two advertising sets** (needs NimBLE 5.0 / extended advertising):
   - **Legacy 1M connectable**, at about 100–150 ms. Chrome can only connect through this one.
+    It's a single `ADV_IND` on each of the 3 primary channels, plus a scan response when asked.
   - **Extended connectable, primary and secondary Coded S=8**, at about 500 ms. Buttons and a future app connect
-    through this one. It carries the 16-bit node id, so a scanner knows whose advert it heard.
+    through this one.
+    - On each primary channel it sends only a short `ADV_EXT_IND` (ADI + AuxPtr, about 1.2 ms on S=8).
+    - The data (flags, service UUID, 16-bit node id, about 25 B) goes in one `AUX_ADV_IND` on a data channel.
+      Connectable extended adverts can't chain, so the data must fit in that one AUX packet.
+    - The connect request and response also happen on the secondary channel.
+- **Buttons connect to each other directly on Coded** (initiating on Coded PHY), so they never need to be brought
+  close together to link up.
 - **PHY renegotiation on every connection, whoever the central is.** On connect, the button requests Coded
   (`ble_gap_set_prefered_le_phy`, Coded S=8, perhaps S=2 for admins). If the phone's controller doesn't support it,
   the link stays on 1M.
@@ -50,7 +57,26 @@ This covers admin one-to-many control and game state. Player tracking comes at t
   own scan. If the pair ends up with two links, keep the one whose central has the lower address and drop the other.
 - **Healing:** a dropped button link is re-initiated straight to the peer's known address on Coded. Gossip already
   carries everyone's address, so it doesn't wait for a discovery scan.
-- **Connection count:** raise `MAX_CONNECTIONS` to about 9 (4 buttons, plus admins, plus spare).
+- **Connection count:** don't assume 5 buttons; 5 is the minimum the network has to work with.
+  - Set `MAX_CONNECTIONS` from (buttons − 1) + admin phones + spare, for example 12–16, as RAM allows. The C6 guide
+    says 70.
+  - No cap on button links for now.
+  - Past about 8–10 buttons, idle link cost grows with the number of links (see Scaling). Nothing in the protocol
+    needs a full mesh, so a later version can keep only the best k links by RSSI and let relaying do the rest.
+
+## Implementation rules
+
+- **Check every NimBLE return code** (`ble_gap_*`, `ble_gattc_notify_custom`, `ble_gattc_write*`,
+  `os_mbuf` allocations) and log failures with the call and the connection handle.
+  - `BLE_HS_ENOMEM` (out of mbufs, likely when queueing to many links) means back off: keep the item pending for
+    that neighbour and retry on the next tick, rather than dropping it silently.
+  - Busy and "already in progress" results on connect, scan or advertise calls get a retry, not an abort.
+- **Frame size:** an LL PDU carries 251 B with DLE. After L2CAP (4 B) and ATT notify (3 B) that leaves 244 B for
+  application data, with MTU ≥ 247.
+  - On Coded, cap a frame at about 100–120 B (about 7–8 ms on air) so one connection event doesn't hold the radio
+    for long. Spread a larger backlog over later events.
+  - On 1M the full 244 B is fine (about 2 ms).
+  - Look at `CONFIG_BT_LE_COEX_PHY_CODED_TX_RX_TLIM` once Wi-Fi comes in.
 
 ## Identity
 
@@ -124,10 +150,12 @@ up on every change to any of its streams.
   Data in flight when a link drops is lost, and there's no telling which part arrived. So:
   - **Senders send each stream to a neighbour in seq order,** starting from what that neighbour has, so order holds
     on every path.
-  - **Heartbeat once a second on each button link:** `net_ms` plus `(origin, version)` for every known origin,
-    about 4 B per origin. If a version doesn't match, the two sides exchange per-stream seqs and send what's missing.
-    The heartbeat also tells a node whether the link is actually delivering (the host doesn't see empty connection
-    events).
+  - **Heartbeat once a second on each button link:** `net_ms` plus a 4 B digest (CRC) of every `(origin, version)`
+    the sender knows. That keeps it the same size whatever the button count.
+    - If the digests differ, the two sides exchange the full `(origin, version)` list (4 B per origin), then
+      per-stream seqs for the origins that differ, and send what's missing.
+    - The heartbeat also tells a node whether the link is actually delivering (the host doesn't see empty connection
+      events).
 - **Suppression rule (start with only this): don't send origin O's items to neighbour N if N lists a fresh direct
   link to O.**
   - A link counts as fresh if a heartbeat crossed it in the last 2–3 s.
@@ -135,13 +163,28 @@ up on every change to any of its streams.
     relaying to them again from the summaries.
   - **Full mesh:** zero relays.
   - **A line** (A–B–C–D–E): exactly one copy per hop, which is optimal.
-  - **Redundancy** happens only in partial meshes, where several of N's neighbours could each be its route to O.
-    With 5 buttons that's bounded and cheap. If measurements show it matters, add a shortest-path relay tree that
-    every node computes the same way from the neighbour lists, breaking ties by lowest id.
+  - **Partial meshes:** the rule alone doesn't pick a path. In a diamond (A linked to B and C, B and C linked to D),
+    both B and C would send A's items to D.
+- **Relay tree, which picks exactly one path:**
+  - Every node has the whole link graph, because neighbour lists are in the slow tier.
+  - For each origin O, every node runs the same BFS from O, breaking ties by lowest node id.
+  - X sends O's items to N only if X is N's parent in that tree. In the diamond, B (lower id) relays to D and C stays
+    quiet. Nothing is chosen in advance: each origin's tree is recomputed whenever the graph changes.
+  - In a full mesh the tree is every node attached straight to O, so the result is the same as the simple rule.
+  - **When views disagree** during churn (one node has seen a link change and another hasn't yet), either both relay
+    (a harmless duplicate that dedup drops) or neither does.
+  - **Fallback for "neither":** if N's heartbeat summary still shows it missing an item a neighbour has, one
+    heartbeat later, every neighbour that has it sends it. That's a possible duplicate, but never a stall longer than
+    about 1–2 s.
+  - BFS over the graph is trivial even at 100 nodes, so this doesn't limit the button count.
+- **Build order:** start with the simple rule plus the fallback, because it's correct and needs no graph. Add the
+  tree when partial meshes show up in tests. Sending to both is wasteful, not wrong.
 - **Batching:** pack all pending items for a neighbour into one packet per connection event, with DLE up to 251 B.
   The fixed per-packet cost dominates on Coded.
-- **Admin links:** they get every item from every origin, but not the timeline, which is sent on request.
-  Admins are leaves, so they never take part in the relay rule, and any number of admins on any buttons works the same.
+- **Admin links:** every button already holds the whole network's state, whether or not an admin is watching.
+  An admin link just gets what that button knows (all origins, but not the timeline, which is sent on request).
+  - Admins are leaves, so they never appear in neighbour lists or the relay tree.
+  - Adding phones changes nothing in button-to-button forwarding. The only cost is each button's link to each phone.
 
 ## Admin page and app
 
@@ -149,15 +192,33 @@ up on every change to any of its streams.
   doesn't matter whether an item arrived directly or was relayed.
 - **The button list is the whole network,** including buttons never picked in the Chrome picker. Those can be
   commanded through relays.
-- **Several connections at once,** as now. Commands go out through one "active" connection: the freshest one,
-  or one the admin picks. If it hasn't delivered anything for about 1–2 s, the page resends the same command id
-  through another. Dedup makes that safe, and it covers walking out of range of one button while a long supervision
-  timeout keeps its dead link "up".
+- **One phone holds connections to many buttons at once, and keeps them all.** This matters for range: Chrome can
+  only *establish* a connection on legacy 1M and then renegotiate to Coded. So the phone has to be connected
+  already before the admin walks out of 1M range, or that button can't be reached directly at Coded range.
+- **Active and passive connections:**
+  - **One active** connection streams every item to the page.
+  - **The rest stay passive:** connected, but sending only the heartbeat (`net_ms` + digest) and acting on
+    commands. That keeps each button's cost per extra phone close to an idle link.
+  - The page switches a connection with a write to a mode characteristic, for example making the freshest link
+    active when the active one goes quiet. A debug toggle makes all of them active.
+  - **On becoming active,** the button compares the page's digest with its own and sends what the page is missing.
+    In sync terms the page is just another node, which is why switching loses nothing.
+- **Commands** go out through the active connection. If it hasn't delivered anything for about 1–2 s, the page
+  resends the same command id through another connection, active or passive. Dedup makes that safe, and it covers
+  a dead link that a 20–32 s supervision timeout still reports as "up".
+- **Auto-reconnect:**
+  - Chrome can only connect to buttons picked in its chooser, so at setup (when the buttons are together anyway)
+    the admin picks every button once.
+  - After that, the page keeps retrying `gatt.connect()` on every picked button that isn't connected. Walking back
+    into 1M range of a button that dropped (out of Coded range, then the supervision timeout) reconnects it on
+    legacy, and the button renegotiates to Coded straight away.
+  - Unverified: does `navigator.bluetooth.getDevices()` survive a page reload on the Android Chrome in use, so the
+    picks don't have to be redone? Is there a per-phone cap on simultaneous LE connections (often around 7 on
+    Android)?
 - **Pending commands:** a command shows as pending until the connected button's summary says it has it, and the
   effect shows in the target's state.
-- **Two admins in one Chrome:** each tab has its own origin id. Chrome shares one GATT connection per device
-  between tabs, so both tabs get the notifications.
-  - Unverified: does `disconnect()` in one tab drop the link for the other tab?
+- **Any number of admin phones,** each with its own origin id and its own set of connections. A button treats each
+  phone's link like any other admin link.
 - **Protocol v4:**
   - a "network" notify characteristic carrying frames of items;
   - a "send" write characteristic taking frames (command items with the admin's origin);
@@ -185,8 +246,29 @@ is about 1.6 ms. One 20 B item adds about 1.7 ms.
   that.
 - **What really runs out is each node's own radio time.** When B is peripheral on two links whose anchors happen to
   overlap, its controller skips one event, which costs latency (one interval), not bandwidth.
-- **The 3 primary advertising channels are shared by everything** (5 buttons, phones, later trackers). That's why
-  Coded adverts stay slow, with bulk moved to AUX on data channels.
+- **Primary advertising channels:** only short packets go there. Each button puts about 0.3 ms per 100 ms (legacy)
+  plus about 1.2 ms per 500 ms (`ADV_EXT_IND`) on each primary channel. That's about 0.5 % occupancy per button per
+  channel, so 5 buttons is about 3 %, before phones and tags. Not a bottleneck either.
+  The real reason Coded adverts aren't faster is each button's own radio time: about 7 ms per advert event,
+  counting all 3 primaries and the AUX.
+- **Why this is far below "resend everything every interval":** if every button sent all 5 states (about 90 B) to
+  all 6 links on every 250 ms event, that's about 6.5 ms × 4 events × 6 links ≈ 16 % for sending alone, plus the
+  same again for receiving. Sending only on change, and batching, is what brings it down.
+
+## Scaling past 5 buttons
+
+N buttons, full mesh, per button's radio:
+
+- **Idle links:** (N − 1) × 4 events/s × 1.6 ms. That's 2.6 % at 5, 5.8 % at 10, 12 % at 20.
+  This is the term that eventually forces a cap on links per button (best k by RSSI), with relaying covering the rest.
+- **Data with suppression or the tree:** each button receives each change once and sends its own to its neighbours,
+  so the cost grows with N.
+- **Data without suppression:** each change arrives about N − 1 times at every button, so the cost grows with N².
+  This is fine at 5 and is what stops it working well at 10–20.
+- **Heartbeat:** a fixed 4 B digest, so it doesn't grow with N. The full origin list is only sent on mismatch.
+- **State the protocol keeps:** grows with N (one record set per origin, neighbour lists). It's fine into the tens
+  of buttons. Truly unlimited would need nodes to know only their neighbourhood. Not needed now, and nothing
+  above rules it out.
 
 ## Stages
 
@@ -204,7 +286,8 @@ is about 1.6 ms. One 20 B item adds about 1.7 ms.
    - show the link graph on the page (read only).
 3. **Network time, plus hot/slow/config streams,** with the suppression rule and heartbeat summaries. The page shows
    every button from one connection.
-4. **Commands:** admin origins, in-order exactly-once delivery, expiry, page failover across connections.
+4. **Commands:** admin origins, in-order exactly-once delivery, expiry, page failover across connections,
+   active/passive links, auto-reconnect.
 5. **Timeline stream,** with catch-up for late joiners.
 6. **Later, opportunistic:** player counts (below), then tags and teams.
 
