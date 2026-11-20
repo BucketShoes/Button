@@ -44,7 +44,8 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(mesh_status_t) == 22, "mesh_status_t layout is part of the BLE protocol");
 
 enum { MESH_CMD_OP = 0, MESH_CMD_CONFIG = 1 };
-typedef void (*mesh_cmd_fn)(uint8_t kind, const uint8_t *d, int n);
+// now: the game loop's time passed to mesh_tick (not a fresh reading, which can be later).
+typedef void (*mesh_cmd_fn)(uint8_t kind, const uint8_t *d, int n, uint32_t now);
 
 void mesh_init(mesh_cmd_fn on_cmd);
 void mesh_tick(uint32_t now);

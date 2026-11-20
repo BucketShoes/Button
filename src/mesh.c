@@ -785,7 +785,7 @@ void mesh_tick(uint32_t now)
             if (s_l[k].used && s_l[k].ready && s_l[k].kind == K_BUTTON && link_has_data(&s_l[k])) send_data(&s_l[k]);
     }
     for (int k = 0; k < s_exec_n; k++) {
-        if (s_on_cmd) s_on_cmd(s_exec[k].kind, s_exec[k].d, s_exec[k].len);
+        if (s_on_cmd) s_on_cmd(s_exec[k].kind, s_exec[k].d, s_exec[k].len, now);
     }
     s_exec_n = 0;
 }

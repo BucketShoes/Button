@@ -864,7 +864,10 @@ static void power_tick_on(uint32_t now, uint32_t dt)
         return;
     }
 
-    uint32_t idle = now - s_last_activity;
+    // (Activity stamped a moment after this loop's "now" must count as no idle time, not as
+    // 49 days of it.)
+    int32_t since = (int32_t)(now - s_last_activity);
+    uint32_t idle = since > 0 ? (uint32_t)since : 0;
     s_sparse = idle >= IDLE_SPARSE_MS;
     s_dim = idle >= IDLE_DIM_MS;
     if (idle >= AUTO_OFF_MS) {
@@ -1428,9 +1431,8 @@ static void status_line(uint32_t now)
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 // A command for this button that came through the network (from an admin on any button).
-static void on_mesh_cmd(uint8_t kind, const uint8_t *d, int n)
+static void on_mesh_cmd(uint8_t kind, const uint8_t *d, int n, uint32_t now)
 {
-    uint32_t now = now_ms();
     if (kind == MESH_CMD_CONFIG) {
         if (n == sizeof(config_t) && d[0] == CONFIG_VERSION) {
             config_t c;
