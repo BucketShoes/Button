@@ -30,6 +30,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -41,6 +42,8 @@
 #include "esp_mac.h"
 #include "esp_pm.h"
 #include "esp_random.h"
+#include "esp_rom_crc.h"
+#include "esp_rtc_time.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -1379,6 +1382,73 @@ static void pm_init(void)
     usb_lock_update();
 }
 
+// ---------------------------------------------------------------- surviving a reset
+// The game state is copied to RTC RAM every loop pass (a plain memory write, no flash wear).
+// A brown-out is a system reset on the C6 (IDF's setting), which leaves the low-power domain
+// alone: RTC RAM keeps its contents and the LP timer keeps counting. So after a brown-out
+// (or a crash / watchdog) the button carries on where it was, with the clock advanced by the
+// time it spent rebooting. A real power loss (power-on reset) or a reboot asked for from the
+// page starts fresh. The checksum catches RAM that didn't survive.
+#define SAVED_MAGIC (0x47414D45u ^ (uint32_t)sizeof(saved_game_t))  // changes with the layout
+#define RESTORE_MAX_GAP_US (10ULL * 60 * 1000 * 1000)  // a longer gap means the timer can't be trusted
+typedef struct {
+    uint32_t magic;
+    uint8_t mode, count_up, pwr;
+    bool running, fresh, game_paused, game_was_running;
+    int8_t owner, winner, next_pick;
+    int32_t val[2];
+    uint64_t rtc_us;  // LP timer when saved
+    uint32_t crc;     // over everything above
+} saved_game_t;
+static RTC_NOINIT_ATTR saved_game_t s_saved;
+
+static uint32_t saved_crc(void) { return esp_rom_crc32_le(0, (const uint8_t *)&s_saved, offsetof(saved_game_t, crc)); }
+
+static void game_save(void)
+{
+    s_saved = (saved_game_t){
+        .magic = SAVED_MAGIC, .mode = s_cfg.mode, .count_up = s_cfg.count_up, .pwr = (uint8_t)s_pwr,
+        .running = s_running, .fresh = s_fresh, .game_paused = s_game_paused, .game_was_running = s_game_was_running,
+        .owner = (int8_t)s_owner, .winner = (int8_t)s_winner, .next_pick = (int8_t)s_next_pick,
+        .val = {s_val[0], s_val[1]}, .rtc_us = esp_rtc_get_time_us(),
+    };
+    s_saved.crc = saved_crc();
+}
+
+// After game_reset at boot. Returns the power state to come back in, or -1 to boot as usual.
+static int game_restore(uint32_t now)
+{
+    esp_reset_reason_t why = (esp_reset_reason_t)s_reset_reason;
+    bool unexpected = why == ESP_RST_BROWNOUT || why == ESP_RST_PANIC || why == ESP_RST_INT_WDT ||
+                      why == ESP_RST_TASK_WDT || why == ESP_RST_WDT;
+    if (!unexpected) return -1;
+    if (s_saved.magic != SAVED_MAGIC || s_saved.crc != saved_crc()) {
+        ESP_LOGW(TAG, "reset: no saved game state survived");
+        return -1;
+    }
+    if (s_saved.mode != s_cfg.mode || s_saved.count_up != s_cfg.count_up || s_saved.owner < -1 || s_saved.owner > 1 ||
+        s_saved.winner < -1 || s_saved.winner > 1 || s_saved.pwr > PWR_OFF) {
+        ESP_LOGW(TAG, "reset: saved game state doesn't fit, starting fresh");
+        return -1;
+    }
+    s_running = s_saved.running;
+    s_fresh = s_saved.fresh;
+    s_game_paused = s_saved.game_paused;
+    s_game_was_running = s_saved.game_was_running;
+    s_owner = s_saved.owner;
+    s_winner = s_saved.winner;
+    s_next_pick = s_saved.next_pick;
+    s_val[0] = s_saved.val[0];
+    s_val[1] = s_saved.val[1];
+    // The time lost rebooting, from the LP timer (if it went backwards or jumped, it was reset: skip).
+    uint64_t t = esp_rtc_get_time_us();
+    uint32_t gap = t > s_saved.rtc_us && t - s_saved.rtc_us < RESTORE_MAX_GAP_US ? (uint32_t)((t - s_saved.rtc_us) / 1000) : 0;
+    if (gap) game_tick(now, gap);  // a clock that ran out meanwhile wins now
+    ESP_LOGW(TAG, "reset: game state restored (%s, owner %d, %ld/%ld ms, %lu ms lost rebooting)", state_name(),
+             s_owner + 1, (long)s_val[0], (long)s_val[1], (unsigned long)gap);
+    return s_saved.pwr == PWR_ON ? PWR_ON : PWR_OFF;  // a peek goes back to off
+}
+
 void app_main(void)
 {
     s_reset_reason = (uint8_t)esp_reset_reason();
@@ -1425,6 +1495,7 @@ void app_main(void)
 
     uint32_t last = now_ms();
     game_reset(last);
+    int restored = game_restore(last);
 
     // Woken from low-battery deep sleep: charger -> off (slow BLE); press ->
     // peek if the cell has recovered, else show "LO" and sleep again.
@@ -1442,6 +1513,9 @@ void app_main(void)
         s_pwr = PWR_PEEK;
         power_set(PWR_OFF, last);
         power_set(PWR_PEEK, last);
+    } else if (restored == PWR_OFF) {
+        s_pwr = PWR_PEEK;  // was off before the reset: straight back to off, quietly
+        power_set(PWR_OFF, last);
     } else {
         power_set(PWR_ON, last);
     }
@@ -1564,5 +1638,6 @@ void app_main(void)
             next_status = now + (s_pwr == PWR_OFF ? 10000 : 1000);
             status_line(now);
         }
+        game_save();
     }
 }

@@ -205,7 +205,9 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - Keep holding to 8 s: restore the default settings (it wakes briefly to play the sound).
   - A press while the music clip plays only stops the clip.
 - **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power. The brightness setting dims the displays too.
-- **Brown-out recovery:** after a brown-out reset, volume and brightness start capped at 30 % (not saved) so the startup sound can't cause another one.
+- **Brown-out recovery:**
+  - The game carries on. The game state is copied to RTC RAM all the time, and a brown-out reset leaves that RAM and the low-power timer running. After a brown-out, crash or watchdog reset, the button comes back with the same owner, clocks and running/paused state, with the clock advanced by the second or so it spent rebooting. A button that was off comes back off. If the RAM didn't survive (the checksum fails), or the power was really lost, it starts fresh as after a reset. A reboot from the page also starts fresh.
+  - Volume and brightness start capped at 50 % (not saved), so the startup sound can't cause another brown-out.
 - **Display brightness:** 1/8 is the GN1650's lowest step. At low settings the highlighted display stays one step above the dim one, so you can still tell them apart.
 - **Displays:** the running owner's display is bright, with its colon flashing at 4 Hz. The others are dim (two timers) or blank (one timer, teams only).
 - **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
