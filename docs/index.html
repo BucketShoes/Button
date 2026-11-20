@@ -53,6 +53,9 @@
   #game { margin: 12px 0; }
   .gamebar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .gamebar select { flex: 1; min-width: 110px; }
+  .linkbar { margin-bottom: 8px; line-height: 2; }
+  .linkbar button { padding: 2px 8px; font-size: 13px; }
+  .card .net { font-size: 13px; margin: 2px 0 6px; }
   .pageopts { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--line); }
   .pageopts a { color: var(--accent); }
   #g-status { font-weight: 700; color: var(--warn); }
@@ -97,12 +100,14 @@
   </div>
   <div class="row">
     <button id="add" class="primary">+ Connect a button</button>
-    <span class="note">Each button you connect gets its own panel. You can connect several.
+    <span class="note">One connection shows every button in the network. Connect to the ones you'll walk between
+      while you're near them, so the page can switch when you move out of range of one.
       <span id="demo-link">No buttons? <a href="?demo">Try the demo</a> (simulated buttons).</span></span>
   </div>
   <div id="demo-note" class="note" hidden>Demo: these buttons are simulated in this page. Holds and captures happen by themselves;
     the controls work too. <a href="./">Leave the demo</a></div>
   <section id="game" class="card" hidden>
+    <div id="links" class="note linkbar"></div>
     <div class="gamebar">
       <button data-all="gpause" id="g-pause">Pause game</button>
       <button data-all="gresume" id="g-resume">Resume game</button>
@@ -125,8 +130,8 @@
       </div>
       <p class="note">Game pause stops every clock; game resume puts each button back as it was, so a
         button that was paused or uncaptured stays that way. While game-paused a button can't be captured; a 6 s hold on it takes it
-        out of the game pause into a regular pause. Commands go to each button over its own connection, so they land within a fraction
-        of a second of each other. To copy settings, use "Copy to all" in a button's settings.</p>
+        out of the game pause into a regular pause. Commands go out once and the buttons pass them on to each other, so they
+        reach buttons you aren't connected to as well. To copy settings, use "Copy to all" in a button's settings.</p>
     </details>
   </section>
   <h3 class="sect" id="det-title" hidden>Each button</h3>
@@ -150,7 +155,8 @@
       <h2 class="name grow">Button</h2>
       <span class="batt muted"></span>
     </div>
-    <div class="owner">Connecting…</div>
+    <div class="net muted"></div>
+    <div class="owner">Waiting for its state…</div>
     <div class="clocks"></div>
     <div class="row">
       <button data-op="start" class="primary">Start</button>
@@ -218,7 +224,7 @@
 "use strict";
 // ---- protocol (see docs/ble-protocol.md) --------------------------------
 const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
-const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4), CHR_LINK = uuid(5);
+const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4), CHR_LINK = uuid(5), CHR_NET = uuid(6);
 const PHY = { 1: "1M", 2: "2M", 3: "Coded" };
 const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
@@ -296,20 +302,257 @@ function parseTime(str) {  // "m", "m:ss" or "h:mm:ss" -> ms (null if bad)
 const battIcon = s => s.battLow ? "\u{1FAAB}" : "\u{1F50B}";  // low battery / battery emoji
 const teamName = t => t === 0 ? "Team 1" : t === 1 ? "Team 2" : "Uncaptured";
 
-// ---- one connected button ---------------------------------------------------
-const buttons = new Set();
+// ---- the button network (see docs/ble-protocol.md, "Network") ------------------
+// The page connects directly to one or more buttons (Links). Each button streams what it knows about
+// every button in the network over its network characteristic, so a single connection shows them all.
+// One link is active (gets everything); the rest stay passive (heartbeats only) and take over when the
+// active one goes quiet, e.g. walking out of its range. Commands carry this page's own origin id and
+// a sequence number, so sending one again through another link can't make it happen twice.
+const FRAME_VERSION = 1, F_HELLO = 1, F_ITEMS = 2, F_HEARTBEAT = 3, F_SUMMARY = 4;
+const S_HOT = 0, S_SLOW = 1, S_CFG = 2, S_CMD = 3, K_BUTTON = 1, K_ADMIN = 2, ALL = 0xffff;
+const CMD_KIND_OP = 0, CMD_KIND_CONFIG = 1;
+const CMD_TTL = 10000;         // a command not acted on within this is dropped (ms)
+const STALE_MS = 30000;        // a button not heard from for this long is shown as stale
+const QUIET_MS = 2500;         // the active link has sent nothing for this long: switch
+const SUMMARY_EVERY_MS = 15000;
+const FRAME_MAX = 180;
+const newer32 = (a, b) => ((a - b) | 0) > 0;
+const hex4 = n => n.toString(16).toUpperCase().padStart(4, "0");
 
-class Btn {
+const buttons = new Map();  // node id -> Btn (every button heard of, directly or not)
+const net = {
+  origin: 0x8000 | Math.floor(Math.random() * 0x7fff),  // this page's id as a command sender
+  seq: 0,
+  off: null, offAt: 0,  // network ms = performance.now() + off
+  links: new Set(),
+  active: null,
+  lastSummary: 0,
+
+  now() { return this.off === null ? null : (performance.now() + this.off) >>> 0; },
+  // Follows the active link's clock: the largest estimate (latency only makes them smaller),
+  // but a lower one is taken after 5 s so a restarted network clock is followed too.
+  clock(ms) {
+    if (!ms) return;
+    const est = ms - performance.now(), t = performance.now();
+    if (this.off === null || est > this.off || t - this.offAt > 5000) { this.off = est; this.offAt = t; }
+  },
+  ageOf(t) {  // ms since network time t (0 if unknown)
+    const n = this.now();
+    return n === null ? 0 : Math.max(0, (n - t) | 0);
+  },
+  up() { return [...this.links].filter(l => l.up); },
+
+  pickActive(force) {
+    const up = this.up(), t = performance.now();
+    const cur = this.active && this.active.up ? this.active : null;
+    if (cur && !force && t - cur.lastRx < QUIET_MS) return;
+    const best = up.filter(l => l !== cur).sort((a, b) => b.lastRx - a.lastRx)[0];
+    const next = best && (!cur || best.lastRx > cur.lastRx) ? best : cur;
+    if (next === this.active) return;
+    if (this.active && this.active.up) this.active.hello(false);
+    this.active = next;
+    if (next) { next.hello(true); this.sendSummary(next); }
+  },
+  makeActive(link) {
+    if (!link.up || link === this.active) return;
+    if (this.active && this.active.up) this.active.hello(false);
+    this.active = link;
+    link.hello(true);
+    this.sendSummary(link);
+  },
+
+  // What this page already has, so the button sends only what's missing.
+  sendSummary(link) {
+    this.lastSummary = performance.now();
+    const all = [...buttons.values()].filter(b => b.ver.some(v => v));
+    let i = 0, first = true;
+    do {
+      const n = Math.min(all.length - i, Math.floor((FRAME_MAX - 7) / 17));
+      const [f, dv] = frame(F_SUMMARY, 1 + n * 17);
+      dv.setUint8(6, (first ? 1 : 0) | (i + n >= all.length ? 2 : 0));
+      for (let k = 0; k < n; k++) {
+        const b = all[i + k], o = 7 + k * 17;
+        dv.setUint16(o, b.id, true); dv.setUint8(o + 2, K_BUTTON);
+        for (let s = 0; s < 3; s++) dv.setUint32(o + 3 + s * 4, b.ver[s] >>> 0, true);
+      }
+      link.write(f).catch(e => console.warn("summary:", e.message));
+      i += n; first = false;
+    } while (i < all.length);
+  },
+
+  onItems(dv) {
+    for (let o = 6; o + 8 <= dv.byteLength;) {
+      const id = dv.getUint16(o, true), s = dv.getUint8(o + 2), ver = dv.getUint32(o + 3, true), len = dv.getUint8(o + 7);
+      if (o + 8 + len > dv.byteLength) break;
+      const p = new DataView(dv.buffer, dv.byteOffset + o + 8, len);
+      o += 8 + len;
+      if (s > S_CFG) continue;
+      const b = buttons.get(id) || new Btn(id);
+      if (b.ver[s] && !newer32(ver, b.ver[s])) continue;
+      b.ver[s] = ver;
+      b.onItem(s, p);
+    }
+  },
+
+  // A command for one button (or ALL), sent through the active link; on failure tried again
+  // (same id) through another one.
+  command(target, kind, data) {
+    if (!this.up().length) { alert("Not connected to any button."); return Promise.resolve(); }
+    if (this.now() === null) { alert("Still connecting; try again in a moment."); return Promise.resolve(); }
+    const c = { seq: ++this.seq & 0xffff, target, kind, data: new Uint8Array(data), expiry: (this.now() + CMD_TTL) >>> 0, tried: new Set() };
+    return this.sendCmd(c);
+  },
+  sendCmd(c) {
+    const link = this.active && this.active.up && !c.tried.has(this.active) ? this.active
+      : this.up().filter(l => !c.tried.has(l)).sort((a, b) => b.lastRx - a.lastRx)[0];
+    if (!link) {
+      alert("That didn't reach any button (out of range, or reconnecting). Try again in a moment.");
+      return Promise.resolve();
+    }
+    c.tried.add(link);
+    const n = 9 + c.data.length, [f, dv] = frame(F_ITEMS, 8 + n);
+    dv.setUint16(6, this.origin, true); dv.setUint8(8, S_CMD); dv.setUint32(9, c.seq, true); dv.setUint8(13, n);
+    dv.setUint16(14, link.nodeId || 0, true); dv.setUint32(16, c.expiry, true); dv.setUint16(20, c.target, true);
+    dv.setUint8(22, c.kind); f.set(c.data, 23);
+    return link.write(f).catch(e => {
+      console.warn(`command via ${link.label()}:`, e.message);
+      if (this.now() !== null && newer32(c.expiry, this.now())) return this.sendCmd(c);
+      alert("That didn't reach any button in time. Try again.");
+    });
+  },
+};
+
+function frame(type, bodyLen) {
+  const f = new Uint8Array(6 + bodyLen), dv = new DataView(f.buffer);
+  dv.setUint8(0, FRAME_VERSION); dv.setUint8(1, type);  // network ms 0: phones don't set the clock
+  return [f, dv];
+}
+
+// ---- one direct connection ------------------------------------------------------
+class Link {
   constructor(device) {
     this.device = device;
+    this.queue = Promise.resolve();
+    this.up = false;
+    this.closed = false;
+    this.nodeId = null;
+    this.lastRx = 0;
+    this.info = null;
+    this.error = "";
+    device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+    net.links.add(this);
+    this.connect();
+  }
+  label() { const b = this.nodeId !== null && buttons.get(this.nodeId); return (b && b.label()) || this.device.name || "Button"; }
+
+  async connect() {
+    try {
+      this.error = "";
+      const server = await this.device.gatt.connect();
+      const svc = await server.getPrimaryService(SVC);
+      this.chr = await svc.getCharacteristic(CHR_NET).catch(() => null);
+      if (!this.chr) {
+        this.error = "firmware too old for this page (no network characteristic): update it";
+        return;
+      }
+      this.chrLink = await svc.getCharacteristic(CHR_LINK).catch(() => null);
+      if (!this.listening) {
+        this.chr.addEventListener("characteristicvaluechanged", e => this.onFrame(e.target.value));
+        this.listening = true;
+      }
+      await this.chr.startNotifications();
+      this.up = true;
+      this.retry = 0;
+      this.lastRx = performance.now();
+      if (!net.active || !net.active.up) net.makeActive(this);
+      else this.hello(false);
+      this.readLink();
+    } catch (e) {
+      console.warn(e);
+      this.error = e.message;
+      this.scheduleReconnect();
+    }
+  }
+  hello(active) {
+    this.active = active;
+    const [f, dv] = frame(F_HELLO, 4);
+    dv.setUint16(6, net.origin, true); dv.setUint8(8, K_ADMIN); dv.setUint8(9, active ? 1 : 0);
+    return this.write(f).catch(e => console.warn("hello:", e.message));
+  }
+  onFrame(dv) {
+    if (dv.byteLength < 6 || dv.getUint8(0) !== FRAME_VERSION) return;
+    this.lastRx = performance.now();
+    if (this === net.active) net.clock(dv.getUint32(2, true));
+    else if (net.off === null) net.clock(dv.getUint32(2, true));
+    switch (dv.getUint8(1)) {
+      case F_HELLO:
+        if (dv.byteLength >= 10 && dv.getUint8(8) === K_BUTTON) this.nodeId = dv.getUint16(6, true);
+        break;
+      case F_ITEMS:
+        if (this === net.active) net.onItems(dv);
+        break;
+    }
+  }
+  onDisconnect() {
+    this.up = false;
+    this.info = null;
+    if (net.active === this) net.pickActive(true);
+    if (!this.closed) this.scheduleReconnect();
+  }
+  // Keeps trying (a button walked out of range comes back when you walk back): it reconnects on
+  // legacy 1M and the button moves the link to Coded again.
+  scheduleReconnect() {
+    if (this.closed || this.device.gatt.connected) return;
+    clearTimeout(this.timer);
+    const wait = Math.min(15000, 1000 * 2 ** Math.min(this.retry = (this.retry || 0) + 1, 4));
+    this.timer = setTimeout(() => this.connect(), wait);
+  }
+  close() {
+    this.closed = true;
+    clearTimeout(this.timer);
+    net.links.delete(this);
+    if (this.device.gatt.connected) this.device.gatt.disconnect();
+    this.up = false;
+    if (net.active === this) { net.active = null; net.pickActive(true); }
+  }
+  // Writes one at a time (GATT allows one operation in flight). Rejects if it didn't go.
+  write(data) {
+    const p = this.queue.then(() => {
+      if (!this.device.gatt.connected || !this.chr) throw new Error("not connected");
+      return this.chr.writeValueWithResponse ? this.chr.writeValueWithResponse(data) : this.chr.writeValue(data);
+    });
+    this.queue = p.catch(() => {});
+    return p;
+  }
+  readLink() {
+    if (!this.chrLink || !this.up) return;
+    this.queue = this.queue.then(() => this.chrLink.readValue()).then(dv => {
+      if (dv.byteLength < 9) return;
+      this.info = { tx: dv.getUint8(0), rx: dv.getUint8(1), itvl: dv.getUint16(2, true) * 1.25,
+                    timeout: dv.getUint16(6, true) * 10, rssi: dv.getInt8(8) };
+    }).catch(e => console.warn(e));
+  }
+  linkText() {
+    const l = this.info;
+    if (!this.up) return this.error ? `not connected (${this.error})` : "reconnecting…";
+    if (!l) return "connected";
+    const phy = l.tx === l.rx ? PHY[l.tx] || "?" : `${PHY[l.tx] || "?"}/${PHY[l.rx] || "?"}`;
+    return `${phy} ${+l.itvl.toFixed(1)} ms${l.rssi !== 127 ? ` ${l.rssi} dBm` : ""}`;
+  }
+}
+
+// ---- one button in the network ------------------------------------------------------
+class Btn {
+  constructor(id) {
+    this.id = id;
+    this.ver = [0, 0, 0];
+    this.hot = null;
+    this.slow = null;
     this.state = null;
     this.cfg = null;
-    this.chr = {};
-    this.queue = Promise.resolve();
-    this.closed = false;
     this.el = document.getElementById("card-tpl").content.firstElementChild.cloneNode(true);
     document.getElementById("cards").append(this.el);
-    $(this.el, ".name").textContent = device.name || "Button";
+    $(this.el, ".name").textContent = this.label();
     // Overview row: name and battery, then one box per team.
     this.row = document.createElement("div");
     this.row.className = "ovr";
@@ -323,126 +566,62 @@ class Btn {
     const sel = $(this.el, ".sound");
     SOUNDS.forEach((n, i) => sel.add(new Option(n, i)));
     this.bind();
-    device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
-    buttons.add(this);
-    this.connect();
+    buttons.set(id, this);
   }
-
-  async connect() {
-    try {
-      this.setStatus("Connecting…");
-      const server = await this.device.gatt.connect();
-      const svc = await server.getPrimaryService(SVC);
-      for (const [k, u] of [["state", CHR_STATE], ["config", CHR_CONFIG], ["cmd", CHR_CMD]])
-        this.chr[k] = await svc.getCharacteristic(u);
-      this.chr.state.addEventListener("characteristicvaluechanged", e => this.onState(e.target.value));
-      this.chr.config.addEventListener("characteristicvaluechanged", e => this.onConfig(e.target.value));
-      this.onConfig(await this.chr.config.readValue());
-      this.onState(await this.chr.state.readValue());
-      await this.chr.state.startNotifications();
-      await this.chr.config.startNotifications();
-      // This connection's own link (PHY, interval, RSSI); older firmware doesn't have it.
-      this.chr.link = await svc.getCharacteristic(CHR_LINK).catch(() => null);
-      this.link = null;
-      this.readLink();
-      this.retry = 0;
-      if (!this.state) this.setStatus("Connected, waiting for the button's state…");
-      this.el.classList.remove("off");
-      $(this.el, ".dot").classList.add("ok");
-    } catch (e) {
-      console.warn(e);
-      this.setStatus("Connection failed: " + e.message);
-      this.scheduleReconnect();
-    }
-  }
-  readLink() {
-    if (!this.chr.link || !this.device.gatt.connected) return;
-    this.queue = this.queue.then(() => this.chr.link.readValue()).then(dv => {
-      if (dv.byteLength < 9) return;
-      this.link = { tx: dv.getUint8(0), rx: dv.getUint8(1), itvl: dv.getUint16(2, true) * 1.25,
-                    timeout: dv.getUint16(6, true) * 10, rssi: dv.getInt8(8) };
-      this.render();
-    }).catch(e => console.warn(e));
-  }
-  linkText() {
-    const l = this.link;
-    if (!l || !this.device.gatt.connected) return "";
-    const phy = l.tx === l.rx ? PHY[l.tx] || "?" : `${PHY[l.tx] || "?"}/${PHY[l.rx] || "?"}`;
-    return ` · ${phy} ${+l.itvl.toFixed(1)} ms${l.rssi !== 127 ? ` ${l.rssi} dBm` : ""}`;
-  }
-  onDisconnect() {
-    this.link = null;
-    this.el.classList.add("off");
-    $(this.el, ".dot").classList.remove("ok");
-    if (this.closed) return;
-    this.setStatus("Disconnected, reconnecting…");
-    this.scheduleReconnect();
-  }
-  scheduleReconnect() {
-    if (this.closed || this.device.gatt.connected) return;
-    clearTimeout(this.timer);
-    const wait = Math.min(15000, 1000 * 2 ** Math.min(this.retry = (this.retry || 0) + 1, 4));
-    this.timer = setTimeout(() => this.connect(), wait);
-  }
-  close() {
-    this.closed = true;
-    clearTimeout(this.timer);
-    if (this.device.gatt.connected) this.device.gatt.disconnect();
-    this.el.remove();
-    this.row.remove();
-    buttons.delete(this);
-  }
+  link() { return [...net.links].find(l => l.nodeId === this.id) || null; }
+  label() { return (this.cfg && this.cfg.name) || `Button-${hex4(this.id)}`; }
+  heardAgo() { return this.hot ? net.ageOf(this.hot.t) : Infinity; }
+  live() { return !!(this.state && net.up().length && this.heardAgo() < STALE_MS); }
   setStatus(text) { const o = $(this.el, ".owner"); o.textContent = text; o.style.background = ""; o.style.color = ""; }
 
-  // Writes one at a time (GATT allows one operation in flight).
-  write(chr, data) {
-    this.queue = this.queue.then(() => {
-      if (!this.device.gatt.connected) throw new Error("not connected");
-      const c = this.chr[chr];
-      return c.writeValueWithResponse ? c.writeValueWithResponse(data) : c.writeValue(data);
-    }).catch(e => {
-      console.warn(e);
-      if (!this.device.gatt.connected) {
-        this.scheduleReconnect();
-        alert(`${this.label()} isn't connected right now (out of range, or reconnecting). Try again in a moment.`);
-      } else {
-        alert(`${this.label()}: that didn't go through (${e.message}). Try again.`);
-      }
-    });
-    return this.queue;
-  }
-  send(op, ...parts) { return this.write("cmd", cmd(op, ...parts)); }
-  label() { return (this.cfg && this.cfg.name) || this.device.name || "Button"; }
+  send(op, ...parts) { return net.command(this.id, CMD_KIND_OP, cmd(op, ...parts)); }
+  write(_, data) { return net.command(this.id, CMD_KIND_CONFIG, data); }  // ("config", bytes)
 
-  onConfig(dv) {
-    if (dv.byteLength < CONFIG_LEN || dv.getUint8(0) !== CONFIG_VERSION) {
-      this.setStatus("Firmware/page version mismatch: update the button or reload the page"); return;
+  onItem(s, dv) {
+    if (s === S_HOT && dv.byteLength >= 21) {
+      const f = dv.getUint8(4), f2 = dv.getUint8(20);
+      this.hot = {
+        t: dv.getUint32(0, true), running: !!(f & 1), won: !!(f & 2), gamePaused: !!(f & 4), held: !!(f & 8),
+        identifying: !!(f & 16), usb: !!(f & 32), clip: !!(f & 64),
+        owner: dv.getInt8(5), winner: dv.getInt8(6), target: dv.getInt8(7), holdStage: dv.getUint8(8),
+        heldMs: dv.getUint16(9, true), time: [dv.getInt32(11, true), dv.getInt32(15, true)], power: dv.getUint8(19),
+        dimmed: !!(f2 & 1), battLow: !!(f2 & 2), sparse: !!(f2 & 4),
+      };
+    } else if (s === S_SLOW && dv.byteLength >= 23) {
+      const n = dv.getUint8(22), nb = [];
+      for (let k = 0; k < n && 23 + k * 4 + 4 <= dv.byteLength; k++)
+        nb.push({ id: dv.getUint16(23 + k * 4, true), rssi: dv.getInt8(25 + k * 4), phy: dv.getUint8(26 + k * 4) });
+      this.slow = {
+        vsys: dv.getUint16(4, true), vbus: dv.getUint16(6, true), batt: dv.getInt16(8, true), battMv: dv.getUint16(10, true),
+        conns: dv.getUint8(12), resetReason: dv.getUint8(13), uptime: dv.getUint32(14, true), boots: dv.getUint32(18, true),
+        neighbours: nb,
+      };
+    } else if (s === S_CFG) {
+      if (dv.byteLength < CONFIG_LEN || dv.getUint8(0) !== CONFIG_VERSION) {
+        this.setStatus("Firmware/page version mismatch: update the button or reload the page"); return;
+      }
+      this.cfg = parseConfig(dv);
+      this.fillSettings();
+      this.buildClocks();
     }
-    this.cfg = parseConfig(dv);
-    this.fillSettings();
-    this.buildClocks();
+    if (this.hot) {
+      const slow = this.slow || { vsys: 0, vbus: 0, batt: "?", battMv: 0, conns: 0, resetReason: 0, uptime: 0, boots: 1, neighbours: [] };
+      this.state = { ...slow, ...this.hot, rx: performance.now() - net.ageOf(this.hot.t) };
+    }
     this.render();
   }
-  onState(dv) {
-    const v = dv.getUint8(0);
-    if (v === PROTO_VERSION && dv.byteLength < STATE_LEN) {
-      // Notification cut to the link's MTU: read the whole value instead (at most 4 per second).
-      const t = performance.now();
-      if (!this.lastFullRead || t - this.lastFullRead > 250) {
-        this.lastFullRead = t;
-        this.queue = this.queue.then(() => this.chr.state.readValue()).then(d => d.byteLength >= STATE_LEN && this.onState(d)).catch(() => {});
-      }
-      return;
-    }
-    if (v !== PROTO_VERSION) {
-      this.state = null;
-      this.setStatus(v > PROTO_VERSION
-        ? `This page is older than the button (protocol v${v}, page v${PROTO_VERSION}). Reload the page; GitHub Pages can take a few minutes to update.`
-        : `The button's firmware is older than this page (protocol v${v}, page v${PROTO_VERSION}). Update the firmware.`);
-      return;
-    }
-    this.state = parseState(dv);
-    this.render();
+  netText() {
+    const l = this.link(), parts = [];
+    parts.push(l ? `direct: ${l.linkText()}${l === net.active ? " (active)" : ""}` : "via the network");
+    const nb = this.slow ? this.slow.neighbours : [];
+    if (nb.length) parts.push("links: " + nb.map(x => {
+      const o = buttons.get(x.id);
+      return `${o ? o.label() : hex4(x.id)}${x.rssi !== 127 ? ` ${x.rssi}` : ""}`;
+    }).join(", "));
+    else if (this.slow) parts.push("no links to other buttons");
+    const age = this.heardAgo();
+    if (this.hot && age >= STALE_MS) parts.push(`last heard ${Math.round(age / 1000)} s ago`);
+    return parts.join(" · ");
   }
 
   bind() {
@@ -471,7 +650,7 @@ class Btn {
         case "reboot": if (confirm(`Reboot ${this.label()}? The game state is lost; settings are kept.`)) this.send(OP.REBOOT); return;
         case "copyall": return this.copyToAll();
         case "off": if (confirm(`Power off ${this.label()}? A press on its lid wakes it.`)) this.send(OP.POWER_OFF); return;
-        case "disconnect": return this.close();
+        case "disconnect": return this.link() ? this.link().close() : connectDirect(this.label());
       }
     });
     $(e, ".f-mode").addEventListener("change", () => this.settingsVisibility());
@@ -544,7 +723,7 @@ class Btn {
   copyToAll() {
     const c = this.readSettings();
     if (!c) return;
-    const others = [...buttons].filter(b => b !== this && b.device.gatt.connected && b.cfg);
+    const others = [...buttons.values()].filter(b => b !== this && b.live() && b.cfg);
     if (!confirm(`Save these settings here and on ${others.length} other button(s)? Names are kept.`)) return;
     this.write("config", encodeConfig(c));
     for (const b of others) b.write("config", encodeConfig({ ...c, name: b.cfg.name }));
@@ -565,10 +744,10 @@ class Btn {
   }
 
   renderRow() {
-    const r = this.row, s = this.state, c = this.cfg, live = !!(this.device.gatt.connected && s && c);
+    const r = this.row, s = this.state, c = this.cfg, live = !!(this.live() && c);
     $(r, ".n").textContent = this.label();
     const b = $(r, ".b");
-    b.textContent = !this.device.gatt.connected ? "not connected" : !live ? "connecting…"
+    b.textContent = !net.up().length ? "not connected" : !s || !c ? "waiting…" : !live ? "not heard from"
       : s.power === 2 ? "off" + (s.battMv ? ` ${(s.battMv / 1000).toFixed(2)} V` : "")
       : (s.usb ? "USB " : "") + battIcon(s) + `${s.batt}%` + (s.power === 1 ? " peek" : "") + (s.gamePaused ? " ⏸" : "");
     b.classList.toggle("low", live && s.battLow);
@@ -598,13 +777,18 @@ class Btn {
   render() {
     const s = this.state, c = this.cfg, e = this.el;
     this.renderRow();
-    if (!s || !c || !this.device.gatt.connected) return;
+    const live = this.live();
+    $(e, ".dot").classList.toggle("ok", live);
+    e.classList.toggle("off", !live);
+    $(e, ".net").textContent = this.netText();
+    $(e, '[data-op="disconnect"]').textContent = this.link() ? "Disconnect" : "Connect directly";
+    if (!s || !c) return;
     $(e, ".name").textContent = this.label();
     const pct = s.batt, v = (s.vsys / 1000).toFixed(2);
     const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
     const avg = !s.usb && s.battMv ? ` (avg ${(s.battMv / 1000).toFixed(2)} V)` : "";
     const volts = s.power === 2 ? (s.usb ? "on USB" : s.battMv ? `${(s.battMv / 1000).toFixed(2)} V at rest` : "") : `${battIcon(s)}${pct}% · ${v} V${avg}`;
-    $(e, ".batt").textContent = `${volts}${s.usb && s.power !== 2 ? " · USB" : ""}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${this.linkText()}${reboots}`;
+    $(e, ".batt").textContent = `${volts}${s.usb && s.power !== 2 ? " · USB" : ""}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
@@ -628,7 +812,7 @@ class Btn {
     });
     e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
     $(e, ".poweron").hidden = s.power === 0;
-    e.classList.toggle("off", s.power === 2);
+    e.classList.toggle("off", !live || s.power === 2);
     $(e, ".t1").style.borderColor = c.colour[0];
     $(e, ".t2").style.borderColor = c.colour[1];
   }
@@ -639,24 +823,34 @@ if (!navigator.bluetooth) {
   document.getElementById("unsupported").style.display = "block";
   document.getElementById("add").disabled = true;
 }
-document.getElementById("add").addEventListener("click", async () => {
+// A direct connection (Chrome's chooser, optionally narrowed to one button's name). Connect to the
+// buttons you'll walk between while you're near them: Chrome can only start a connection on 1M, so a
+// link has to exist before you're at Coded range.
+async function connectDirect(name) {
   try {
-    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
-    for (const b of buttons) if (b.device.id === device.id) { b.el.scrollIntoView(); return; }
-    new Btn(device);
+    const filter = name ? { services: [SVC], name } : { services: [SVC] };
+    const device = await navigator.bluetooth.requestDevice({ filters: [filter] });
+    for (const l of net.links) if (l.device.id === device.id) { if (!l.up) l.connect(); return; }
+    new Link(device);
   } catch (e) {
     if (e.name !== "NotFoundError") alert(e.message);  // NotFoundError = chooser cancelled
   }
+}
+document.getElementById("add").addEventListener("click", () => connectDirect());
+document.getElementById("links").addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-link]");
+  const l = b && [...net.links][+b.dataset.link];
+  if (l) net.makeActive(l);
 });
 
-// ---- all connected buttons ---------------------------------------------------
+// ---- all buttons ----------------------------------------------------------------
 const allSound = document.getElementById("all-sound");
 SOUNDS.forEach((n, i) => allSound.add(new Option(n, i)));
 allSound.value = SOUNDS.indexOf("Whistle");
 document.getElementById("game").addEventListener("click", ev => {
   const b = ev.target.closest("button[data-all]");
   if (!b) return;
-  const live = [...buttons].filter(x => x.device.gatt.connected);
+  const live = [...buttons.values()].filter(x => x.live());
   let data;
   switch (b.dataset.all) {
     case "gpause": data = cmd(OP.GAME_PAUSE); break;
@@ -666,28 +860,42 @@ document.getElementById("game").addEventListener("click", ev => {
     case "stopsound": data = cmd(OP.STOP_SOUND); break;
     case "on": data = cmd(OP.POWER_ON); break;
     case "off":
-      if (!confirm(`Power off all ${live.length} connected buttons?`)) return;
+      if (!confirm(`Power off all ${live.length} buttons?`)) return;
       data = cmd(OP.POWER_OFF); break;
   }
-  for (const x of live) x.write("cmd", data);  // each has its own queue, so they go out in parallel
+  net.command(ALL, CMD_KIND_OP, data);  // one command; every button passes it on and acts on it
 });
+
+function renderLinks() {
+  const ls = [...net.links], el = document.getElementById("links");
+  const key = ls.map(l => `${l.label()}|${l.up}|${l === net.active}|${l.linkText()}`).join(";");
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.innerHTML = !ls.length ? "" : "Connected directly: " + ls.map((l, i) =>
+    `<button data-link="${i}" class="${l === net.active ? "primary" : ""}" ${l.up ? "" : "disabled"}
+      title="${l === net.active ? "Active: the network's state comes in through this one" : "Passive: tap to make it the active one"}">${l.label()}</button>
+      <span class="muted">${l.linkText()}</span>`).join(" ");
+}
 
 function tick() {
   const d = new Date();
   document.getElementById("wall").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  const n = [...buttons].filter(x => x.device.gatt.connected).length;
-  document.getElementById("game").hidden = document.getElementById("det-title").hidden = buttons.size === 0;
-  document.getElementById("all-count").textContent = `(${n} connected)`;
-  const live = [...buttons].filter(x => x.device.gatt.connected && x.state), gp = live.filter(x => x.state.gamePaused).length;
+  net.pickActive(false);
+  if (net.active && net.active.up && performance.now() - net.lastSummary > SUMMARY_EVERY_MS) net.sendSummary(net.active);
+  const all = [...buttons.values()], live = all.filter(x => x.live());
+  document.getElementById("game").hidden = document.getElementById("det-title").hidden = !net.links.size && !all.length;
+  document.getElementById("all-count").textContent = `(${live.length} in the network)`;
+  renderLinks();
+  const gp = live.filter(x => x.state.gamePaused).length;
   document.getElementById("g-status").textContent = !gp ? "" : gp === live.length ? "Game paused" : `Game paused on ${gp} of ${live.length}`;
   document.getElementById("g-resume").classList.toggle("primary", gp > 0);
   document.getElementById("g-pause").classList.toggle("primary", gp === 0 && live.length > 0);
-  const first = [...buttons].find(x => x.cfg);
+  const first = all.find(x => x.cfg);
   for (const t of [0, 1]) document.getElementById("th" + t).style.borderBottomColor = first ? first.cfg.colour[t] : "";
-  for (const b of buttons) b.render();
+  for (const b of all) b.render();
 }
 setInterval(tick, 200);
-setInterval(() => buttons.forEach(b => b.readLink()), 5000);  // RSSI changes; PHY and interval settle after connect
+setInterval(() => net.links.forEach(l => l.readLink()), 5000);  // RSSI changes; PHY and interval settle after connect
 tick();
 // Keep the screen on while the page is in front (on by default; the choice is remembered).
 // Chrome grants this without a tap, but some browsers only after one, so a refused request is retried on

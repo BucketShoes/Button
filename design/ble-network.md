@@ -272,7 +272,13 @@ N buttons, full mesh, per button's radio:
 
 ## Stages
 
-1. **Coded on what exists** (code written 2026-11-21; builds, not yet tested on hardware):
+Status (2026-11-21): stage 1 is tested on hardware (a phone link on Coded). Stages 2–4 are written in
+`src/ble.c`, `src/mesh.c` and the page, build cleanly, and work in the page's demo; they are not yet tested on
+buttons. The protocol as built is in `docs/ble-protocol.md` ("Network"). Where the build differs from this plan:
+relaying uses the simple rule plus summaries (no tree yet); the command item carries the button it entered at;
+the page has one active link and passive ones, and it follows the active link's clock rather than pushing its own.
+
+1. **Coded on what exists:**
    - turn on 5.0 features;
    - two advertising sets (legacy + Coded connectable);
    - PHY update request and connection-parameter request on connect;

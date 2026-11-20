@@ -6,12 +6,19 @@ The button is a BLE peripheral with two connectable advertising sets:
   advertises the service UUID and puts its name in the scan response.
 - **Extended, on Coded PHY** (primary and secondary), for range. The service UUID and name go in the AUX packet.
 
-The name is the one set in the settings, or `Button-XXXX` (the last 4 hex digits of the BT MAC). Up to 4 centrals
-can connect at once.
+The name is the one set in the settings, or `Button-XXXX` (the last 4 hex digits of the BT MAC, which are also
+its node id on the network). Up to 9 connections at once: other buttons plus phones, with 2 always kept free for
+phones.
 
-After connecting, the button asks for the link to move to Coded PHY (S=8). If the central's controller doesn't
-support Coded, the link stays on 1M. Once the PHY has settled, the button asks for a 30–50 ms interval on 1M
-(80–100 ms on Coded) and a 20 s supervision timeout.
+After a phone connects on 1M, the button asks for the link to move to Coded PHY (S=8). If the phone's controller
+doesn't support Coded, the link stays on 1M. Once the PHY has settled, the button asks for a 30–50 ms interval on
+1M (80–100 ms on Coded) and a 20 s supervision timeout. A central that connects on Coded already keeps its own
+parameters.
+
+Buttons find each other with short Coded scans (600 ms, every 3 s for the first minute after boot, then about
+every 15 s; none while powered off) and connect directly on Coded as central, at about a 250 ms interval with a
+20 s supervision timeout. If two buttons connect to each other at the same moment, the link whose central has the
+lower node id is kept. See [Network](#network) for what they send each other.
 
 All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 
@@ -22,6 +29,9 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | 3 | config (42 bytes) | read, write, notify (on change) |
 | 4 | command | write |
 | 5 | link (9 bytes) | read |
+| 6 | network frames | write, write without response, notify |
+
+The control page only uses 5 and 6. Characteristics 2–4 still work for talking to one button directly.
 
 ## Link
 
@@ -119,6 +129,80 @@ Sound ids:
 | 5 | ding | 12 | diagnostic |
 | 6 | doom | 13 | music clip |
 
-There is no pairing or PIN yet, so anyone with the page can connect.
+There is no pairing or PIN yet, so anyone with the page can connect, and a command sent to one button reaches
+them all.
 
 While off, the button keeps advertising slowly (legacy about every 1 s, Coded about every 2 s, +6 dBm), so the page can still connect. Identify, battery and play sound wake it briefly (peek). Other commands just change its state, and power on turns it on.
+
+## Network
+
+Every button holds the latest state, status and settings of every button it has heard of, and passes them on.
+Each button is the authority on its own; admins never write another button's state, they send commands. A phone
+connected to any one button sees, and can control, the whole network. The design notes are in
+`design/ble-network.md` in the repository.
+
+### Frames
+
+Everything on characteristic 6 is a frame: centrals write them, the button notifies its own to subscribed centrals.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | frame version (1) |
+| 1 | u8 | type: 1 hello, 2 items, 3 heartbeat, 4 summary |
+| 2 | u32 | sender's network time in ms (0 from phones) |
+| 6 | | body, by type |
+
+- **Hello:** u16 node or origin id, u8 kind (1 button, 2 admin), u8 flags (bit0: this admin link is *active*).
+  A phone sends one after subscribing, and again to switch between active and passive. The button answers with
+  its own hello, which tells the phone its node id. Button links exchange hellos too.
+- **Items:** any number of `u16 origin, u8 stream, u32 version, u8 len, payload`.
+- **Heartbeat:** u32 digest (to phones: 0). Sent once a second on every link, active or passive.
+- **Summary:** u8 flags (bit0 first part, bit1 last part), then entries of `u16 id, u8 kind, u32 version[3]
+  (hot, status, config; 0 = none), u16 last command seq`. It says what the sender has, so the receiver sends what
+  is missing; anything not listed by the last part is taken to be missing.
+
+### Streams
+
+| Stream | Payload | Sent |
+|---|---|---|
+| 0 hot | game state (below) | on change, and every 10 s |
+| 1 status | status (below) | every 30 s, and when the button's links or phone count change |
+| 2 config | `config_t` (42 bytes, as characteristic 3) | on change |
+| 3 command | command (below) | from admins only |
+
+For streams 0–2 the highest version wins; versions start with the button's boot count in the top byte, so a
+rebooted button's items are newer. Commands are numbered per admin and taken strictly in order, each once: a later
+one waits up to 10 s for a missing earlier one.
+
+**Hot** (21 bytes): u32 network ms when generated, u8 flags (as the state characteristic), i8 owner, i8 winner,
+i8 target, u8 hold stage, u16 held ms, i32 ×2 clocks, u8 power, u8 flags2. The clocks and held time are as of
+the timestamp; receivers extrapolate while running or held.
+
+**Status** (22 bytes, then the links): u32 network ms, u16 VSYS mV, u16 VBUS mV, i16 battery %, u16 battery mV,
+u8 phone connections, u8 reset reason, u32 uptime s, u32 boots since power-on, then u8 n and n × (u16 node id,
+i8 RSSI, u8 PHY) for each other button it has a working link to.
+
+**Command:** u16 the button it entered the network at, u32 expiry (network ms), u16 target node (0xFFFF = all),
+u8 kind (0 = an opcode and its arguments as for characteristic 4, 1 = a 42-byte config write), then the data. A
+command past its expiry is still passed on but not acted on.
+
+### Network time
+
+Each button keeps `network ms = its own ms + an offset`, and moves the offset forward whenever a button's frame
+shows a later time, so all buttons settle on the furthest-ahead clock. Phones take it from the button they're
+connected to and use it to set command expiry (now + 10 s) and to tell how old an item is.
+
+### Relaying
+
+A button passes an item on to a neighbour unless that neighbour has a working direct link to the item's origin
+(by the neighbour's own status), or, for commands, to the button the command entered at. With every button in
+range of every other, nothing is relayed. If two heartbeat digests stay different for 2.5 s, the two buttons
+exchange summaries and send each other what's missing.
+
+### Phones
+
+A phone can be connected to several buttons. One link is active and gets every item; the rest are passive and
+only get heartbeats. When the active link goes quiet the page makes another one active (a hello with bit0 set)
+and sends a summary, so it gets only what it missed. Commands go through the active link with the page's own
+random origin id and a sequence number; if a write fails it's sent again through another link, and the buttons
+act on it once.
