@@ -1,5 +1,6 @@
 // BLE peripheral (NimBLE): one GATT service the web page talks to.
-// Legacy advertising so Chrome (Web Bluetooth) can find and connect.
+// Advertises on legacy 1M (Chrome can only connect through that) and Coded (range); every link is
+// then asked to switch to Coded PHY. Each central can read its own link (PHY, interval, RSSI).
 // The NimBLE host runs in its own task; writes are queued for the game loop
 // to pick up with ble_poll(), and the game loop publishes state/config here.
 #pragma once
@@ -23,4 +24,4 @@ bool ble_poll(ble_msg_t *m);                       // non-blocking
 void ble_publish_state(const void *p, size_t n);   // read value + notify subscribers
 void ble_publish_config(const void *p, size_t n);  // read value + notify subscribers
 int ble_connections(void);
-void ble_set_slow(bool slow);  // true: ~1 s advert interval, +6 dBm (powered off); false: 100 ms, +9 dBm
+void ble_set_slow(bool slow);  // true (powered off): legacy ~1 s, Coded ~2 s, +6 dBm; false: 100 ms / 500 ms, +9 dBm

@@ -1,8 +1,17 @@
 # BLE protocol (version 3)
 
-The button is a BLE peripheral using legacy advertising, so Chrome's Web Bluetooth can find it. It advertises
-the service UUID and puts its name in the scan response. The name is the one set in the settings, or
-`Button-XXXX` (the last 4 hex digits of the BT MAC). Up to 4 centrals can connect at once.
+The button is a BLE peripheral with two connectable advertising sets:
+
+- **Legacy, on 1M,** so Chrome's Web Bluetooth can find it (Chrome can only connect through legacy adverts). It
+  advertises the service UUID and puts its name in the scan response.
+- **Extended, on Coded PHY** (primary and secondary), for range. The service UUID and name go in the AUX packet.
+
+The name is the one set in the settings, or `Button-XXXX` (the last 4 hex digits of the BT MAC). Up to 4 centrals
+can connect at once.
+
+After connecting, the button asks for the link to move to Coded PHY (S=8). If the central's controller doesn't
+support Coded, the link stays on 1M. Once the PHY has settled, the button asks for a 30–50 ms interval on 1M
+(80–100 ms on Coded) and a 20 s supervision timeout.
 
 All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 
@@ -12,6 +21,20 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | 2 | state (36 bytes) | read, notify (5 Hz on, 1 Hz off) |
 | 3 | config (42 bytes) | read, write, notify (on change) |
 | 4 | command | write |
+| 5 | link (9 bytes) | read |
+
+## Link
+
+Each read describes the reading central's own connection.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | TX PHY: 1 = 1M, 2 = 2M, 3 = Coded (0 = unknown) |
+| 1 | u8 | RX PHY |
+| 2 | u16 | connection interval, in 1.25 ms units |
+| 4 | u16 | peripheral latency |
+| 6 | u16 | supervision timeout, in 10 ms units |
+| 8 | i8 | RSSI of the link in dBm (127 = unknown) |
 
 ## State
 
@@ -98,4 +121,4 @@ Sound ids:
 
 There is no pairing or PIN yet, so anyone with the page can connect.
 
-While off, the button keeps advertising slowly (about every 1 s, +6 dBm), so the page can still connect. Identify, battery and play sound wake it briefly (peek). Other commands just change its state, and power on turns it on.
+While off, the button keeps advertising slowly (legacy about every 1 s, Coded about every 2 s, +6 dBm), so the page can still connect. Identify, battery and play sound wake it briefly (peek). Other commands just change its state, and power on turns it on.

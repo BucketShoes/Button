@@ -272,7 +272,7 @@ N buttons, full mesh, per button's radio:
 
 ## Stages
 
-1. **Coded on what exists:**
+1. **Coded on what exists** (code written 2026-11-21; builds, not yet tested on hardware):
    - turn on 5.0 features;
    - two advertising sets (legacy + Coded connectable);
    - PHY update request and connection-parameter request on connect;

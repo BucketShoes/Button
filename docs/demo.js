@@ -55,6 +55,12 @@
       async writeValueWithResponse(data) { onWrite(kind, new DataView(data.buffer || data, data.byteOffset || 0, data.byteLength)); },
     });
     const chrs = { state: chr("state"), config: chr("config"), cmd: chr("cmd") };
+    chrs.link = { async readValue() {  // Coded both ways, 100 ms interval, 20 s timeout, some RSSI
+      const v = new DataView(new ArrayBuffer(9));
+      v.setUint8(0, 3); v.setUint8(1, 3); v.setUint16(2, 80, true); v.setUint16(6, 2000, true);
+      v.setInt8(8, -60 - Math.round(Math.random() * 25));
+      return v;
+    } };
     const device = {
       name: d.name, id: "demo-" + d.name, addEventListener() {},
       gatt: {
@@ -65,7 +71,7 @@
     };
     const server = {
       async getPrimaryService() {
-        return { async getCharacteristic(u) { return u === CHR_STATE ? chrs.state : u === CHR_CONFIG ? chrs.config : chrs.cmd; } };
+        return { async getCharacteristic(u) { return u === CHR_STATE ? chrs.state : u === CHR_CONFIG ? chrs.config : u === CHR_LINK ? chrs.link : chrs.cmd; } };
       },
     };
 
