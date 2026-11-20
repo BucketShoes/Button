@@ -52,5 +52,8 @@ void mesh_tick(uint32_t now);
 void mesh_publish_hot(const mesh_hot_t *h);
 void mesh_publish_status(const mesh_status_t *s);
 void mesh_publish_config(const void *cfg, size_t n);
+// Powered off: after a moment (so the others hear it's off) drop links to other buttons and
+// refuse new ones; phones stay connected.
+void mesh_set_off(bool off);
 uint32_t mesh_net_ms(void);
 int mesh_button_links(void);

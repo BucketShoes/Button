@@ -132,7 +132,7 @@ Sound ids:
 There is no pairing or PIN yet, so anyone with the page can connect, and a command sent to one button reaches
 them all.
 
-While off, the button keeps advertising slowly (legacy about every 1 s, Coded about every 2 s, +6 dBm), so the page can still connect. Identify, battery and play sound wake it briefly (peek). Other commands just change its state, and power on turns it on.
+While off, the button only advertises legacy, slowly (about every 1 s, +6 dBm), so the page can still connect directly. It stops the Coded adverts and scans, and about 3 s after turning off (time for the others to hear it is off) it drops its links to other buttons and refuses new ones; phone connections stay. So an off button drops out of the network: other buttons show its last state ("off") until it goes stale, and it can only be woken or powered on over a direct connection or with its lid. Identify, battery and play sound wake it briefly (peek), which also lets it rejoin the network while peeking. Other commands just change its state, and power on turns it on.
 
 ## Network
 

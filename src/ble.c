@@ -311,8 +311,8 @@ static void adv_configure(void)
     p.own_addr_type = s_own_addr_type;
     p.primary_phy = BLE_HCI_LE_PHY_CODED;
     p.secondary_phy = BLE_HCI_LE_PHY_CODED;
-    p.itvl_min = s_slow ? BLE_GAP_ADV_ITVL_MS(2000) : BLE_GAP_ADV_ITVL_MS(500);
-    p.itvl_max = s_slow ? BLE_GAP_ADV_ITVL_MS(2200) : BLE_GAP_ADV_ITVL_MS(550);
+    p.itvl_min = BLE_GAP_ADV_ITVL_MS(500);  // (not used while off)
+    p.itvl_max = BLE_GAP_ADV_ITVL_MS(550);
     p.tx_power = pwr;
     p.sid = ADV_CODED;
     rc = ble_gap_ext_adv_configure(ADV_CODED, &p, NULL, gap_event, NULL);
@@ -339,6 +339,7 @@ static void advertise(void)
     }
     for (uint8_t i = 0; i < ADV_SETS; i++) {
         if (ble_gap_ext_adv_active(i)) continue;
+        if (i == ADV_CODED && s_slow) continue;  // off: phones only (legacy), no button links
         int rc = ble_gap_ext_adv_start(i, 0, 0);
         if (rc && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "adv %s start: %d", i == ADV_CODED ? "coded" : "legacy", rc);
     }

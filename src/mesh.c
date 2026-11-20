@@ -40,6 +40,7 @@ enum { K_NONE = 0, K_BUTTON = 1, K_ADMIN = 2 };
 #define GAP_SKIP_MS 10000     // a missing command is given up on after this
 #define ADMIN_IDLE_MS 600000  // an admin's commands are forgotten after 10 min of quiet
 #define DATA_GAP_MIN_MS 30    // at most one data frame per link per connection interval, and this
+#define OFF_DROP_MS 3000      // powered off: button links are dropped after this (time to say it's off)
 
 typedef struct {
     uint16_t seq;
@@ -91,6 +92,18 @@ static mesh_status_t s_status;
 static bool s_status_ok;
 static uint16_t s_nb[MAX_NEIGHBOURS];  // neighbour list last published
 static int s_nb_n = -1;
+static bool s_off;
+static uint32_t s_off_since;
+
+void mesh_set_off(bool off)
+{
+    if (off == s_off) return;
+    s_off = off;
+    s_off_since = s_now;
+    ESP_LOGI(TAG, "%s", off ? "powered off: dropping button links shortly" : "on: button links allowed");
+}
+
+static bool links_dropped(void) { return s_off && s_now - s_off_since >= OFF_DROP_MS; }
 
 static inline bool newer32(uint32_t a, uint32_t b) { return (int32_t)(a - b) > 0; }
 static inline bool newer16(uint16_t a, uint16_t b) { return (int16_t)(a - b) > 0; }
@@ -554,6 +567,11 @@ static void on_hello(link_t *l, const uint8_t *p, size_t n)
     bool active = p[3] & 1;
     if (kind == K_BUTTON) {
         if (id == s_me) return;
+        if (links_dropped()) {
+            ESP_LOGI(TAG, "conn %d: button %04X while off, dropping", l->conn, id);
+            ble_drop(l->conn);
+            return;
+        }
         // A button we already have a working link to (both connected at once): ble.c drops one.
         bool fresh_l = !l->ready || l->peer != id;
         l->kind = K_BUTTON;
@@ -735,6 +753,17 @@ void mesh_tick(uint32_t now)
             l->used = false;
         } else {
             on_frame(l, e.data, e.len);
+        }
+    }
+
+    // Powered off for a moment: let go of the other buttons (phones stay).
+    if (links_dropped()) {
+        for (int k = 0; k < MAX_LINKS; k++) {
+            link_t *l = &s_l[k];
+            if (!l->used || l->kind != K_BUTTON || l->ready == false) continue;
+            ESP_LOGI(TAG, "conn %d: off, dropping button %04X", l->conn, l->peer);
+            ble_drop(l->conn);
+            l->ready = false;  // until the disconnect arrives
         }
     }
 

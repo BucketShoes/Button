@@ -42,8 +42,8 @@ bool ble_poll(ble_msg_t *m);                       // non-blocking
 void ble_publish_state(const void *p, size_t n);   // read value + notify subscribers
 void ble_publish_config(const void *p, size_t n);  // read value + notify subscribers
 int ble_connections(void);
-void ble_set_slow(bool slow);  // true (powered off): legacy ~1 s, Coded ~2 s, +6 dBm, no scanning;
-                               // false: 100 ms / 500 ms, +9 dBm
+void ble_set_slow(bool slow);  // true (powered off): legacy only, ~1 s, +6 dBm; no Coded adverts or scanning,
+                               // so no button links; false: legacy 100 ms + Coded 500 ms, +9 dBm
 
 // Network transport (for mesh.c, called from the game loop).
 uint16_t ble_node_id(void);  // last two bytes of the BT MAC (as in "Button-XXXX"); 0 until the stack is up

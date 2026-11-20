@@ -826,6 +826,7 @@ static void power_set(pwr_t to, uint32_t now)
         }
         periph_power(false);
         ble_set_slow(true);
+        mesh_set_off(true);
         s_off_since_us = esp_timer_get_time();
         s_next_batt_check = now + 10000;  // first check soon, then hourly
         s_low_readings = 0;
@@ -834,6 +835,7 @@ static void power_set(pwr_t to, uint32_t now)
     } else {
         periph_power(true);
         ble_set_slow(false);
+        mesh_set_off(false);
         s_batt_mv = s_vsys_mv = sense_vsys_mv();
         if (to == PWR_PEEK) {
             s_peek_presses = 0;
