@@ -292,8 +292,8 @@ static void adv_configure(void)
     p.own_addr_type = s_own_addr_type;
     p.primary_phy = BLE_HCI_LE_PHY_1M;
     p.secondary_phy = BLE_HCI_LE_PHY_1M;
-    p.itvl_min = s_slow ? BLE_GAP_ADV_ITVL_MS(1000) : BLE_GAP_ADV_ITVL_MS(100);
-    p.itvl_max = s_slow ? BLE_GAP_ADV_ITVL_MS(1100) : BLE_GAP_ADV_ITVL_MS(150);
+    p.itvl_min = s_slow ? BLE_GAP_ADV_ITVL_MS(2000) : BLE_GAP_ADV_ITVL_MS(100);
+    p.itvl_max = s_slow ? BLE_GAP_ADV_ITVL_MS(2500) : BLE_GAP_ADV_ITVL_MS(150);
     p.tx_power = pwr;
     p.sid = ADV_LEGACY;
     int rc = ble_gap_ext_adv_configure(ADV_LEGACY, &p, NULL, gap_event, NULL);

@@ -79,20 +79,19 @@ static const char *TAG = "button";
 #define BOOT_FACTORY_MS  8000  // ... and this long restores default settings
 #define STATE_PUBLISH_MS 200
 #define LOOP_MS          5
-#define OFF_IDLE_LOOP_MS 10000 // game loop period while off with no BLE connections
 
 #define CENTRE_LEVEL     64    // team-colour centre LEDs, "medium"
 #define RING_LEVEL       255   // ring while owned
 #define EXT_LEVEL        128   // external strip, relative to the ring
 #define DISP_FULL        8
-#define DISP_DIM         2
+#define DISP_DIM         4     // un-highlighted display: half of the highlighted one
 #define DISP_IDLE        6
 
 #define PROTO_VERSION    3
 
 static const rgb_t WHITE = {255, 255, 255};
 // Uncaptured: a pale mint green, unlike any team colour and unlike the white used for counts.
-static const rgb_t UNCAPTURED_COLOUR = {70, 255, 120};
+static const rgb_t UNCAPTURED_COLOUR = {70, 255, 128}; //blue over 128 so its cyan at 2% brightness with rounding
 static const rgb_t RED = {255, 0, 0};
 static const rgb_t GREEN = {0, 255, 0};
 
@@ -753,24 +752,27 @@ static void activity(uint32_t now) { s_last_activity = now; }
 // USB power alone (a power bank) shouldn't keep the chip awake; a USB host (the serial console,
 // flashing) does. IDF holds its own no-light-sleep lock for as long as the host is sending USB
 // frames (CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION). But light sleep takes the USB pad down, so a host
-// only gets to enumerate if the chip stays awake for a moment first: this lock gives it
-// USB_ENUM_MS after boot, after USB power appears, and after a BOOT press while on USB.
-#define USB_ENUM_MS 5000
+// only gets to enumerate if the chip stays awake for a moment first. While on (or peeking) this
+// lock gives it USB_PLUG_MS after a boot, after turning on with USB there, and after USB power
+// appears; a BOOT press gives USB_BOOT_PRESS_MS. While off it never holds: off sleeps on USB too.
+#define USB_PLUG_MS       10000
+#define USB_BOOT_PRESS_MS (5 * 60 * 1000)
 static uint32_t s_usb_enum_until;
 static bool s_usb_seen;
 
-static void usb_enum_window(uint32_t now)
+static void usb_enum_window(uint32_t now, uint32_t ms)
 {
-    s_usb_enum_until = now + USB_ENUM_MS;
-    ESP_LOGI(TAG, "USB: staying awake %d s for a host to connect", USB_ENUM_MS / 1000);
+    if ((int32_t)(s_usb_enum_until - (now + ms)) >= 0) return;  // a longer window is already open
+    s_usb_enum_until = now + ms;
+    ESP_LOGI(TAG, "USB: staying awake %lu s for a host to connect", (unsigned long)(ms / 1000));
 }
 
 static void usb_lock_update(uint32_t now)
 {
     if (!s_usb_lock) return;
-    if (on_usb() && !s_usb_seen) usb_enum_window(now);
+    if (on_usb() && !s_usb_seen && s_pwr != PWR_OFF) usb_enum_window(now, USB_PLUG_MS);
     s_usb_seen = on_usb();
-    bool want = on_usb() && (int32_t)(s_usb_enum_until - now) > 0;
+    bool want = s_pwr != PWR_OFF && on_usb() && (int32_t)(s_usb_enum_until - now) > 0;
     if (want == s_usb_lock_held) return;
     s_usb_lock_held = want;
     if (want) esp_pm_lock_acquire(s_usb_lock);
@@ -817,6 +819,12 @@ static void deep_sleep(bool press_wake)
 {
     ESP_LOGW(TAG, "battery %d mV: deep sleep (%s)", s_batt_mv, press_wake ? "press or USB wakes" : "only USB wakes");
     periph_power(false);
+    // The lid switches and BOOT are light-sleep GPIO wake sources. Left enabled, that source also
+    // applies in deep sleep and woke it again at once (as a GPIO wake, which booted on). Deep sleep
+    // wakes on ext1 only.
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+    const gpio_num_t light_wake[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_BOOT};
+    for (int i = 0; i < 4; i++) gpio_wakeup_disable(light_wake[i]);
     for (int i = 0; i < 500 && press_wake && any_face_raw(); i++) vTaskDelay(pdMS_TO_TICKS(10));
     if (press_wake) {
         const gpio_num_t wake[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
@@ -877,6 +885,7 @@ static void power_set(pwr_t to, uint32_t now)
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
         } else {
             startup_test();
+            if (on_usb()) usb_enum_window(now, USB_PLUG_MS);
             activity(now);
             s_next_batt_warn = now;
         }
@@ -924,10 +933,14 @@ static void power_tick_on(uint32_t now, uint32_t dt)
     }
 }
 
-// Called once a second while off.
+// Called on every loop pass while off (the loop only runs on events, and for this check).
 static void power_tick_off(uint32_t now)
 {
-    if (on_usb() || (int32_t)(now - s_next_batt_check) < 0) return;
+    if ((int32_t)(now - s_next_batt_check) < 0) return;
+    if (on_usb()) {  // VSYS is the charger: nothing to measure; look again later
+        s_next_batt_check = now + OFF_BATT_CHECK_MS;
+        return;
+    }
     int mv = read_batt_rest();
     s_batt_mv = mv;
     bool long_off = esp_timer_get_time() - s_off_since_us > (int64_t)OFF_BLE_MAX_MS * 1000;
@@ -1667,7 +1680,12 @@ void app_main(void)
     if (s_reset_reason == ESP_RST_POWERON || s_boot_check != (s_boot_count ^ BOOT_CHECK)) s_boot_count = 0;
     s_boot_count++;
     s_boot_check = s_boot_count ^ BOOT_CHECK;
-    bool from_deep = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1;
+    // Any wake from deep sleep (low battery or shipping mode) counts, whatever woke it: one that
+    // isn't a lid press or USB must not come up on.
+    bool from_deep = s_reset_reason == ESP_RST_DEEPSLEEP;
+    if (from_deep)
+        ESP_LOGW(TAG, "woke from deep sleep: cause %d, ext1 pins 0x%llx", (int)esp_sleep_get_wakeup_cause(),
+                 (unsigned long long)esp_sleep_get_ext1_wakeup_status());
     if (from_deep) {
         rtc_gpio_deinit(PIN_FACE1);
         rtc_gpio_deinit(PIN_FACE2);
@@ -1750,9 +1768,17 @@ void app_main(void)
         // off. A face press wakes the loop at once either way.
         uint32_t t = now_ms();
         bool busy = s_face.state || s_in[IN_BOOT].state || t - s_face.last_active_ms < 1000;
-        // Off with nobody connected there is nothing to do but notice USB and the hourly battery check:
-        // a long sleep. Lid presses, BOOT and BLE events (a phone connecting) wake the loop at once.
-        uint32_t period = s_pwr == PWR_OFF ? (ble_connections() ? 1000 : OFF_IDLE_LOOP_MS) : busy ? LOOP_MS : 20;
+        // Off with nobody connected, the only timed job is the battery check (hourly): the loop sleeps
+        // until then. Lid presses, BOOT and BLE events (a phone connecting, its frames) wake it at once.
+        // With a connection it runs at least once a second for the heartbeats, but frames arriving run
+        // it anyway and restart that wait, so it mostly runs when the radio has woken the chip already.
+        uint32_t period;
+        if (s_pwr != PWR_OFF) period = busy ? LOOP_MS : 20;
+        else if (ble_connections() || s_factory_off_at) period = 1000;
+        else {
+            int32_t until = (int32_t)(s_next_batt_check - t);
+            period = until < 1000 ? 1000 : until > (int32_t)OFF_BATT_CHECK_MS ? OFF_BATT_CHECK_MS : (uint32_t)until;
+        }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(period));
         uint32_t now = now_ms();
         uint32_t dt = now - last;
@@ -1772,7 +1798,7 @@ void app_main(void)
                 boot_skip_press = s_in[IN_BOOT].press_ms;  // that press only stops the clip
             }
             else if (e > 0 && i == IN_BOOT && s_pwr != PWR_OFF) AUDIO_PLAY(SLOT_DIAG, SND_OFF_WARN);
-            if (e > 0 && i == IN_BOOT && on_usb()) usb_enum_window(now);  // a way to get the console back
+            if (e > 0 && i == IN_BOOT && on_usb() && s_pwr != PWR_OFF) usb_enum_window(now, USB_BOOT_PRESS_MS);
             if (e < 0 && i == IN_BOOT && s_boot_off_done != s_in[IN_BOOT].press_ms) audio_stop(SLOT_DIAG);
         }
         // BOOT held: "HoLd" / "oFF" with a falling tone, off at 3 s (no need to
