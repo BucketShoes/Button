@@ -29,13 +29,18 @@ static adc_cali_handle_t make_cali(adc_channel_t ch)
     return h;
 }
 
-void sense_init(void)
+static void unit_init(void)
 {
     adc_oneshot_unit_init_cfg_t u = {.unit_id = ADC_UNIT_1};
     ESP_ERROR_CHECK(adc_oneshot_new_unit(&u, &s_adc));
     adc_oneshot_chan_cfg_t c = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
     ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc, CH_VSYS, &c));
     ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc, CH_VBUS, &c));
+}
+
+void sense_init(void)
+{
+    unit_init();
     s_cali[0] = make_cali(CH_VSYS);
     s_cali[1] = make_cali(CH_VBUS);
 }
@@ -63,9 +68,24 @@ static int read_pin_mv(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
     return raw * 3300 / 4095;
 }
 
+// VSYS tops out at 4.2 V, 2.1 V at the pin, so a raw reading near full scale is the ADC
+// stuck, not a voltage. Seen once light sleep had run (on battery): both channels read 4095
+// from then on. Rebuild the ADC unit and read again; the log says whether that cleared it.
+#define RAW_STUCK 4000
+static int s_reinits;
+
 int sense_vsys_mv(void)
 {
     s_vsys_pin = read_pin_mv(CH_VSYS, s_cali[0], &s_vsys_raw);
+    if (s_vsys_raw >= RAW_STUCK) {
+        int before = s_vsys_raw;
+        adc_oneshot_del_unit(s_adc);
+        unit_init();
+        s_reinits++;
+        s_vsys_pin = read_pin_mv(CH_VSYS, s_cali[0], &s_vsys_raw);
+        ESP_LOGW(TAG, "VSYS ADC stuck at %d, rebuilt the ADC unit (%d time(s)): now %d", before,
+                 s_reinits, s_vsys_raw);
+    }
     return s_vsys_pin * 2;
 }
 
