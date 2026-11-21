@@ -85,7 +85,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 7 | u8 | volume: 0 mute, 1..255 = -40..0 dB (default 128, about -20 dB) |
 | 8 | u16 | hold ms (500..60000); pause at +4 s, reset at +9 s, power off at +14 s |
 | 10 | u8 | LED brightness 0..255 (default 128) |
-| 11 | u8 | debug options: bit0 awake LED off (0, the default, is on: the red status LED is lit whenever the chip is out of light sleep, so every wake shows as a flash) |
+| 11 | u8 | debug options: bit0 awake LED (the red status LED is lit whenever the chip is out of light sleep, so every wake shows as a flash; default off) |
 | 12 | u32 ×2 | durations in ms, per team (one timer uses the first) |
 | 20 | u8 ×6 | team 1 RGB, team 2 RGB |
 | 26 | char ×16 | name, NUL-terminated (empty = default) |
@@ -116,7 +116,7 @@ The first byte is the opcode.
 | 15 | | reboot (settings kept) |
 | 16 | | game pause: stop the clocks, remembering whether they were running |
 | 17 | | game resume: undo a game pause (runs again only if it was running before) |
-| 18 | | factory off: what a low battery does. Deep sleep with BLE off after about 1.5 s (so the network passes the command on); only a lid press or USB wakes it |
+| 18 | | shipping mode (was "factory off"): what a low battery does. Deep sleep with BLE off after about 1.5 s (so the network passes the command on); only a lid press or USB wakes it |
 | 19 | | (removed: was the awake LED switch, now config byte 11) |
 
 Sound ids:
@@ -180,7 +180,8 @@ one waits up to 10 s for a missing earlier one.
 i8 target, u8 hold stage, u16 held ms, i32 ×2 clocks, u8 power, u8 flags2. The clocks and held time are as of
 the timestamp; receivers extrapolate while running or held.
 
-**Status** (28 bytes, then the links): u32 network ms, u16 VSYS mV, u16 VBUS mV, i16 battery %, u16 battery mV,
+**Status** (28 bytes, then the links): u32 network ms, u16 VSYS mV (not read while off), u16 VBUS mV (0 without USB), i16 battery % (while off, from
+the last rest reading), u16 battery mV,
 u8 phone connections, u8 reset reason, u32 uptime s, u32 boots since power-on, u16 raw VSYS ADC average
 (0..4095), u16 VSYS ADC pin mV (VSYS is twice this), u16 time awake since the last status in per mille (light
 sleep the rest), then u8 n and n × (u16 node id,
