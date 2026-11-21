@@ -81,6 +81,11 @@
   summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
   .grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; margin: 8px 0; }
   .grid label { color: var(--muted); }
+  /* Grid items default to their content's width, so a select with a long option or a range slider
+     can push the card wider than the screen; let them shrink to the column instead. */
+  .grid > * { min-width: 0; }
+  .grid select, .grid input:not([type=checkbox]) { width: 100%; box-sizing: border-box; }
+  .row select { min-width: 0; max-width: 100%; }
   footer { text-align: center; padding: 24px 16px 40px; color: var(--muted); }
   footer .logo { display: block; width: 120px; margin: 0 auto 8px; }
   footer .logo img { width: 120px; height: auto; display: block; }
@@ -788,7 +793,8 @@ class Btn {
     const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
     const avg = !s.usb && s.battMv ? ` (avg ${(s.battMv / 1000).toFixed(2)} V)` : "";
     const volts = s.power === 2 ? (s.usb ? "on USB" : s.battMv ? `${(s.battMv / 1000).toFixed(2)} V at rest` : "") : `${battIcon(s)}${pct}% · ${v} V${avg}`;
-    $(e, ".batt").textContent = `${volts}${s.usb && s.power !== 2 ? " · USB" : ""}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
+    const usb = s.vbus > 300 ? ` · USB ${(s.vbus / 1000).toFixed(2)} V` : " · no USB";
+    $(e, ".batt").textContent = `${volts}${usb}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
