@@ -608,6 +608,8 @@ enum {
 
 // Boots since power-on (survives resets, not power loss), to spot brown-outs.
 static RTC_NOINIT_ATTR uint32_t s_boot_count;
+static RTC_NOINIT_ATTR uint32_t s_boot_check;  // s_boot_count ^ BOOT_CHECK when valid
+#define BOOT_CHECK 0x5A3CB007u
 static uint8_t s_reset_reason;
 
 typedef struct __attribute__((packed)) {
@@ -1385,14 +1387,8 @@ static void render_leds(uint32_t now)
 
     for (int i = 0; i < 6; i++) frame[RING_CW[i]] = ring[i];
     for (int i = 0; i < LED_COUNT_EXT; i++) frame[LED_IDX_EXT + i] = rgb_scale(ring[i * 6 / LED_COUNT_EXT], EXT_LEVEL);
-
-    // Per-switch feedback: white on the two ring LEDs nearest each switch.
-    static const int NEAR[3][2] = {{4, 5} /*W: NW,SW*/, {6, 7} /*SE: S,SE*/, {2, 3} /*NE: NE,N*/};
-    for (int s = 0; s < 3; s++) {
-        if (s_in[IN_FACE1 + s].state) {
-            for (int k = 0; k < 2; k++) frame[NEAR[s][k]] = rgb_add(frame[NEAR[s][k]], rgb_scale(WHITE, 90));
-        }
-    }
+    // (No per-switch highlight: to players the three switches are one lid, so the ring shows only
+    // the hold animation, the same whichever switch is down.)
 
     // Idle 10 min+: every second ring and strip LED off (LED1/2 stay), still visible, less power.
     if (s_sparse) {
@@ -1421,11 +1417,13 @@ static void status_line(uint32_t now)
     char t1[8], t2[8];
     fmt_clock(t1, sizeof t1, s_val[0]);
     fmt_clock(t2, sizeof t2, s_val[1]);
+    int vraw = 0, vpin = 0;
+    sense_vsys_debug(&vraw, &vpin);
     printf("[%7.1fs] %-4s %-7s mode=%d owner=%d T1=%s T2=%s hold=%4lums sw=%d%d%d boot=%d ped=%d%d "
-           "vsys=%dmV vbus=%dmV ble=%d%s disp_nak=%lu/%lu heap=%u\n",
+           "vsys=%dmV (adc %d, pin %dmV) vbus=%dmV ble=%d%s disp_nak=%lu/%lu heap=%u\n",
            now / 1000.0, PWR_NAME[s_pwr], state_name(), s_cfg.mode, s_owner + 1, t1, t2, (unsigned long)input_held_ms(&s_face),
            s_in[IN_FACE1].state, s_in[IN_FACE2].state, s_in[IN_FACE3].state, s_in[IN_BOOT].state,
-           s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, s_vbus_mv, ble_connections(),
+           s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, vraw, vpin, s_vbus_mv, ble_connections(),
            "", (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 }
@@ -1556,8 +1554,11 @@ static int game_restore(uint32_t now)
 void app_main(void)
 {
     s_reset_reason = (uint8_t)esp_reset_reason();
-    if (s_reset_reason == ESP_RST_POWERON) s_boot_count = 0;
+    // RTC RAM that hasn't been through a power-on reset can hold anything (a cell plugged in can
+    // come up as a brown-out reset), so the count is only trusted next to its check word.
+    if (s_reset_reason == ESP_RST_POWERON || s_boot_check != (s_boot_count ^ BOOT_CHECK)) s_boot_count = 0;
     s_boot_count++;
+    s_boot_check = s_boot_count ^ BOOT_CHECK;
     bool from_deep = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1;
     if (from_deep) {
         rtc_gpio_deinit(PIN_FACE1);

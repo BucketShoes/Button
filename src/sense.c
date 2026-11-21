@@ -40,22 +40,38 @@ void sense_init(void)
     s_cali[1] = make_cali(CH_VBUS);
 }
 
-static int read_pin_mv(adc_channel_t ch, adc_cali_handle_t cali)
+static int s_vsys_raw, s_vsys_pin;
+
+static int read_pin_mv(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
 {
     int sum = 0, n = 0;
     for (int i = 0; i < SAMPLES; i++) {
         int raw;
-        if (adc_oneshot_read(s_adc, ch, &raw) == ESP_OK) {
+        esp_err_t err = adc_oneshot_read(s_adc, ch, &raw);
+        if (err == ESP_OK) {
             sum += raw;
             n++;
+        } else {
+            ESP_LOGW(TAG, "ch%d read: %s", ch, esp_err_to_name(err));
         }
     }
     if (!n) return -1;
     int raw = sum / n;
+    if (raw_out) *raw_out = raw;
     int mv;
     if (cali && adc_cali_raw_to_voltage(cali, raw, &mv) == ESP_OK) return mv;
     return raw * 3300 / 4095;
 }
 
-int sense_vsys_mv(void) { return read_pin_mv(CH_VSYS, s_cali[0]) * 2; }
-int sense_vbus_mv(void) { return read_pin_mv(CH_VBUS, s_cali[1]) * 10 / 6; }
+int sense_vsys_mv(void)
+{
+    s_vsys_pin = read_pin_mv(CH_VSYS, s_cali[0], &s_vsys_raw);
+    return s_vsys_pin * 2;
+}
+
+void sense_vsys_debug(int *raw, int *pin_mv)
+{
+    *raw = s_vsys_raw;
+    *pin_mv = s_vsys_pin;
+}
+int sense_vbus_mv(void) { return read_pin_mv(CH_VBUS, s_cali[1], NULL) * 10 / 6; }
