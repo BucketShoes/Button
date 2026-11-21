@@ -1,6 +1,7 @@
 // Voltage sensing on ADC1. See docs/hardware.md: VBAT_SENSE reads VSYS, not
 // the cell. With USB present it reads the charger output.
 #pragma once
+#include <stdbool.h>
 
 void sense_init(void);
 int sense_vsys_mv(void);  // VSYS (2:1 divider)
@@ -9,3 +10,5 @@ int sense_vbus_mv(void);  // USB VBUS (0.6 divider)
 void sense_vsys_debug(int *raw, int *pin_mv);
 // Times the ADC was found stuck above the pin's possible range and rebuilt (since boot).
 int sense_adc_rebuilds(void);
+// USB power present, from the VBUS pin's digital level (no ADC conversion).
+bool sense_vbus_present(void);

@@ -42,6 +42,8 @@ bool ble_poll(ble_msg_t *m);                       // non-blocking
 void ble_publish_state(const void *p, size_t n);   // read value + notify subscribers
 void ble_publish_config(const void *p, size_t n);  // read value + notify subscribers
 int ble_connections(void);
+// This task gets a notification (xTaskNotifyGive) whenever a network event is queued.
+void ble_set_notify_task(void *task);
 void ble_set_slow(bool slow);  // true (powered off): legacy only, ~1 s, +6 dBm; no Coded adverts or scanning,
                                // so no button links; phone links asked for 400-500 ms. false: legacy 100 ms +
                                // Coded 500 ms, +9 dBm, phone links 30-50 ms (1M) or 80-100 ms (Coded)

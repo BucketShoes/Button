@@ -72,13 +72,14 @@ static const char *TAG = "button";
 #define WIN_ALARM_MS     20000 // win sound repeats this long (or until a hold)
 #define WIN_REPEAT_MS    2500
 #define PAUSED_LEVEL     14    // ring blink while paused with an owner: only visible close up
-#define UNCAPTURED_LEVEL 25    // ring pulse peak while uncaptured (~10 %)
+#define UNCAPTURED_LEVEL 50    // ring pulse peak while uncaptured, relative to the brightness setting
 #define BATT_SHOW_MS     6000
 #define IDENT_MS         3000
 #define BOOT_OFF_MS      3000  // BOOT held this long powers off
 #define BOOT_FACTORY_MS  8000  // ... and this long restores default settings
 #define STATE_PUBLISH_MS 200
 #define LOOP_MS          5
+#define OFF_IDLE_LOOP_MS 10000 // game loop period while off with no BLE connections
 
 #define CENTRE_LEVEL     64    // team-colour centre LEDs, "medium"
 #define RING_LEVEL       255   // ring while owned
@@ -90,6 +91,8 @@ static const char *TAG = "button";
 #define PROTO_VERSION    3
 
 static const rgb_t WHITE = {255, 255, 255};
+// Uncaptured: a pale mint green, unlike any team colour and unlike the white used for counts.
+static const rgb_t UNCAPTURED_COLOUR = {70, 255, 120};
 static const rgb_t RED = {255, 0, 0};
 static const rgb_t GREEN = {0, 255, 0};
 
@@ -674,7 +677,7 @@ static void apply_config(const config_t *in, uint32_t now)
     if (structural || s_fresh) game_reset(now);
     if (strcmp(old.name, s_cfg.name) != 0) apply_name();
     audio_set_volume(s_cfg.volume);
-    awake_led_set(!(s_cfg.debug & CFG_DEBUG_NO_AWAKE_LED));
+    awake_led_set(s_cfg.debug & CFG_DEBUG_AWAKE_LED);
     ble_publish_config(&s_cfg, sizeof s_cfg);
     mesh_publish_config(&s_cfg, sizeof s_cfg);
     ESP_LOGI(TAG, "settings: mode %d, hold %u ms, %s, numbers %s, durations %lu/%lu s, volume %d, leds %d",
@@ -724,7 +727,6 @@ static bool s_peek_hold;
 #define BATT_DEAD_MV       3000
 #define BATT_STORAGE_MV    3500              // off below this (or after OFF_BLE_MAX_MS): BLE off too
 #define OFF_BLE_MAX_MS     (8ULL * 24 * 3600 * 1000)  // off-BLE lasts this long at most
-#define USB_MV             4000
 
 static pwr_t s_pwr = PWR_ON;
 static bool s_periph_on;
@@ -741,16 +743,34 @@ static void startup_test(void);
 static uint16_t awake_permille(void);
 static uint8_t s_last_frame_valid;
 
-static bool on_usb(void) { return s_vbus_mv > USB_MV; }
+static bool s_usb;  // USB power, from the VBUS pin's digital level (updated every loop pass)
+static bool on_usb(void) { return s_usb; }
+// For the battery %: while off VSYS isn't read, so the last rest reading.
+static int batt_now_mv(void) { return s_pwr == PWR_OFF && s_batt_mv ? s_batt_mv : s_vsys_mv; }
 
 static void activity(uint32_t now) { s_last_activity = now; }
 
-// On USB, stay awake: light sleep would drop the USB serial console, and the
-// power is free anyway.
-static void usb_lock_update(void)
+// USB power alone (a power bank) shouldn't keep the chip awake; a USB host (the serial console,
+// flashing) does. IDF holds its own no-light-sleep lock for as long as the host is sending USB
+// frames (CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION). But light sleep takes the USB pad down, so a host
+// only gets to enumerate if the chip stays awake for a moment first: this lock gives it
+// USB_ENUM_MS after boot, after USB power appears, and after a BOOT press while on USB.
+#define USB_ENUM_MS 5000
+static uint32_t s_usb_enum_until;
+static bool s_usb_seen;
+
+static void usb_enum_window(uint32_t now)
+{
+    s_usb_enum_until = now + USB_ENUM_MS;
+    ESP_LOGI(TAG, "USB: staying awake %d s for a host to connect", USB_ENUM_MS / 1000);
+}
+
+static void usb_lock_update(uint32_t now)
 {
     if (!s_usb_lock) return;
-    bool want = on_usb();
+    if (on_usb() && !s_usb_seen) usb_enum_window(now);
+    s_usb_seen = on_usb();
+    bool want = on_usb() && (int32_t)(s_usb_enum_until - now) > 0;
     if (want == s_usb_lock_held) return;
     s_usb_lock_held = want;
     if (want) esp_pm_lock_acquire(s_usb_lock);
@@ -925,12 +945,12 @@ static void power_tick_off(uint32_t now)
     deep_sleep(mv >= BATT_DEAD_MV);
 }
 
-// Face switches wake the CPU from light sleep, and the interrupt wakes the
+// Face switches (and BOOT) wake the CPU from light sleep, and the interrupt wakes the
 // main loop at once (it otherwise sleeps 20 ms when on, 1 s when off). The
 // interrupt is level-triggered (needed for light-sleep wake), so it disables
 // itself and the loop re-arms it once the switch is open again.
 static TaskHandle_t s_main_task;
-static const gpio_num_t FACE_PINS[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
+static const gpio_num_t WAKE_PINS[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_BOOT};
 
 static void face_isr(void *arg)
 {
@@ -944,25 +964,25 @@ static void wake_init(void)
 {
     s_main_task = xTaskGetCurrentTaskHandle();
     gpio_install_isr_service(0);
-    for (int i = 0; i < 3; i++) {
-        gpio_wakeup_enable(FACE_PINS[i], GPIO_INTR_LOW_LEVEL);
-        gpio_isr_handler_add(FACE_PINS[i], face_isr, (void *)(intptr_t)FACE_PINS[i]);
-        gpio_intr_enable(FACE_PINS[i]);
+    for (int i = 0; i < 4; i++) {
+        gpio_wakeup_enable(WAKE_PINS[i], GPIO_INTR_LOW_LEVEL);
+        gpio_isr_handler_add(WAKE_PINS[i], face_isr, (void *)(intptr_t)WAKE_PINS[i]);
+        gpio_intr_enable(WAKE_PINS[i]);
     }
     esp_sleep_enable_gpio_wakeup();
 }
 
 static void wake_rearm(void)
 {
-    for (int i = 0; i < 3; i++)
-        if (gpio_get_level(FACE_PINS[i])) gpio_intr_enable(FACE_PINS[i]);
+    for (int i = 0; i < 4; i++)
+        if (gpio_get_level(WAKE_PINS[i])) gpio_intr_enable(WAKE_PINS[i]);
 }
 
 static uint8_t state_flags(uint32_t now)
 {
     return (uint8_t)((s_running ? 1 : 0) | (s_winner >= 0 ? 2 : 0) | (s_game_paused ? 4 : 0) |
                      (s_face.state ? 8 : 0) | ((int32_t)(s_ident_until - now) > 0 ? 16 : 0) |
-                     (s_vbus_mv > 4000 ? 32 : 0) | (audio_pcm_playing() ? 64 : 0));
+                     (on_usb() ? 32 : 0) | (audio_pcm_playing() ? 64 : 0));
 }
 static uint8_t state_flags2(void)
 {
@@ -996,7 +1016,7 @@ static void publish_state(uint32_t now)
         .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
         .vsys_mv = (uint16_t)s_vsys_mv,
         .vbus_mv = (uint16_t)s_vbus_mv,
-        .batt_pct = (int16_t)batt_percent(s_vsys_mv),
+        .batt_pct = (int16_t)batt_percent(batt_now_mv()),
         .connections = (uint8_t)phone_links(),
         .uptime_s = now / 1000,
     };
@@ -1056,7 +1076,7 @@ static void net_publish(uint32_t now)
         mesh_status_t s = {
             .vsys_mv = (uint16_t)s_vsys_mv,
             .vbus_mv = (uint16_t)s_vbus_mv,
-            .batt_pct = (int16_t)batt_percent(s_vsys_mv),
+            .batt_pct = (int16_t)batt_percent(batt_now_mv()),
             .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
             .phones = (uint8_t)phones,
             .reset_reason = s_reset_reason,
@@ -1218,13 +1238,32 @@ static void ble_service(uint32_t now)
     }
 }
 
-// Brightness after the setting and idle dimming: LEDs 0..255, displays 1..8 (0 = off).
-// Dimmed means "at most 10 %", not "10 % of the setting" (which could be invisible).
-static int led_level(void) { return s_dim && s_cfg.led_level > DIM_LEVEL ? DIM_LEVEL : s_cfg.led_level; }
+// Brightness from the setting (the page's slider, 0..255) and idle dimming.
+// LEDs: logarithmic, 2 % at the bottom of the slider (never fully off) to 100 % at the top, since
+// the eye sees ratios. Dimmed means "at most 10 %".
+// Displays (GN1650, steps 1..8): 1/8 at the bottom, full from 30 % of the slider up, so they keep
+// up with the LEDs, which outshine them at the same setting.
+#define LED_MIN_FRAC 0.02f
+static int led_curve(int setting)
+{
+    int v = (int)(255.0f * LED_MIN_FRAC * powf(1.0f / LED_MIN_FRAC, setting / 255.0f) + 0.5f);
+    return v < 1 ? 1 : v > 255 ? 255 : v;
+}
+static int led_level(void)
+{
+    int v = led_curve(s_cfg.led_level);
+    return s_dim && v > DIM_LEVEL ? DIM_LEVEL : v;
+}
+static int disp_max(void)
+{
+    int m = 1 + (s_cfg.led_level * 7 + 38) / 77;  // 77 = 30 % of 255
+    if (m > DISP_FULL) m = DISP_FULL;
+    return s_dim && m > 2 ? 2 : m;
+}
 static int disp_level(int bright)
 {
     if (bright <= 0) return 0;
-    int b = (bright * led_level() + 254) / 255;
+    int b = (bright * disp_max() + DISP_FULL - 1) / DISP_FULL;
     if (b < 1) b = 1;
     // 1/8 is the GN1650's lowest step: keep highlighted displays one step above
     // dim ones so the difference survives a low brightness setting.
@@ -1352,11 +1391,11 @@ static void render_leds(uint32_t now)
         if ((now / 500) & 1)
             for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(s_owner), PAUSED_LEVEL);
     } else {
-        // Uncaptured: slow (0.5 Hz) faint white pulse. No team colour, so it can
+        // Uncaptured: slow (0.5 Hz) faint pale green pulse. No team colour, so it can
         // never be mistaken for claimed.
         float ph = (float)(now % 2000) / 2000.0f;
         int level = (int)(UNCAPTURED_LEVEL * 0.5f * (1.0f - cosf(2.0f * (float)M_PI * ph)) + 0.5f);
-        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(WHITE, level);
+        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(UNCAPTURED_COLOUR, level);
     }
 
     // Hold progress.
@@ -1493,7 +1532,7 @@ static void startup_test(void)
     static const rgb_t test[3] = {{60, 0, 0}, {0, 60, 0}, {0, 0, 60}};
     rgb_t frame[LED_COUNT];
     for (int c = 0; c < 3; c++) {
-        for (int i = 0; i < LED_COUNT; i++) frame[i] = rgb_scale(test[c], s_cfg.led_level);
+        for (int i = 0; i < LED_COUNT; i++) frame[i] = rgb_scale(test[c], led_curve(s_cfg.led_level));
         leds_show(frame, LED_COUNT);
         vTaskDelay(pdMS_TO_TICKS(250));
     }
@@ -1550,7 +1589,7 @@ static void pm_init(void)
     esp_pm_sleep_cbs_register_config_t cbs = {.enter_cb = sleep_enter_cb, .exit_cb = sleep_exit_cb};
     err = esp_pm_light_sleep_register_cbs(&cbs);
     if (err != ESP_OK) ESP_LOGW(TAG, "light sleep callbacks: %s", esp_err_to_name(err));
-    usb_lock_update();
+    usb_lock_update(now_ms());
 }
 
 // ---------------------------------------------------------------- surviving a reset
@@ -1640,7 +1679,7 @@ void app_main(void)
              s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from low-battery sleep)" : "",
              (unsigned long)s_boot_count);
     config_load(&s_cfg);
-    awake_led_set(!(s_cfg.debug & CFG_DEBUG_NO_AWAKE_LED));
+    awake_led_set(s_cfg.debug & CFG_DEBUG_AWAKE_LED);
     if (s_reset_reason == ESP_RST_BROWNOUT) {
         // Don't brown out again on the startup sound: 50 % volume and brightness
         // until changed (not saved, so the stored settings are untouched).
@@ -1656,8 +1695,10 @@ void app_main(void)
     audio_init();
     audio_set_volume(s_cfg.volume);
     s_vbus_mv = sense_vbus_mv();
+    s_usb = sense_vbus_present();
     pm_init();
     wake_init();
+    ble_set_notify_task(xTaskGetCurrentTaskHandle());  // BLE events wake the game loop
 
     char name[24];
     if (s_cfg.name[0]) {
@@ -1709,7 +1750,9 @@ void app_main(void)
         // off. A face press wakes the loop at once either way.
         uint32_t t = now_ms();
         bool busy = s_face.state || s_in[IN_BOOT].state || t - s_face.last_active_ms < 1000;
-        uint32_t period = s_pwr == PWR_OFF ? 1000 : busy ? LOOP_MS : 20;
+        // Off with nobody connected there is nothing to do but notice USB and the hourly battery check:
+        // a long sleep. Lid presses, BOOT and BLE events (a phone connecting) wake the loop at once.
+        uint32_t period = s_pwr == PWR_OFF ? (ble_connections() ? 1000 : OFF_IDLE_LOOP_MS) : busy ? LOOP_MS : 20;
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(period));
         uint32_t now = now_ms();
         uint32_t dt = now - last;
@@ -1729,6 +1772,7 @@ void app_main(void)
                 boot_skip_press = s_in[IN_BOOT].press_ms;  // that press only stops the clip
             }
             else if (e > 0 && i == IN_BOOT && s_pwr != PWR_OFF) AUDIO_PLAY(SLOT_DIAG, SND_OFF_WARN);
+            if (e > 0 && i == IN_BOOT && on_usb()) usb_enum_window(now);  // a way to get the console back
             if (e < 0 && i == IN_BOOT && s_boot_off_done != s_in[IN_BOOT].press_ms) audio_stop(SLOT_DIAG);
         }
         // BOOT held: "HoLd" / "oFF" with a falling tone, off at 3 s (no need to
@@ -1792,12 +1836,16 @@ void app_main(void)
         int32_t tw = s_owner >= 0 ? to_win_ms(s_owner) : -1;
         audio_keep_awake(s_pwr == PWR_ON && s_running && s_winner < 0 && s_cfg.show_numbers && tw >= 0 && tw <= 61000);
 
+        // USB presence is a digital read every pass. The ADC runs only while on (or peeking), and for
+        // VBUS while off only when USB is there: off on battery, nothing is converted.
+        s_usb = sense_vbus_present();
+        if (!s_usb) s_vbus_mv = 0;
         if ((int32_t)(now - next_adc) >= 0) {
             next_adc = now + 250;
             if (s_periph_on) s_vsys_mv = sense_vsys_mv();
-            s_vbus_mv = sense_vbus_mv();
-            usb_lock_update();
+            if (s_periph_on || s_usb) s_vbus_mv = sense_vbus_mv();
         }
+        usb_lock_update(now);
         if (s_pwr == PWR_OFF) power_tick_off(now);
         else power_tick_on(now, dt);
 

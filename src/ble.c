@@ -158,6 +158,9 @@ static conn_t *conn_get(uint16_t h)
     return NULL;
 }
 
+static TaskHandle_t s_notify_task;
+void ble_set_notify_task(void *task) { s_notify_task = (TaskHandle_t)task; }
+
 static void post_ev(uint8_t kind, uint16_t h, bool central, struct os_mbuf *om)
 {
     static ble_ev_t e;  // host task only; too big for its stack
@@ -175,6 +178,7 @@ static void post_ev(uint8_t kind, uint16_t h, bool central, struct os_mbuf *om)
         e.len = len;
     }
     if (xQueueSend(s_evq, &e, 0) != pdTRUE) ESP_LOGW(TAG, "conn %d: network queue full, event %d dropped", h, kind);
+    else if (s_notify_task) xTaskNotifyGive(s_notify_task);  // the game loop may be in a long sleep (off)
 }
 
 // The reading connection's own link: PHYs, interval, latency, supervision timeout, RSSI.

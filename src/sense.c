@@ -3,11 +3,13 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "sense";
 
 #define CH_VSYS ADC_CHANNEL_3  // IO3
 #define CH_VBUS ADC_CHANNEL_4  // IO4
+#define PIN_VBUS_DIGITAL GPIO_NUM_4
 #define SAMPLES 16
 
 static adc_oneshot_unit_handle_t s_adc;
@@ -36,6 +38,9 @@ static void unit_init(void)
     adc_oneshot_chan_cfg_t c = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
     ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc, CH_VSYS, &c));
     ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc, CH_VBUS, &c));
+    // The channel setup turns the pad's digital input off; VBUS presence is read digitally too
+    // (0.6 x VBUS: high above about 4.1 V), so it needs no ADC conversion while off.
+    gpio_input_enable(PIN_VBUS_DIGITAL);
 }
 
 void sense_init(void)
@@ -105,3 +110,4 @@ void sense_vsys_debug(int *raw, int *pin_mv)
     *pin_mv = s_vsys_pin;
 }
 int sense_vbus_mv(void) { return read_checked(CH_VBUS, s_cali[1], NULL) * 10 / 6; }
+bool sense_vbus_present(void) { return gpio_get_level(PIN_VBUS_DIGITAL) != 0; }
