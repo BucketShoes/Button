@@ -7,3 +7,5 @@ int sense_vsys_mv(void);  // VSYS (2:1 divider)
 int sense_vbus_mv(void);  // USB VBUS (0.6 divider)
 // Last VSYS read, for the serial status line: raw ADC average, and the pin voltage before the divider.
 void sense_vsys_debug(int *raw, int *pin_mv);
+// Times the ADC was found stuck above the pin's possible range and rebuilt (since boot).
+int sense_adc_rebuilds(void);

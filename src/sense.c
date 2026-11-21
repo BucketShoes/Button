@@ -68,24 +68,34 @@ static int read_pin_mv(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
     return raw * 3300 / 4095;
 }
 
-// VSYS tops out at 4.2 V, 2.1 V at the pin, so a raw reading near full scale is the ADC
-// stuck, not a voltage. Seen once light sleep had run (on battery): both channels read 4095
-// from then on. Rebuild the ADC unit and read again; the log says whether that cleared it.
-#define RAW_STUCK 4000
-static int s_reinits;
+// A pin can't sit above the chip's own supply (3.3 V, plus a diode drop at most), so a reading
+// above 3.6 V is the ADC stuck, not a voltage. That happens once light sleep has run: both
+// channels read 4095 (8.1 V VSYS, 6.8 V VBUS) until the unit is rebuilt. While off only VBUS is
+// read, and a stuck VBUS looked like USB, which holds the no-light-sleep lock.
+#define PIN_MAX_MV 3600
+static int s_rebuilds;
+
+int sense_adc_rebuilds(void) { return s_rebuilds; }
+
+static int read_checked(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
+{
+    int raw = 0;
+    int mv = read_pin_mv(ch, cali, &raw);
+    if (mv > PIN_MAX_MV) {
+        adc_oneshot_del_unit(s_adc);
+        unit_init();
+        int before = raw;
+        mv = read_pin_mv(ch, cali, &raw);
+        if (++s_rebuilds <= 5 || s_rebuilds % 100 == 0)
+            ESP_LOGW(TAG, "ch%d ADC stuck at %d, rebuilt the unit (%d so far): now %d", ch, before, s_rebuilds, raw);
+    }
+    if (raw_out) *raw_out = raw;
+    return mv;
+}
 
 int sense_vsys_mv(void)
 {
-    s_vsys_pin = read_pin_mv(CH_VSYS, s_cali[0], &s_vsys_raw);
-    if (s_vsys_raw >= RAW_STUCK) {
-        int before = s_vsys_raw;
-        adc_oneshot_del_unit(s_adc);
-        unit_init();
-        s_reinits++;
-        s_vsys_pin = read_pin_mv(CH_VSYS, s_cali[0], &s_vsys_raw);
-        ESP_LOGW(TAG, "VSYS ADC stuck at %d, rebuilt the ADC unit (%d time(s)): now %d", before,
-                 s_reinits, s_vsys_raw);
-    }
+    s_vsys_pin = read_checked(CH_VSYS, s_cali[0], &s_vsys_raw);
     return s_vsys_pin * 2;
 }
 
@@ -94,4 +104,4 @@ void sense_vsys_debug(int *raw, int *pin_mv)
     *raw = s_vsys_raw;
     *pin_mv = s_vsys_pin;
 }
-int sense_vbus_mv(void) { return read_pin_mv(CH_VBUS, s_cali[1], NULL) * 10 / 6; }
+int sense_vbus_mv(void) { return read_checked(CH_VBUS, s_cali[1], NULL) * 10 / 6; }

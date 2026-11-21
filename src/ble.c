@@ -70,6 +70,7 @@ typedef struct {
     uint16_t net_h;  // central: the peer's network characteristic value handle (0 until discovered)
     uint16_t svc_end;
     volatile bool coded;
+    uint8_t param_tries;  // phone links: interval requests since the last change of speed
 } conn_t;
 
 static SemaphoreHandle_t s_mu;
@@ -88,6 +89,7 @@ static uint32_t s_synced_at;
 static conn_t s_conn[MAX_CONN];
 static struct ble_npl_event s_restart_ev;
 static struct ble_npl_callout s_scan_co;
+static struct ble_npl_callout s_param_co;
 
 static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
 static void request_params(uint16_t conn, bool coded);
@@ -362,7 +364,10 @@ static void restart_ev_fn(struct ble_npl_event *ev)
     advertise();
     // Phone links follow the speed too: a 30 ms interval while off costs far more than the adverts.
     for (int i = 0; i < MAX_CONN; i++)
-        if (s_conn[i].used && !s_conn[i].central) request_params(s_conn[i].h, s_conn[i].coded);
+        if (s_conn[i].used && !s_conn[i].central) {
+            s_conn[i].param_tries = 0;
+            request_params(s_conn[i].h, s_conn[i].coded);
+        }
 }
 
 static void restart_adverts(void)
@@ -527,6 +532,30 @@ static void request_params(uint16_t conn, bool coded)
     };
     int rc = ble_gap_update_params(conn, &u);
     if (rc) ESP_LOGW(TAG, "conn %d: param update request: %d", conn, rc);
+}
+
+// Every few seconds: a phone link whose interval is outside what this speed asks for gets asked
+// again (a request can be lost to a PHY change in progress, or never sent when the PHY update
+// event doesn't come). A few tries per change of speed, so a central that won't is left alone.
+#define PARAM_CHECK_MS 5000
+#define PARAM_TRIES 3
+
+static void param_check(struct ble_npl_event *ev)
+{
+    for (int i = 0; i < MAX_CONN; i++) {
+        conn_t *c = &s_conn[i];
+        if (!c->used || c->central || c->param_tries >= PARAM_TRIES) continue;
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(c->h, &d)) continue;
+        uint16_t lo = s_slow ? CONN_ITVL_OFF_MIN : c->coded ? CONN_ITVL_CODED_MIN : CONN_ITVL_1M_MIN;
+        uint16_t hi = s_slow ? CONN_ITVL_OFF_MAX : c->coded ? CONN_ITVL_CODED_MAX : CONN_ITVL_1M_MAX;
+        if (d.conn_itvl >= lo && d.conn_itvl <= hi) continue;
+        c->param_tries++;
+        ESP_LOGI(TAG, "conn %d: interval %d x 1.25 ms, asking for %d-%d (try %d)", c->h, d.conn_itvl, lo, hi,
+                 c->param_tries);
+        request_params(c->h, c->coded);
+    }
+    ble_npl_callout_reset(&s_param_co, ble_npl_time_ms_to_ticks32(PARAM_CHECK_MS));
 }
 
 static void log_conn(uint16_t conn, const char *what)
@@ -711,6 +740,7 @@ static void on_sync(void)
     s_adv_ready = false;
     advertise();
     scan_later(500 + esp_random() % 1500);
+    ble_npl_callout_reset(&s_param_co, ble_npl_time_ms_to_ticks32(PARAM_CHECK_MS));
     ESP_LOGI(TAG, "advertising as \"%s\" (legacy 1M + Coded), node %04X", ble_svc_gap_device_name(), s_node_id);
 }
 
@@ -752,6 +782,7 @@ void ble_init(const char *name)
 
     ble_npl_event_init(&s_restart_ev, restart_ev_fn, NULL);
     ble_npl_callout_init(&s_scan_co, nimble_port_get_dflt_eventq(), scan_start, NULL);
+    ble_npl_callout_init(&s_param_co, nimble_port_get_dflt_eventq(), param_check, NULL);
     nimble_port_freertos_init(host_task);
 }
 
