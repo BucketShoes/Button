@@ -116,7 +116,7 @@ The first byte is the opcode.
 | 15 | | reboot (settings kept) |
 | 16 | | game pause: stop the clocks, remembering whether they were running |
 | 17 | | game resume: undo a game pause (runs again only if it was running before) |
-| 18 | | shipping mode (was "factory off"): what a low battery does. Deep sleep with BLE off after about 1.5 s (so the network passes the command on); only a lid press or USB wakes it |
+| 18 | | shipping mode (was "factory off"): deep sleep with BLE off after about 1.5 s (so the network passes the command on), on battery or USB. Saved: any reset comes back to it. A lid press or USB appearing peeks, then it goes back to shipping unless the peek turned it on; USB going just sleeps again |
 | 19 | | (removed: was the awake LED switch, now config byte 11) |
 
 Sound ids:

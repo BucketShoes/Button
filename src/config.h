@@ -33,3 +33,9 @@ void config_defaults(config_t *c);
 void config_sanitise(config_t *c);  // clamps everything into range
 void config_load(config_t *c);      // defaults if nothing (valid) is stored
 void config_save(const config_t *c);
+// The power state the user last chose (0 on, 1 off, 2 shipping), kept apart from the settings so
+// Defaults doesn't touch it. Missing: on. Call after config_load (which starts NVS).
+uint8_t config_load_power(void);
+void config_save_power(uint8_t p);
+// True once after each new firmware image (it stores the image's hash).
+bool config_firmware_changed(void);

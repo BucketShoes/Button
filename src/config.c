@@ -1,5 +1,6 @@
 #include "config.h"
 #include <string.h>
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -78,4 +79,37 @@ void config_save(const config_t *c)
     if (nvs_open("button", NVS_READWRITE, &h) != ESP_OK) return;
     if (nvs_set_blob(h, "cfg", c, sizeof *c) != ESP_OK || nvs_commit(h) != ESP_OK) ESP_LOGW(TAG, "save failed");
     nvs_close(h);
+}
+
+uint8_t config_load_power(void)
+{
+    uint8_t p = 0;
+    nvs_handle_t h;
+    if (nvs_open("button", NVS_READONLY, &h) != ESP_OK) return 0;
+    if (nvs_get_u8(h, "pwr", &p) != ESP_OK || p > 2) p = 0;
+    nvs_close(h);
+    return p;
+}
+
+void config_save_power(uint8_t p)
+{
+    nvs_handle_t h;
+    if (nvs_open("button", NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_u8(h, "pwr", p) != ESP_OK || nvs_commit(h) != ESP_OK) ESP_LOGW(TAG, "power state save failed");
+    nvs_close(h);
+}
+
+bool config_firmware_changed(void)
+{
+    const esp_app_desc_t *d = esp_app_get_description();
+    uint8_t old[8] = {0};
+    size_t len = sizeof old;
+    nvs_handle_t h;
+    if (nvs_open("button", NVS_READWRITE, &h) != ESP_OK) return false;
+    bool changed = nvs_get_blob(h, "fw", old, &len) != ESP_OK || len != sizeof old ||
+                   memcmp(old, d->app_elf_sha256, sizeof old) != 0;
+    if (changed && (nvs_set_blob(h, "fw", d->app_elf_sha256, sizeof old) != ESP_OK || nvs_commit(h) != ESP_OK))
+        ESP_LOGW(TAG, "firmware hash save failed");
+    nvs_close(h);
+    return changed;
 }

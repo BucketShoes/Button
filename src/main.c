@@ -697,9 +697,10 @@ static bool any_face_raw(void)
 //       seconds. Turns on only on a clear intent: PEEK_ON_PRESSES
 //       presses during the peek, or a press started during it held for
 //       POWER_ON_HOLD_MS (the waking press doesn't count, so a bump can't).
-//       Otherwise back to OFF when the battery display ends.
+//       Otherwise back to OFF (or shipping) when the battery display ends.
 // OFF   PWR_EN low (only the ESP powered), light sleep, slow low-power BLE
 //       adverts so the page can still find it. Battery checked hourly.
+// SHIPPING (a saved choice, see intent_t): deep sleep; a press or USB peeks, then back to it.
 // Low battery (not on USB): deep sleep. Below BATT_LOW_MV a press wakes it
 // to show "bAtt Lo" and sleep again; below BATT_DEAD_MV only USB wakes it.
 typedef enum { PWR_ON, PWR_PEEK, PWR_OFF } pwr_t;
@@ -730,7 +731,37 @@ static bool s_peek_hold;
 static pwr_t s_pwr = PWR_ON;
 static bool s_periph_on;
 static uint32_t s_last_activity;
-static int64_t s_off_since_us;
+
+// What the user last chose, saved in flash: any reset (USB, a crash, the cell swapped) comes back
+// to it, and a peek goes back to it. Only a press, a hold or a page command changes it; nothing
+// else turns the button on, and nothing but a press or command takes it out of shipping.
+typedef enum { INTENT_ON, INTENT_OFF, INTENT_SHIP } intent_t;
+static const char *const INTENT_NAME[] = {"on", "off", "shipping"};
+static intent_t s_intent;
+
+static void intent_set(intent_t i)
+{
+    if (i == s_intent) return;
+    ESP_LOGI(TAG, "power choice: %s -> %s", INTENT_NAME[s_intent], INTENT_NAME[i]);
+    s_intent = i;
+    config_save_power((uint8_t)i);
+}
+
+// When it was turned off, on the LP timer, which keeps counting through deep sleep and every reset
+// but a power-on (the check word catches that).
+static RTC_NOINIT_ATTR uint64_t s_off_since_rtc;
+static RTC_NOINIT_ATTR uint32_t s_off_since_check;
+#define OFF_SINCE_CHECK 0x0FF51ACEu
+static void off_since_mark(void)
+{
+    s_off_since_rtc = esp_rtc_get_time_us();
+    s_off_since_check = (uint32_t)s_off_since_rtc ^ OFF_SINCE_CHECK;
+}
+static bool long_off(void)
+{
+    if (s_off_since_check != ((uint32_t)s_off_since_rtc ^ OFF_SINCE_CHECK)) off_since_mark();
+    return esp_rtc_get_time_us() - s_off_since_rtc > OFF_BLE_MAX_MS * 1000;
+}
 static uint32_t s_next_batt_check, s_next_batt_warn;
 static int s_batt_mv;     // averaged VSYS while on, last rest reading while off
 static int s_low_readings;
@@ -813,19 +844,26 @@ static int read_batt_rest(void)
     return mv;
 }
 
-// Low battery: deep sleep (~10 uA) with everything unpowered. USB always
-// wakes it; a lid press only if press_wake.
-static void deep_sleep(bool press_wake)
+// Deep sleep (~10 uA) with everything unpowered: shipping mode, and off with a low cell or after
+// OFF_BLE_MAX_MS. USB appearing or going always wakes it (a wake that finds USB gone just sleeps
+// again, re-armed for it coming back); a lid press too unless the cell is nearly flat. BOOT (IO9)
+// isn't an LP pin, so it can't wake deep sleep.
+static void deep_sleep(void)
 {
-    ESP_LOGW(TAG, "battery %d mV: deep sleep (%s)", s_batt_mv, press_wake ? "press or USB wakes" : "only USB wakes");
+    bool press_wake = on_usb() || !s_batt_mv || s_batt_mv >= BATT_DEAD_MV;
+    ESP_LOGW(TAG, "deep sleep (%s, battery %d mV%s): %s", INTENT_NAME[s_intent], s_batt_mv, on_usb() ? ", USB" : "",
+             press_wake ? "a press or USB wakes it" : "only USB wakes it");
     periph_power(false);
-    // The lid switches and BOOT are light-sleep GPIO wake sources. Left enabled, that source also
-    // applies in deep sleep and woke it again at once (as a GPIO wake, which booted on). Deep sleep
-    // wakes on ext1 only.
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+    for (int i = 0; i < 500 && press_wake && any_face_raw(); i++) vTaskDelay(pdMS_TO_TICKS(10));
+    // Clear every wake source first. Auto light sleep arms a timer wake before each nap and leaves
+    // it armed: deep sleep inherited it and woke a second or two later. The lid switches and BOOT
+    // are light-sleep GPIO wakes, which also apply in deep sleep. (Nothing below yields, so no
+    // light sleep can re-arm the timer before esp_deep_sleep_start.)
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     const gpio_num_t light_wake[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_BOOT};
     for (int i = 0; i < 4; i++) gpio_wakeup_disable(light_wake[i]);
-    for (int i = 0; i < 500 && press_wake && any_face_raw(); i++) vTaskDelay(pdMS_TO_TICKS(10));
+    // 0.6 x VBUS: wake on a change, either way (ext1 levels are per pin on the C6).
+    esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
     if (press_wake) {
         const gpio_num_t wake[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
         uint64_t mask = 0;
@@ -836,9 +874,14 @@ static void deep_sleep(bool press_wake)
         }
         esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
     }
-    // 0.6 x VBUS: high when a charger is plugged in (per-pin levels on the C6).
-    if (!on_usb()) esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, ESP_EXT1_WAKEUP_ANY_HIGH);
     esp_deep_sleep_start();
+}
+
+// Off, not on USB, with a low cell or off for long enough: BLE goes too (deep sleep). It's what
+// shipping mode does, but it isn't a choice: charged again (or on USB) it's plain off again.
+static bool off_wants_deep(void)
+{
+    return !on_usb() && ((s_batt_mv && s_batt_mv < BATT_STORAGE_MV) || long_off());
 }
 
 static void show_low_and_sleep(int mv)
@@ -852,14 +895,25 @@ static void show_low_and_sleep(int mv)
     display_set(1, b, 8);
     vTaskDelay(pdMS_TO_TICKS(3000));
     s_batt_mv = mv;
-    deep_sleep(mv >= BATT_DEAD_MV);
+    deep_sleep();
 }
 
 static void power_set(pwr_t to, uint32_t now)
 {
     if (to == s_pwr) return;
     pwr_t from = s_pwr;
+    // Empty (0 %): it won't turn on, only peek (it turns itself off at this level too).
+    if (to == PWR_ON && !on_usb() && s_batt_mv && s_batt_mv < BATT_LOW_MV) {
+        ESP_LOGW(TAG, "battery %d mV: too low to turn on", s_batt_mv);
+        if (from == PWR_PEEK) s_batt_until = now + BATT_SHOW_MS;
+        return;
+    }
     ESP_LOGI(TAG, "power %s -> %s", PWR_NAME[from], PWR_NAME[to]);
+    if (to == PWR_ON) intent_set(INTENT_ON);
+    if (to == PWR_OFF && from == PWR_ON) {
+        intent_set(INTENT_OFF);
+        off_since_mark();
+    }
     if (to == PWR_OFF) {
         if (s_periph_on) {
             AUDIO_PLAY(SLOT_EVENT, SND_OFF);
@@ -868,7 +922,6 @@ static void power_set(pwr_t to, uint32_t now)
         periph_power(false);
         ble_set_slow(true);
         mesh_set_off(true);
-        s_off_since_us = esp_timer_get_time();
         s_next_batt_check = now + 10000;  // first check soon, then hourly
         s_low_readings = 0;
         s_batt_until = s_ident_until = 0;
@@ -904,7 +957,12 @@ static void power_tick_on(uint32_t now, uint32_t dt)
             return;
         }
         if (s_face.state || audio_pcm_playing() || (int32_t)(s_ident_until - now) > 0) s_batt_until = now + 1000;
-        if ((int32_t)(now - s_batt_until) >= 0) power_set(PWR_OFF, now);
+        if ((int32_t)(now - s_batt_until) >= 0) {
+            // Back to what it was left in: off, or deep sleep for shipping (or off with a low cell).
+            power_set(PWR_OFF, now);
+            if (!on_usb()) s_batt_mv = read_batt_rest();
+            if (s_intent == INTENT_SHIP || off_wants_deep()) deep_sleep();
+        }
         return;
     }
 
@@ -924,6 +982,8 @@ static void power_tick_on(uint32_t now, uint32_t dt)
     // Long average of VSYS (the cell less QBAT1's drop).
     s_batt_mv += (int)(((int64_t)(s_vsys_mv - s_batt_mv) * (int64_t)dt) / BATT_TAU_MS);
     if (s_batt_mv < BATT_LOW_MV) {
+        intent_set(INTENT_OFF);  // like a flat phone: charged again, it stays off until turned on
+        off_since_mark();
         show_low_and_sleep(s_batt_mv);
     } else if (s_batt_mv < BATT_WARN_MV && (int32_t)(now - s_next_batt_warn) >= 0) {
         s_next_batt_warn = now + BATT_WARN_EVERY_MS;
@@ -943,8 +1003,7 @@ static void power_tick_off(uint32_t now)
     }
     int mv = read_batt_rest();
     s_batt_mv = mv;
-    bool long_off = esp_timer_get_time() - s_off_since_us > (int64_t)OFF_BLE_MAX_MS * 1000;
-    bool low = mv < BATT_STORAGE_MV || long_off;
+    bool low = off_wants_deep();
     ESP_LOGI(TAG, "off: battery %d mV%s", mv, low ? " (low)" : "");
     if (!low) {
         s_low_readings = 0;
@@ -955,7 +1014,7 @@ static void power_tick_off(uint32_t now)
         s_next_batt_check = now + OFF_RECHECK_MS;
         return;
     }
-    deep_sleep(mv >= BATT_DEAD_MV);
+    deep_sleep();
 }
 
 // Face switches (and BOOT) wake the CPU from light sleep, and the interrupt wakes the
@@ -1220,6 +1279,7 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         break;
     case OP_POWER_OFF:
         power_set(PWR_OFF, now);
+        intent_set(INTENT_OFF);  // (also out of shipping, from a shipping peek)
         break;
     case OP_FACTORY_OFF:
         // A moment first, so the network passes the command on (and hears this button's last state).
@@ -1691,12 +1751,16 @@ void app_main(void)
         rtc_gpio_deinit(PIN_FACE2);
         rtc_gpio_deinit(PIN_FACE3);
         rtc_gpio_deinit(PIN_VBUS_SENSE);
+        const gpio_num_t held[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_VBUS_SENSE};
+        for (int i = 0; i < 4; i++) rtc_gpio_hold_dis(held[i]);  // ext1 holds the pads through sleep
     }
     power_pins_init();
     ESP_LOGI(TAG, "capture button firmware, board b43; reset reason %d%s, boot %lu since power-on", s_reset_reason,
-             s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from low-battery sleep)" : "",
+             s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from deep sleep)" : "",
              (unsigned long)s_boot_count);
     config_load(&s_cfg);
+    s_intent = (intent_t)config_load_power();
+    bool new_firmware = config_firmware_changed();
     awake_led_set(s_cfg.debug & CFG_DEBUG_AWAKE_LED);
     if (s_reset_reason == ESP_RST_BROWNOUT) {
         // Don't brown out again on the startup sound: 50 % volume and brightness
@@ -1733,27 +1797,34 @@ void app_main(void)
     game_reset(last);
     int restored = game_restore(last);
 
-    // Woken from low-battery deep sleep: charger -> off (slow BLE); press ->
-    // peek if the cell has recovered, else show "LO" and sleep again.
-    // Any other boot (power-on, flashing, brown-out) comes up on.
-    s_pwr = PWR_OFF;
-    if (from_deep && on_usb()) {
-        s_pwr = PWR_PEEK;  // (peripherals still off, so no "off" sound)
+    // Where to come up. Nothing here turns it on except the saved choice being on (or a new
+    // firmware image, so a flash shows the startup test). Out of deep sleep: a press peeks (with
+    // enough battery; "bAtt Lo" otherwise), USB appearing peeks, and anything else (USB going)
+    // goes straight back to sleep. A peek ends back in shipping, or off.
+    ESP_LOGI(TAG, "power choice %s%s", INTENT_NAME[s_intent], new_firmware ? ", new firmware" : "");
+    s_pwr = PWR_PEEK;  // (peripherals still off, so power_set(PWR_OFF) below is quiet)
+    if (from_deep) {
+        uint64_t pins = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
+        bool press = pins & ((1ULL << PIN_FACE1) | (1ULL << PIN_FACE2) | (1ULL << PIN_FACE3));
+        bool plugged = (pins & (1ULL << PIN_VBUS_SENSE)) && on_usb();
+        s_batt_mv = on_usb() ? 0 : read_batt_rest();
+        ESP_LOGI(TAG, "woken by %s, battery %d mV", press ? "a press" : plugged ? "USB" : "USB going (or nothing)",
+                 s_batt_mv);
         power_set(PWR_OFF, last);
-    } else if (from_deep) {
-        int mv = read_batt_rest();
-        s_batt_mv = mv;
-        ESP_LOGI(TAG, "woken by a press, battery %d mV", mv);
-        if (mv < BATT_DEAD_MV) deep_sleep(false);
-        if (mv < BATT_STORAGE_MV) show_low_and_sleep(mv);
-        s_pwr = PWR_PEEK;
-        power_set(PWR_OFF, last);
-        power_set(PWR_PEEK, last);
-    } else if (restored == PWR_OFF) {
-        s_pwr = PWR_PEEK;  // was off before the reset: straight back to off, quietly
-        power_set(PWR_OFF, last);
-    } else {
+        if (press && s_batt_mv && s_batt_mv < BATT_LOW_MV) show_low_and_sleep(s_batt_mv);
+        if (press || plugged) power_set(PWR_PEEK, last);
+        else if (s_intent == INTENT_SHIP || off_wants_deep()) deep_sleep();
+    } else if (restored >= 0) {
+        power_set((pwr_t)restored, last);  // crash or brown-out mid-game: carry on
+    } else if (new_firmware || s_intent == INTENT_ON) {
+        s_pwr = PWR_OFF;
         power_set(PWR_ON, last);
+    } else {
+        power_set(PWR_OFF, last);
+        if (s_intent == INTENT_SHIP) {
+            s_batt_mv = on_usb() ? 0 : read_batt_rest();
+            deep_sleep();
+        }
     }
     ESP_LOGI(TAG, "VSYS %d mV, VBUS %d mV, display NAKs %lu/%lu", s_vsys_mv, s_vbus_mv,
              (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1));
@@ -1811,6 +1882,7 @@ void app_main(void)
             if (held >= BOOT_OFF_MS && s_boot_off_done != press) {
                 s_boot_off_done = press;
                 power_set(PWR_OFF, now);
+                intent_set(INTENT_OFF);
             }
             if (held >= BOOT_FACTORY_MS && s_boot_factory_done != press) {
                 s_boot_factory_done = press;
@@ -1852,8 +1924,9 @@ void app_main(void)
         if (s_factory_off_at && (int32_t)(now - s_factory_off_at) >= 0) {
             s_factory_off_at = 0;
             if (s_pwr != PWR_OFF) power_set(PWR_OFF, now);  // the off sound, peripherals down
-            s_batt_mv = read_batt_rest();
-            deep_sleep(true);
+            intent_set(INTENT_SHIP);  // kept through every wake but a press or command that turns it on
+            s_batt_mv = on_usb() ? 0 : read_batt_rest();
+            deep_sleep();
         }
         game_tick(now, dt);
         net_publish(now);

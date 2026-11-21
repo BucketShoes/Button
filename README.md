@@ -234,20 +234,29 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **Turning it off:**
   - Hold the lid for 17 s (hold + 14 s), hold BOOT for 3 s, use the page's Power off, or let it auto-off.
   - Clocks pause; a teams-only owner stays.
+- **The power choice:** on, off or shipping, whichever was last chosen, is saved in flash.
+  - Any reset (USB, a crash, the cell swapped) comes back to it. A new firmware image comes up on, so a flash shows the startup test.
+  - Only a press, a hold or a page command changes it. Nothing else turns the button on or takes it out of shipping.
 - **Off:**
   - PWR_EN is low, so only the ESP is powered, and it light-sleeps.
-  - BLE keeps advertising slowly, so the page can connect and power it on, or identify it.
+  - BLE keeps advertising slowly (every 2–2.5 s), so the page can connect and power it on, or identify it.
   - It checks the battery hourly, briefly powering VSYS to read it.
+- **Shipping** (the page's Shipping button):
+  - Deep sleep with BLE off and everything unpowered, on battery or USB.
+  - A lid press wakes it, and so does USB appearing or going (BOOT can't: IO9 isn't an LP pin).
+  - A press or USB appearing peeks; USB going just sleeps again. After the peek it goes back to shipping, unless the peek turned it on.
 - **Peek:**
-  - A lid press while off shows the battery for about 6 s.
+  - A lid press while off or shipping shows the battery for about 6 s.
   - It turns on only on a clear intent, so a bump doesn't wake it: two more presses during the peek, or a press started during the peek and held for 1.5 s (the ring fills white). The press that woke it doesn't count.
-  - Otherwise it goes back to off.
+  - Otherwise it goes back to off, or shipping.
 - **Low battery (not on USB):**
   - Below 3.45 V average while on: a battery warning every 5 min.
-  - Below 3.3 V: it shows "bAtt Lo" and goes into deep sleep. A press shows "bAtt Lo" again (below 3.5 V), and plugging in USB should wake it.
+  - Below 3.3 V (0 %): it shows "bAtt Lo" and turns off into deep sleep. That counts as off, so once charged it stays off until turned on. Below 3.3 V a press shows "bAtt Lo" and it won't turn on.
   - Below 3.0 V: deep sleep, and only USB wakes it.
-  - While off, BLE only runs until the battery reads below 3.5 V or 8 days have passed; then it goes to deep sleep. A press wakes it, and it peeks if the cell is still at 3.5 V or more.
-- **On USB:** the firmware never light-sleeps, so the serial console keeps working, and the battery levels don't apply.
+  - While off, BLE only runs until the battery reads below 3.5 V or 8 days have passed; then it goes to deep sleep, as in shipping. A press peeks, and it can still turn on above 3.3 V. On USB, or charged to 3.5 V again, it's plain off again.
+- **On USB:**
+  - While on, it stays awake 10 s after a boot, after turning on and after USB power appears, and 5 min after a BOOT press, so a computer can connect. While a computer is connected, ESP-IDF keeps it awake.
+  - While off it sleeps as on battery, so a power bank turning itself on and off doesn't keep it awake. The battery levels don't apply.
 - **Not measured yet:** the actual currents. BLE sleep uses the main crystal as its low-power clock (Espressif's RC-clock option supports legacy adverts and scanning only, not connections). A 32 kHz crystal on IO0/IO1 would allow lower sleep current.
 - **Volume:** the slider is in dB (-40 dB to full), so each step sounds about the same.
 
