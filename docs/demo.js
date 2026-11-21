@@ -28,7 +28,7 @@
   function makeSim(d) {
     const cfg = {
       mode: d.mode ?? MODE_TWO, timerTeam: 0, countUp: 0, show: 1, initial: 0, defCapture: 0,
-      volume: 128, ledLevel: 128, holdMs: 3000, dur: [600000, 600000], colour: ["#9600ff", "#ffaa00"], name: d.name,
+      volume: 128, ledLevel: 128, debug: 0, holdMs: 3000, dur: [600000, 600000], colour: ["#9600ff", "#ffaa00"], name: d.name,
     };
     const s = {
       running: d.running, won: false, gamePaused: false, wasRunning: false, held: false, identifyUntil: 0,
@@ -48,7 +48,7 @@
       v.setInt8(5, s.owner); v.setInt8(6, s.winner); v.setInt8(7, s.target); v.setUint8(8, 0);
       v.setUint16(9, Math.min(65535, s.heldMs), true);
       v.setInt32(11, Math.round(s.time[0]), true); v.setInt32(15, Math.round(s.time[1]), true);
-      v.setUint8(19, s.power); v.setUint8(20, (s.batt < 20 ? 2 : 0) | (s.awakeLed ? 8 : 0));
+      v.setUint8(19, s.power); v.setUint8(20, (s.batt < 20 ? 2 : 0));
       return b;
     }
     function encodeSlow() {
@@ -67,7 +67,7 @@
     sim.publish = force => {
       if (sim.asleep) return;  // factory off: silent until "new game" (a lid press, in real life)
       const now = performance.now(), h = encodeHot();
-      const shape = [s.running, s.won, s.gamePaused, s.held, now < s.identifyUntil, s.owner, s.winner, s.target, s.power, s.awakeLed].join();
+      const shape = [s.running, s.won, s.gamePaused, s.held, now < s.identifyUntil, s.owner, s.winner, s.target, s.power].join();
       if (force || shape !== sim.shape || now - sim.hotAt > HOT_EVERY) { sim.shape = shape; sim.hotAt = now; bump(0, h); }
       if (now - sim.slowAt > SLOW_EVERY) { sim.slowAt = now; bump(1, encodeSlow()); }
       if (!sim.data[2]) bump(2, new Uint8Array(encodeConfig(cfg)));
@@ -93,7 +93,6 @@
         case OP.GAME_RESUME: if (s.gamePaused) { s.running = s.wasRunning; s.gamePaused = false; } break;
         case OP.POWER_OFF: s.power = 2; s.running = false; s.held = false; break;
         case OP.POWER_ON: s.power = 0; break;
-        case OP.AWAKE_LED: s.awakeLed = !!v.getUint8(1); sim.slowAt = -1e9; break;
         case OP.FACTORY_OFF: setTimeout(() => { sim.asleep = true; }, 1500); break;  // deep sleep: goes silent
         case OP.FACTORY_RESET: break;
       }

@@ -66,7 +66,7 @@ Each read describes the reading central's own connection.
 | 24 | u32 | uptime s |
 | 28 | u32 | boots since power-on (more than 1 means it has rebooted) |
 | 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off |
-| 33 | u8 | bit0 dimmed (idle 1 h), bit1 battery low warning, bit2 sparse LEDs (idle 10 min), bit3 awake LED on |
+| 33 | u8 | bit0 dimmed (idle 1 h), bit1 battery low warning, bit2 sparse LEDs (idle 10 min) |
 | 34 | u16 | battery mV: long average of VSYS while on; last unloaded reading while off; 0 = unknown |
 
 ## Config
@@ -85,7 +85,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 7 | u8 | volume: 0 mute, 1..255 = -40..0 dB (default 128, about -20 dB) |
 | 8 | u16 | hold ms (500..60000); pause at +4 s, reset at +9 s, power off at +14 s |
 | 10 | u8 | LED brightness 0..255 (default 128) |
-| 11 | u8 | reserved |
+| 11 | u8 | debug options: bit0 awake LED off (0, the default, is on: the red status LED is lit whenever the chip is out of light sleep, so every wake shows as a flash) |
 | 12 | u32 ×2 | durations in ms, per team (one timer uses the first) |
 | 20 | u8 ×6 | team 1 RGB, team 2 RGB |
 | 26 | char ×16 | name, NUL-terminated (empty = default) |
@@ -117,7 +117,7 @@ The first byte is the opcode.
 | 16 | | game pause: stop the clocks, remembering whether they were running |
 | 17 | | game resume: undo a game pause (runs again only if it was running before) |
 | 18 | | factory off: what a low battery does. Deep sleep with BLE off after about 1.5 s (so the network passes the command on); only a lid press or USB wakes it |
-| 19 | u8 on | awake LED (debug, not saved): the red status LED is lit whenever the chip is out of light sleep |
+| 19 | | (removed: was the awake LED switch, now config byte 11) |
 
 Sound ids:
 
@@ -134,7 +134,7 @@ Sound ids:
 There is no pairing or PIN yet, so anyone with the page can connect, and a command sent to one button reaches
 them all.
 
-While off, the button only advertises legacy, slowly (about every 1 s, +6 dBm), so the page can still connect directly. It stops the Coded adverts and scans, and about 3 s after turning off (time for the others to hear it is off) it drops its links to other buttons and refuses new ones; phone connections stay, asked for a 400–500 ms interval instead of 30–50 ms. So an off button drops out of the network: other buttons show its last state ("off") until it goes stale, and it can only be woken or powered on over a direct connection or with its lid. Identify, battery and play sound wake it briefly (peek), which also lets it rejoin the network while peeking. Other commands just change its state, and power on turns it on.
+While off, the button only advertises legacy, slowly (about every 1 s, +6 dBm), so the page can still connect directly. It stops the Coded adverts and scans, and about 3 s after turning off (time for the others to hear it is off) it drops its links to other buttons and refuses new ones; phone connections stay, asked for a 400–500 ms interval instead of 30–50 ms (checked every 5 s and asked again, up to 3 times per change between on and off, if a link is outside the interval it should have). So an off button drops out of the network: other buttons show its last state ("off") until it goes stale, and it can only be woken or powered on over a direct connection or with its lid. Identify, battery and play sound wake it briefly (peek), which also lets it rejoin the network while peeking. Other commands just change its state, and power on turns it on.
 
 ## Network
 

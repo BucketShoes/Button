@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #define CONFIG_VERSION 2
+#define CFG_DEBUG_NO_AWAKE_LED 1  // config_t.debug
 
 enum { MODE_TEAMS = 0, MODE_ONE_TIMER = 1, MODE_TWO_TIMERS = 2 };
 
@@ -20,7 +21,7 @@ typedef struct __attribute__((packed)) {
     uint8_t volume;           //  7 0..255 master volume (255 = full)
     uint16_t hold_ms;         //  8 hold to capture; pause at +3 s, reset at +7 s
     uint8_t led_level;        // 10 0..255 LED brightness scale
-    uint8_t reserved1;        // 11
+    uint8_t debug;            // 11 debug options: bit0 awake LED OFF (0 = on, the default)
     uint32_t duration_ms[2];  // 12, 16 per team; one timer uses [0]
     uint8_t colour[2][3];     // 20, 23 RGB
     char name[16];            // 26 NUL-terminated, empty = default "Button-XXXX"

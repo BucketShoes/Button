@@ -607,7 +607,7 @@ enum {
     OP_GAME_PAUSE = 16,  // pause, remembering whether it was running
     OP_GAME_RESUME = 17, // undo a game pause (runs again only if it was running)
     OP_FACTORY_OFF = 18, // what a low battery does: deep sleep, no BLE; a lid press or USB wakes it
-    OP_AWAKE_LED = 19,   // u8 on: debug, the red LED lit whenever the chip is out of light sleep
+    // 19 was the awake LED switch; it is a setting now (config_t.debug)
 };
 
 // Boots since power-on (survives resets, not power loss), to spot brown-outs.
@@ -636,7 +636,7 @@ typedef struct __attribute__((packed)) {
     uint32_t uptime_s;    // 24
     uint32_t boots;       // 28 boots since power-on
     uint8_t power;        // 32 0 on, 1 peek, 2 off
-    uint8_t flags2;       // 33 bit0 dimmed (idle), bit1 battery low warning, bit2 sparse, bit3 awake LED
+    uint8_t flags2;       // 33 bit0 dimmed (idle), bit1 battery low warning, bit2 sparse
     uint16_t batt_mv;     // 34 averaged VSYS while on, last rest reading while off (0 = unknown)
 } state_pkt_t;            // 36 bytes
 _Static_assert(sizeof(state_pkt_t) == 36, "state_pkt_t layout is part of the BLE protocol");
@@ -660,6 +660,8 @@ static void apply_name(void)
 }
 
 
+static void awake_led_set(bool on);
+
 static void apply_config(const config_t *in, uint32_t now)
 {
     config_t old = s_cfg;
@@ -672,6 +674,7 @@ static void apply_config(const config_t *in, uint32_t now)
     if (structural || s_fresh) game_reset(now);
     if (strcmp(old.name, s_cfg.name) != 0) apply_name();
     audio_set_volume(s_cfg.volume);
+    awake_led_set(!(s_cfg.debug & CFG_DEBUG_NO_AWAKE_LED));
     ble_publish_config(&s_cfg, sizeof s_cfg);
     mesh_publish_config(&s_cfg, sizeof s_cfg);
     ESP_LOGI(TAG, "settings: mode %d, hold %u ms, %s, numbers %s, durations %lu/%lu s, volume %d, leds %d",
@@ -735,7 +738,6 @@ static esp_pm_lock_handle_t s_usb_lock;
 static bool s_usb_lock_held;
 
 static void startup_test(void);
-static void awake_led_set(bool on);
 static uint16_t awake_permille(void);
 static uint8_t s_last_frame_valid;
 
@@ -964,7 +966,7 @@ static uint8_t state_flags(uint32_t now)
 }
 static uint8_t state_flags2(void)
 {
-    return (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) | (s_awake_led ? 8 : 0) |
+    return (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) |
                      (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0));
 }
 // Phones (and anything else not a button) connected to this button.
@@ -1191,9 +1193,6 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         s_factory_off_at = now + 1500;
         if (!s_factory_off_at) s_factory_off_at = 1;
         ESP_LOGW(TAG, "factory off requested");
-        break;
-    case OP_AWAKE_LED:
-        if (n >= 2) awake_led_set(d[1] != 0);
         break;
     default:
         ESP_LOGW(TAG, "unknown command %d", d[0]);
@@ -1443,10 +1442,10 @@ static void status_line(uint32_t now)
     int vraw = 0, vpin = 0;
     sense_vsys_debug(&vraw, &vpin);
     printf("[%7.1fs] %-4s %-7s mode=%d owner=%d T1=%s T2=%s hold=%4lums sw=%d%d%d boot=%d ped=%d%d "
-           "vsys=%dmV (adc %d, pin %dmV) vbus=%dmV ble=%d%s disp_nak=%lu/%lu heap=%u\n",
+           "vsys=%dmV (adc %d, pin %dmV) vbus=%dmV adc_rebuilds=%d ble=%d%s disp_nak=%lu/%lu heap=%u\n",
            now / 1000.0, PWR_NAME[s_pwr], state_name(), s_cfg.mode, s_owner + 1, t1, t2, (unsigned long)input_held_ms(&s_face),
            s_in[IN_FACE1].state, s_in[IN_FACE2].state, s_in[IN_FACE3].state, s_in[IN_BOOT].state,
-           s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, vraw, vpin, s_vbus_mv, ble_connections(),
+           s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, vraw, vpin, s_vbus_mv, sense_adc_rebuilds(), ble_connections(),
            "", (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 }
@@ -1520,6 +1519,7 @@ static esp_err_t IRAM_ATTR sleep_exit_cb(int64_t slept_us, void *arg)
 
 static void awake_led_set(bool on)
 {
+    if (on == s_awake_led) return;
     s_awake_led = on;
     gpio_set_level(PIN_STAT_LED, on);  // awake right now
     ESP_LOGI(TAG, "awake LED %s", on ? "on" : "off");
@@ -1640,6 +1640,7 @@ void app_main(void)
              s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from low-battery sleep)" : "",
              (unsigned long)s_boot_count);
     config_load(&s_cfg);
+    awake_led_set(!(s_cfg.debug & CFG_DEBUG_NO_AWAKE_LED));
     if (s_reset_reason == ESP_RST_BROWNOUT) {
         // Don't brown out again on the startup sound: 50 % volume and brightness
         // until changed (not saved, so the stored settings are untouched).

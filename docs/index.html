@@ -183,14 +183,14 @@
       <button data-op="play">Play</button>
       <button data-op="stopsound">Stop</button>
     </div>
-    <div class="row">
-      <span class="muted">Power:</span>
-      <button data-op="on" class="pw-on">On</button>
-      <button data-op="off" class="pw-off danger">Off</button>
-      <button data-op="factoryoff" class="pw-factory danger" title="What a low battery does: deep sleep with BLE off. Only a lid press or plugging in USB wakes it.">Factory off</button>
-    </div>
     <details>
-      <summary>Settings</summary>
+      <summary>Advanced</summary>
+      <div class="row">
+        <span class="muted">Power:</span>
+        <button data-op="on" class="pw-on">On</button>
+        <button data-op="off" class="pw-off danger">Off</button>
+        <button data-op="factoryoff" class="pw-factory danger" title="What a low battery does: deep sleep with BLE off. Only a lid press or plugging in USB wakes it.">Factory off</button>
+      </div>
       <div class="grid">
         <label>Name</label><input class="f-name" maxlength="15" placeholder="(default)">
         <label>Mode</label>
@@ -213,9 +213,7 @@
         <label>Team 2 colour</label><input type="color" class="f-col1">
         <label>Volume</label><input type="range" class="f-vol" min="0" max="100" step="5" title="-40 dB at the left end, 0 dB (full) at the right">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
-      </div>
-      <div class="row">
-        <label title="Debug: the red status LED is lit whenever the chip is out of light sleep, so each wake shows as a flash and a chip that never sleeps shows as a steady light. Not saved: off again after a reboot."><input type="checkbox" class="awake-led"> Awake LED (debug)</label>
+        <label title="The red status LED is lit whenever the chip is out of light sleep, so each wake shows as a flash and a chip that never sleeps shows as a steady light.">Awake LED (debug)</label><input type="checkbox" class="f-awake">
       </div>
       <p class="note">Pause is at hold + 4 s, reset at hold + 9 s, power off at hold + 14 s. On an uncaptured button, each press
         that doesn't capture flips the team for the next press. Durations take effect at
@@ -242,7 +240,7 @@ const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4
 const PHY = { 1: "1M", 2: "2M", 3: "Coded" };
 const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
-             PLAY_SOUND: 8, STOP_SOUND: 9, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15, FACTORY_OFF: 18, AWAKE_LED: 19,
+             PLAY_SOUND: 8, STOP_SOUND: 9, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15, FACTORY_OFF: 18,
              GAME_PAUSE: 16, GAME_RESUME: 17 };
 const POWER = ["on", "peek", "off"];
 const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
@@ -250,6 +248,7 @@ const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash",
 const SOUNDS = ["Team 1 capture", "Team 2 capture", "Win fanfare", "Pause", "Reset", "Ding", "Doom",
                 "Countdown blip", "Whistle", "Horn", "Battery chirp", "Startup", "Diagnostic", "Music clip"];
 const MODE_TEAMS = 0, MODE_ONE = 1, MODE_TWO = 2;
+const DEBUG_NO_AWAKE_LED = 1;  // config byte 11, bit0: awake LED off
 
 function parseState(dv) {
   const f = dv.getUint8(1);
@@ -264,6 +263,21 @@ function parseState(dv) {
     battLow: !!(dv.getUint8(33) & 2), sparse: !!(dv.getUint8(33) & 4), battMv: dv.getUint16(34, true), rx: performance.now(),
   };
 }
+// A colour input with its value also offered as a suggestion: some pickers (Chrome on Android)
+// open on their own palette and only show the current colour if it is in the input's list.
+let colourListN = 0;
+function setColour(input, hex) {
+  if (!input.dl) {
+    input.dl = document.createElement("datalist");
+    input.dl.id = "colours" + ++colourListN;
+    input.after(input.dl);
+    input.setAttribute("list", input.dl.id);
+  }
+  input.value = hex;
+  input.defaultValue = hex;
+  input.dl.replaceChildren(...[hex, "#c800ff", "#ff9600", "#ff0000", "#00c000", "#0060ff", "#ffffff"]
+    .filter((v, i, a) => a.indexOf(v) === i).map(v => Object.assign(document.createElement("option"), { value: v })));
+}
 function parseConfig(dv) {
   const name = [];
   for (let i = 26; i < 42; i++) { const c = dv.getUint8(i); if (!c) break; name.push(c); }
@@ -271,7 +285,7 @@ function parseConfig(dv) {
   return {
     version: dv.getUint8(0), mode: dv.getUint8(1), timerTeam: dv.getUint8(2), countUp: dv.getUint8(3),
     show: dv.getUint8(4), initial: dv.getUint8(5), defCapture: dv.getUint8(6), volume: dv.getUint8(7),
-    holdMs: dv.getUint16(8, true), ledLevel: dv.getUint8(10),
+    holdMs: dv.getUint16(8, true), ledLevel: dv.getUint8(10), debug: dv.getUint8(11),
     dur: [dv.getUint32(12, true), dv.getUint32(16, true)], colour: [col(20), col(23)],
     name: new TextDecoder().decode(new Uint8Array(name)),
   };
@@ -280,7 +294,7 @@ function encodeConfig(c) {
   const b = new ArrayBuffer(CONFIG_LEN), dv = new DataView(b);
   dv.setUint8(0, CONFIG_VERSION); dv.setUint8(1, c.mode); dv.setUint8(2, c.timerTeam); dv.setUint8(3, c.countUp);
   dv.setUint8(4, c.show); dv.setUint8(5, c.initial); dv.setUint8(6, c.defCapture); dv.setUint8(7, c.volume);
-  dv.setUint8(10, c.ledLevel);
+  dv.setUint8(10, c.ledLevel); dv.setUint8(11, c.debug);
   dv.setUint16(8, c.holdMs, true); dv.setUint32(12, c.dur[0], true); dv.setUint32(16, c.dur[1], true);
   c.colour.forEach((hex, t) => { for (let i = 0; i < 3; i++) dv.setUint8(20 + t * 3 + i, parseInt(hex.substr(1 + i * 2, 2), 16)); });
   const name = new TextEncoder().encode(c.name).slice(0, 15);
@@ -599,7 +613,7 @@ class Btn {
         identifying: !!(f & 16), usb: !!(f & 32), clip: !!(f & 64),
         owner: dv.getInt8(5), winner: dv.getInt8(6), target: dv.getInt8(7), holdStage: dv.getUint8(8),
         heldMs: dv.getUint16(9, true), time: [dv.getInt32(11, true), dv.getInt32(15, true)], power: dv.getUint8(19),
-        dimmed: !!(f2 & 1), battLow: !!(f2 & 2), sparse: !!(f2 & 4), awakeLed: !!(f2 & 8),
+        dimmed: !!(f2 & 1), battLow: !!(f2 & 2), sparse: !!(f2 & 4),
       };
     } else if (s === S_SLOW && dv.byteLength >= 29) {
       const n = dv.getUint8(28), nb = [];
@@ -615,9 +629,15 @@ class Btn {
       if (dv.byteLength < CONFIG_LEN || dv.getUint8(0) !== CONFIG_VERSION) {
         this.setStatus("Firmware/page version mismatch: update the button or reload the page"); return;
       }
-      this.cfg = parseConfig(dv);
-      this.fillSettings();
-      this.buildClocks();
+      // Config items can arrive again unchanged (resyncs); refilling then would undo edits in progress
+      // and reset an open colour picker.
+      const key = new Uint8Array(dv.buffer, dv.byteOffset, CONFIG_LEN).join();
+      if (key !== this.cfgKey) {
+        this.cfgKey = key;
+        this.cfg = parseConfig(dv);
+        this.fillSettings();
+        this.buildClocks();
+      }
     }
     if (this.hot) {
       const slow = this.slow || { vsys: 0, vbus: 0, batt: "?", battMv: 0, conns: 0, resetReason: 0, uptime: 0, boots: 1, vsysAdc: 0, vsysPin: 0, awakePm: 0, neighbours: [] };
@@ -673,7 +693,6 @@ class Btn {
     });
     $(e, ".f-mode").addEventListener("change", () => this.settingsVisibility());
     $(e, ".f-dir").addEventListener("change", () => this.settingsVisibility());
-    $(e, ".awake-led").addEventListener("change", ev => this.send(OP.AWAKE_LED, ["u8", ev.target.checked ? 1 : 0]));
   }
 
   buildClocks() {
@@ -710,10 +729,10 @@ class Btn {
     $(e, ".f-initial").value = c.initial;
     $(e, ".f-default").value = c.defCapture;
     $(e, ".f-hold").value = c.holdMs / 1000;
-    $(e, ".f-col0").value = c.colour[0];
-    $(e, ".f-col1").value = c.colour[1];
+    for (const t of [0, 1]) setColour($(e, ".f-col" + t), c.colour[t]);
     $(e, ".f-vol").value = Math.round(c.volume / 2.55);
     $(e, ".f-led").value = Math.round(c.ledLevel / 2.55);
+    $(e, ".f-awake").checked = !(c.debug & DEBUG_NO_AWAKE_LED);
     $(e, ".name").textContent = this.label();
     this.settingsVisibility();
   }
@@ -733,6 +752,7 @@ class Btn {
       holdMs: Math.round(Math.min(60, Math.max(0.5, +$(e, ".f-hold").value || 3)) * 1000),
       dur: [d0, d1], colour: [$(e, ".f-col0").value, $(e, ".f-col1").value], name: $(e, ".f-name").value.trim(),
       volume: Math.round(+$(e, ".f-vol").value * 2.55), ledLevel: Math.round(+$(e, ".f-led").value * 2.55),
+      debug: (this.cfg ? this.cfg.debug & ~DEBUG_NO_AWAKE_LED : 0) | ($(e, ".f-awake").checked ? 0 : DEBUG_NO_AWAKE_LED),
     };
   }
   saveSettings() {
@@ -834,7 +854,6 @@ class Btn {
     e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
     $(e, ".pw-on").disabled = live && s.power === 0;
     $(e, ".pw-off").disabled = live && s.power === 2;
-    $(e, ".awake-led").checked = !!s.awakeLed;
     e.classList.toggle("off", !live || s.power === 2);
     $(e, ".t1").style.borderColor = c.colour[0];
     $(e, ".t2").style.borderColor = c.colour[1];
