@@ -22,7 +22,7 @@ void config_defaults(config_t *c)
     c->led_level = 128;
     c->hold_ms = 3000;
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;
-    static const uint8_t COL[2][3] = {{255, 0, 150}, {255, 150, 0}};  // purple, yellow. (blue die is washed out)
+    static const uint8_t COL[2][3] = {{255, 0, 128}, {255, 128, 0}};  // purple, yellow. (blue die is washed out)
     memcpy(c->colour, COL, sizeof COL);
 }
 

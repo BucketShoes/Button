@@ -65,7 +65,7 @@ static const char *TAG = "button";
 #define PAUSE_EXTRA_MS   4000  // pause at hold + this
 #define RESET_EXTRA_MS   9000  // reset at hold + this
 #define OFF_EXTRA_MS     14000 // power off at hold + this (lid held on past the reset)
-#define OFF_WARN_DELAY   1000  // "HoLd" "oFF" and the falling tone start this long after the reset
+#define OFF_WARN_DELAY   2000  // "HoLd" "oFF" and the falling tone start this long after the reset
 #define DEBOUNCE_MS      50    // the lid is assumed still pressed this long after any contact
 #define TAP_MAX_MS       500   // a press shorter than this is a tap
 #define TAP_GAP_MS       500   // max hand-off time between taps; also the wait after the last one
