@@ -132,6 +132,7 @@
         <button data-all="identify">Identify all</button>
         <button data-all="on">Power on all</button>
         <button data-all="off" class="danger">Power off all</button>
+        <button data-all="factoryoff" class="danger" title="What a low battery does: deep sleep with BLE off. Only a lid press or USB wakes each one.">Factory off all</button>
       </div>
       <p class="note">Game pause stops every clock; game resume puts each button back as it was, so a
         button that was paused or uncaptured stays that way. While game-paused a button can't be captured; a 6 s hold on it takes it
@@ -161,6 +162,7 @@
       <span class="batt muted"></span>
     </div>
     <div class="net muted"></div>
+    <div class="diag muted"></div>
     <div class="owner">Waiting for its state…</div>
     <div class="clocks"></div>
     <div class="row">
@@ -169,7 +171,6 @@
       <button data-op="reset" class="danger">Reset</button>
       <button data-op="identify">Identify</button>
       <button data-op="battery">Battery</button>
-      <button data-op="on" class="poweron">Power on</button>
     </div>
     <div class="row">
       <span class="muted">Owner:</span>
@@ -181,6 +182,12 @@
       <select class="sound grow"></select>
       <button data-op="play">Play</button>
       <button data-op="stopsound">Stop</button>
+    </div>
+    <div class="row">
+      <span class="muted">Power:</span>
+      <button data-op="on" class="pw-on">On</button>
+      <button data-op="off" class="pw-off danger">Off</button>
+      <button data-op="factoryoff" class="pw-factory danger" title="What a low battery does: deep sleep with BLE off. Only a lid press or plugging in USB wakes it.">Factory off</button>
     </div>
     <details>
       <summary>Settings</summary>
@@ -207,6 +214,9 @@
         <label>Volume</label><input type="range" class="f-vol" min="0" max="100" step="5" title="-40 dB at the left end, 0 dB (full) at the right">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
       </div>
+      <div class="row">
+        <label title="Debug: the red status LED is lit whenever the chip is out of light sleep, so each wake shows as a flash and a chip that never sleeps shows as a steady light. Not saved: off again after a reboot."><input type="checkbox" class="awake-led"> Awake LED (debug)</label>
+      </div>
       <p class="note">Pause is at hold + 4 s, reset at hold + 9 s, power off at hold + 14 s. On an uncaptured button, each press
         that doesn't capture flips the team for the next press. Durations take effect at
         once if nothing has happened since the last reset, otherwise at the next reset. On USB power alone,
@@ -218,7 +228,6 @@
         <button data-op="factory" class="danger">Default settings</button>
         <button data-op="reboot" class="danger">Reboot</button>
         <span class="grow"></span>
-        <button data-op="off" class="danger">Power off</button>
         <button data-op="disconnect">Disconnect</button>
       </div>
     </details>
@@ -233,7 +242,7 @@ const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4
 const PHY = { 1: "1M", 2: "2M", 3: "Coded" };
 const PROTO_VERSION = 3, CONFIG_VERSION = 2, CONFIG_LEN = 42, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
-             PLAY_SOUND: 8, STOP_SOUND: 9, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15,
+             PLAY_SOUND: 8, STOP_SOUND: 9, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15, FACTORY_OFF: 18, AWAKE_LED: 19,
              GAME_PAUSE: 16, GAME_RESUME: 17 };
 const POWER = ["on", "peek", "off"];
 const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
@@ -590,15 +599,16 @@ class Btn {
         identifying: !!(f & 16), usb: !!(f & 32), clip: !!(f & 64),
         owner: dv.getInt8(5), winner: dv.getInt8(6), target: dv.getInt8(7), holdStage: dv.getUint8(8),
         heldMs: dv.getUint16(9, true), time: [dv.getInt32(11, true), dv.getInt32(15, true)], power: dv.getUint8(19),
-        dimmed: !!(f2 & 1), battLow: !!(f2 & 2), sparse: !!(f2 & 4),
+        dimmed: !!(f2 & 1), battLow: !!(f2 & 2), sparse: !!(f2 & 4), awakeLed: !!(f2 & 8),
       };
-    } else if (s === S_SLOW && dv.byteLength >= 23) {
-      const n = dv.getUint8(22), nb = [];
-      for (let k = 0; k < n && 23 + k * 4 + 4 <= dv.byteLength; k++)
-        nb.push({ id: dv.getUint16(23 + k * 4, true), rssi: dv.getInt8(25 + k * 4), phy: dv.getUint8(26 + k * 4) });
+    } else if (s === S_SLOW && dv.byteLength >= 29) {
+      const n = dv.getUint8(28), nb = [];
+      for (let k = 0; k < n && 29 + k * 4 + 4 <= dv.byteLength; k++)
+        nb.push({ id: dv.getUint16(29 + k * 4, true), rssi: dv.getInt8(31 + k * 4), phy: dv.getUint8(32 + k * 4) });
       this.slow = {
         vsys: dv.getUint16(4, true), vbus: dv.getUint16(6, true), batt: dv.getInt16(8, true), battMv: dv.getUint16(10, true),
         conns: dv.getUint8(12), resetReason: dv.getUint8(13), uptime: dv.getUint32(14, true), boots: dv.getUint32(18, true),
+        vsysAdc: dv.getUint16(22, true), vsysPin: dv.getUint16(24, true), awakePm: dv.getUint16(26, true),
         neighbours: nb,
       };
     } else if (s === S_CFG) {
@@ -610,7 +620,7 @@ class Btn {
       this.buildClocks();
     }
     if (this.hot) {
-      const slow = this.slow || { vsys: 0, vbus: 0, batt: "?", battMv: 0, conns: 0, resetReason: 0, uptime: 0, boots: 1, neighbours: [] };
+      const slow = this.slow || { vsys: 0, vbus: 0, batt: "?", battMv: 0, conns: 0, resetReason: 0, uptime: 0, boots: 1, vsysAdc: 0, vsysPin: 0, awakePm: 0, neighbours: [] };
       this.state = { ...slow, ...this.hot, rx: performance.now() - net.ageOf(this.hot.t) };
     }
     this.render();
@@ -652,6 +662,9 @@ class Btn {
         case "save": return this.saveSettings();
         case "factory": if (confirm(`Restore default settings on ${this.label()}?`)) this.send(OP.FACTORY_RESET); return;
         case "on": return this.send(OP.POWER_ON);
+        case "factoryoff":
+          if (confirm(`Factory off ${this.label()}? It does what a low battery does: deep sleep with Bluetooth off, so it leaves the network and this page can't reach it. Only a press on its lid, or plugging in USB, wakes it.`)) this.send(OP.FACTORY_OFF);
+          return;
         case "reboot": if (confirm(`Reboot ${this.label()}? The game state is lost; settings are kept.`)) this.send(OP.REBOOT); return;
         case "copyall": return this.copyToAll();
         case "off": if (confirm(`Power off ${this.label()}? A press on its lid wakes it.`)) this.send(OP.POWER_OFF); return;
@@ -660,6 +673,7 @@ class Btn {
     });
     $(e, ".f-mode").addEventListener("change", () => this.settingsVisibility());
     $(e, ".f-dir").addEventListener("change", () => this.settingsVisibility());
+    $(e, ".awake-led").addEventListener("change", ev => this.send(OP.AWAKE_LED, ["u8", ev.target.checked ? 1 : 0]));
   }
 
   buildClocks() {
@@ -793,14 +807,15 @@ class Btn {
     const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
     const avg = !s.usb && s.battMv ? ` (avg ${(s.battMv / 1000).toFixed(2)} V)` : "";
     const volts = s.power === 2 ? (s.usb ? "on USB" : s.battMv ? `${(s.battMv / 1000).toFixed(2)} V at rest` : "") : `${battIcon(s)}${pct}% · ${v} V${avg}`;
-    const usb = s.vbus > 300 ? ` · USB ${(s.vbus / 1000).toFixed(2)} V` : " · no USB";
-    $(e, ".batt").textContent = `${volts}${usb}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
+    $(e, ".batt").textContent = `${volts}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
+    // Raw numbers for checking the dividers and the sleep (always the same fields, so the line doesn't jump about).
+    $(e, ".diag").textContent = `VSYS ${v} V (ADC ${s.vsysAdc}, pin ${(s.vsysPin / 1000).toFixed(2)} V) · USB ${(s.vbus / 1000).toFixed(2)} V · awake ${(s.awakePm / 10).toFixed(1)} %`;
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
     else if (s.owner >= 0) { text = `${teamName(s.owner)} ${s.running ? "owns it" : "owns it – paused"}`; col = c.colour[s.owner]; }
     else text = `Uncaptured · next capture: ${s.target >= 0 ? teamName(s.target) : "random"}${s.running ? "" : " · not started"}`;
-    if (s.power === 2) text = "Powered off · Power on below, or press its lid";
+    if (s.power === 2) text = "Powered off · Power on, or press its lid";
     else if (s.power === 1) text = "Peeking (showing battery) · press its lid twice, or hold 1.5 s, or Power on";
     else if (s.dimmed) text += " · idle 1 h+ (dimmed; turns off at 4 h)";
     else if (s.sparse) text += " · idle 10 min+ (half the LEDs)";
@@ -817,7 +832,9 @@ class Btn {
       if (c.mode === MODE_ONE) el.style.borderColor = s.won ? c.colour[s.winner] : s.owner >= 0 ? c.colour[s.owner] : "";
     });
     e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
-    $(e, ".poweron").hidden = s.power === 0;
+    $(e, ".pw-on").disabled = live && s.power === 0;
+    $(e, ".pw-off").disabled = live && s.power === 2;
+    $(e, ".awake-led").checked = !!s.awakeLed;
     e.classList.toggle("off", !live || s.power === 2);
     $(e, ".t1").style.borderColor = c.colour[0];
     $(e, ".t2").style.borderColor = c.colour[1];
@@ -868,6 +885,9 @@ document.getElementById("game").addEventListener("click", ev => {
     case "off":
       if (!confirm(`Power off all ${live.length} buttons?`)) return;
       data = cmd(OP.POWER_OFF); break;
+    case "factoryoff":
+      if (!confirm(`Factory off all ${live.length} buttons? Each goes into deep sleep with Bluetooth off, as at a low battery, and only a press on its lid (or USB) wakes it. The page can't turn them back on.`)) return;
+      data = cmd(OP.FACTORY_OFF); break;
   }
   net.command(ALL, CMD_KIND_OP, data);  // one command; every button passes it on and acts on it
 });

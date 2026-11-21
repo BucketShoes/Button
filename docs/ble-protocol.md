@@ -66,7 +66,7 @@ Each read describes the reading central's own connection.
 | 24 | u32 | uptime s |
 | 28 | u32 | boots since power-on (more than 1 means it has rebooted) |
 | 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off |
-| 33 | u8 | bit0 dimmed (idle 1 h), bit1 battery low warning, bit2 sparse LEDs (idle 10 min) |
+| 33 | u8 | bit0 dimmed (idle 1 h), bit1 battery low warning, bit2 sparse LEDs (idle 10 min), bit3 awake LED on |
 | 34 | u16 | battery mV: long average of VSYS while on; last unloaded reading while off; 0 = unknown |
 
 ## Config
@@ -116,6 +116,8 @@ The first byte is the opcode.
 | 15 | | reboot (settings kept) |
 | 16 | | game pause: stop the clocks, remembering whether they were running |
 | 17 | | game resume: undo a game pause (runs again only if it was running before) |
+| 18 | | factory off: what a low battery does. Deep sleep with BLE off after about 1.5 s (so the network passes the command on); only a lid press or USB wakes it |
+| 19 | u8 on | awake LED (debug, not saved): the red status LED is lit whenever the chip is out of light sleep |
 
 Sound ids:
 
@@ -132,7 +134,7 @@ Sound ids:
 There is no pairing or PIN yet, so anyone with the page can connect, and a command sent to one button reaches
 them all.
 
-While off, the button only advertises legacy, slowly (about every 1 s, +6 dBm), so the page can still connect directly. It stops the Coded adverts and scans, and about 3 s after turning off (time for the others to hear it is off) it drops its links to other buttons and refuses new ones; phone connections stay. So an off button drops out of the network: other buttons show its last state ("off") until it goes stale, and it can only be woken or powered on over a direct connection or with its lid. Identify, battery and play sound wake it briefly (peek), which also lets it rejoin the network while peeking. Other commands just change its state, and power on turns it on.
+While off, the button only advertises legacy, slowly (about every 1 s, +6 dBm), so the page can still connect directly. It stops the Coded adverts and scans, and about 3 s after turning off (time for the others to hear it is off) it drops its links to other buttons and refuses new ones; phone connections stay, asked for a 400–500 ms interval instead of 30–50 ms. So an off button drops out of the network: other buttons show its last state ("off") until it goes stale, and it can only be woken or powered on over a direct connection or with its lid. Identify, battery and play sound wake it briefly (peek), which also lets it rejoin the network while peeking. Other commands just change its state, and power on turns it on.
 
 ## Network
 
@@ -178,8 +180,10 @@ one waits up to 10 s for a missing earlier one.
 i8 target, u8 hold stage, u16 held ms, i32 ×2 clocks, u8 power, u8 flags2. The clocks and held time are as of
 the timestamp; receivers extrapolate while running or held.
 
-**Status** (22 bytes, then the links): u32 network ms, u16 VSYS mV, u16 VBUS mV, i16 battery %, u16 battery mV,
-u8 phone connections, u8 reset reason, u32 uptime s, u32 boots since power-on, then u8 n and n × (u16 node id,
+**Status** (28 bytes, then the links): u32 network ms, u16 VSYS mV, u16 VBUS mV, i16 battery %, u16 battery mV,
+u8 phone connections, u8 reset reason, u32 uptime s, u32 boots since power-on, u16 raw VSYS ADC average
+(0..4095), u16 VSYS ADC pin mV (VSYS is twice this), u16 time awake since the last status in per mille (light
+sleep the rest), then u8 n and n × (u16 node id,
 i8 RSSI, u8 PHY) for each other button it has a working link to.
 
 **Command:** u16 the button it entered the network at, u32 expiry (network ms), u16 target node (0xFFFF = all),

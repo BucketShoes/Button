@@ -49,3 +49,6 @@ CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_BT_LE_SLEEP_ENABLE=y
 CONFIG_ESP_PHY_MAC_BB_PD=y
+# Light sleep callbacks: count time asleep (awake_pm in the network status) and drive the
+# debug awake LED (OP_AWAKE_LED).
+CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y

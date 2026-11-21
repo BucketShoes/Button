@@ -48,22 +48,26 @@
       v.setInt8(5, s.owner); v.setInt8(6, s.winner); v.setInt8(7, s.target); v.setUint8(8, 0);
       v.setUint16(9, Math.min(65535, s.heldMs), true);
       v.setInt32(11, Math.round(s.time[0]), true); v.setInt32(15, Math.round(s.time[1]), true);
-      v.setUint8(19, s.power); v.setUint8(20, s.batt < 20 ? 2 : 0);
+      v.setUint8(19, s.power); v.setUint8(20, (s.batt < 20 ? 2 : 0) | (s.awakeLed ? 8 : 0));
       return b;
     }
     function encodeSlow() {
-      const nb = LINKS[d.id], b = new Uint8Array(23 + nb.length * 4), v = new DataView(b.buffer), mv = 3500 + s.batt * 7;
+      const nb = LINKS[d.id], b = new Uint8Array(29 + nb.length * 4), v = new DataView(b.buffer), mv = 3500 + s.batt * 7;
       v.setUint32(0, netMs(), true); v.setUint16(4, mv, true); v.setInt16(8, s.batt, true); v.setUint16(10, mv, true);
       v.setUint8(12, d.direct ? 1 : 0); v.setUint8(13, 1);
       v.setUint32(14, Math.round((performance.now() - s.start) / 1000), true); v.setUint32(18, 1, true);
-      v.setUint8(22, nb.length);
-      nb.forEach((id, k) => { v.setUint16(23 + k * 4, id, true); v.setInt8(25 + k * 4, -55 - ((id * 7 + d.id) % 30)); v.setUint8(26 + k * 4, 3); });
+      v.setUint16(6, 20, true);  // no USB: a few mV of noise
+      v.setUint16(22, Math.round(mv / 2 * 4095 / 3300), true); v.setUint16(24, Math.round(mv / 2), true);  // ADC raw, pin mV
+      v.setUint16(26, s.power === 2 ? 4 + d.id % 3 : 25 + (d.id * 13) % 20, true);  // awake per mille
+      v.setUint8(28, nb.length);
+      nb.forEach((id, k) => { v.setUint16(29 + k * 4, id, true); v.setInt8(31 + k * 4, -55 - ((id * 7 + d.id) % 30)); v.setUint8(32 + k * 4, 3); });
       return b;
     }
     // Like the firmware: a new version when something other than the running clocks changed, and every 10 s.
     sim.publish = force => {
+      if (sim.asleep) return;  // factory off: silent until "new game" (a lid press, in real life)
       const now = performance.now(), h = encodeHot();
-      const shape = [s.running, s.won, s.gamePaused, s.held, now < s.identifyUntil, s.owner, s.winner, s.target, s.power].join();
+      const shape = [s.running, s.won, s.gamePaused, s.held, now < s.identifyUntil, s.owner, s.winner, s.target, s.power, s.awakeLed].join();
       if (force || shape !== sim.shape || now - sim.hotAt > HOT_EVERY) { sim.shape = shape; sim.hotAt = now; bump(0, h); }
       if (now - sim.slowAt > SLOW_EVERY) { sim.slowAt = now; bump(1, encodeSlow()); }
       if (!sim.data[2]) bump(2, new Uint8Array(encodeConfig(cfg)));
@@ -75,6 +79,7 @@
       s.target = s.owner >= 0 ? 1 - s.owner : Math.round(Math.random());
     }
     sim.apply = (kind, v) => {
+      if (sim.asleep) return;
       if (kind === CMD_KIND_CONFIG) { Object.assign(cfg, parseConfig(v)); bump(2, new Uint8Array(encodeConfig(cfg))); return; }
       switch (v.getUint8(0)) {
         case OP.START: s.running = true; s.gamePaused = false; break;
@@ -88,6 +93,8 @@
         case OP.GAME_RESUME: if (s.gamePaused) { s.running = s.wasRunning; s.gamePaused = false; } break;
         case OP.POWER_OFF: s.power = 2; s.running = false; s.held = false; break;
         case OP.POWER_ON: s.power = 0; break;
+        case OP.AWAKE_LED: s.awakeLed = !!v.getUint8(1); sim.slowAt = -1e9; break;
+        case OP.FACTORY_OFF: setTimeout(() => { sim.asleep = true; }, 1500); break;  // deep sleep: goes silent
         case OP.FACTORY_RESET: break;
       }
       sim.publish(true);
@@ -243,7 +250,7 @@
     const stopped = sims.filter(x => x.s.won || !x.s.running).length >= 3;
     stoppedSince = stopped ? stoppedSince || now : 0;
     if (sims.some(x => x.s.won && now - x.s.wonAt > 60000) || (stoppedSince && now - stoppedSince > 20000)) {
-      sims.forEach(x => { x.newGame(); x.publish(true); });
+      sims.forEach(x => { x.asleep = false; x.newGame(); x.publish(true); });
       stoppedSince = 0;
     }
   }, 1000);

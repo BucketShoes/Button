@@ -38,6 +38,8 @@ enum { ADV_LEGACY = 0, ADV_CODED = 1, ADV_SETS };
 #define CONN_ITVL_1M_MAX 40     // 50 ms
 #define CONN_ITVL_CODED_MIN 64  // 80 ms
 #define CONN_ITVL_CODED_MAX 80  // 100 ms
+#define CONN_ITVL_OFF_MIN 320   // 400 ms: powered off, phones only, nothing is time-critical
+#define CONN_ITVL_OFF_MAX 400   // 500 ms
 #define CONN_SUPERVISION 2000   // 20 s
 // Button-to-button links (we are central): slower, since state is only sent when it changes.
 #define BTN_ITVL_MIN 180        // 225 ms
@@ -88,6 +90,7 @@ static struct ble_npl_event s_restart_ev;
 static struct ble_npl_callout s_scan_co;
 
 static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
+static void request_params(uint16_t conn, bool coded);
 
 static const struct ble_gatt_svc_def SVCS[] = {
     {
@@ -357,6 +360,9 @@ static void restart_ev_fn(struct ble_npl_event *ev)
     }
     s_adv_ready = false;
     advertise();
+    // Phone links follow the speed too: a 30 ms interval while off costs far more than the adverts.
+    for (int i = 0; i < MAX_CONN; i++)
+        if (s_conn[i].used && !s_conn[i].central) request_params(s_conn[i].h, s_conn[i].coded);
 }
 
 static void restart_adverts(void)
@@ -514,8 +520,8 @@ static int on_mtu(uint16_t h, const struct ble_gatt_error *err, uint16_t mtu, vo
 static void request_params(uint16_t conn, bool coded)
 {
     struct ble_gap_upd_params u = {
-        .itvl_min = coded ? CONN_ITVL_CODED_MIN : CONN_ITVL_1M_MIN,
-        .itvl_max = coded ? CONN_ITVL_CODED_MAX : CONN_ITVL_1M_MAX,
+        .itvl_min = s_slow ? CONN_ITVL_OFF_MIN : coded ? CONN_ITVL_CODED_MIN : CONN_ITVL_1M_MIN,
+        .itvl_max = s_slow ? CONN_ITVL_OFF_MAX : coded ? CONN_ITVL_CODED_MAX : CONN_ITVL_1M_MAX,
         .latency = 0,
         .supervision_timeout = CONN_SUPERVISION,
     };

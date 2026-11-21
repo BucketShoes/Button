@@ -47,6 +47,8 @@
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "hal/gpio_ll.h"
+#include "soc/gpio_struct.h"
 
 #include "audio.h"
 #include "ble.h"
@@ -604,12 +606,17 @@ enum {
     OP_REBOOT = 15,
     OP_GAME_PAUSE = 16,  // pause, remembering whether it was running
     OP_GAME_RESUME = 17, // undo a game pause (runs again only if it was running)
+    OP_FACTORY_OFF = 18, // what a low battery does: deep sleep, no BLE; a lid press or USB wakes it
+    OP_AWAKE_LED = 19,   // u8 on: debug, the red LED lit whenever the chip is out of light sleep
 };
 
 // Boots since power-on (survives resets, not power loss), to spot brown-outs.
 static RTC_NOINIT_ATTR uint32_t s_boot_count;
 static RTC_NOINIT_ATTR uint32_t s_boot_check;  // s_boot_count ^ BOOT_CHECK when valid
 #define BOOT_CHECK 0x5A3CB007u
+static uint32_t s_factory_off_at;  // OP_FACTORY_OFF: when to go (0 = not asked)
+static volatile uint32_t s_slept_us;  // light sleep total (wraps; only differences over a status period are used)
+static volatile bool s_awake_led;     // debug: red LED lit while out of light sleep (see pm_init)
 static uint8_t s_reset_reason;
 
 typedef struct __attribute__((packed)) {
@@ -629,7 +636,7 @@ typedef struct __attribute__((packed)) {
     uint32_t uptime_s;    // 24
     uint32_t boots;       // 28 boots since power-on
     uint8_t power;        // 32 0 on, 1 peek, 2 off
-    uint8_t flags2;       // 33 bit0 dimmed (idle), bit1 battery low warning
+    uint8_t flags2;       // 33 bit0 dimmed (idle), bit1 battery low warning, bit2 sparse, bit3 awake LED
     uint16_t batt_mv;     // 34 averaged VSYS while on, last rest reading while off (0 = unknown)
 } state_pkt_t;            // 36 bytes
 _Static_assert(sizeof(state_pkt_t) == 36, "state_pkt_t layout is part of the BLE protocol");
@@ -728,6 +735,8 @@ static esp_pm_lock_handle_t s_usb_lock;
 static bool s_usb_lock_held;
 
 static void startup_test(void);
+static void awake_led_set(bool on);
+static uint16_t awake_permille(void);
 static uint8_t s_last_frame_valid;
 
 static bool on_usb(void) { return s_vbus_mv > USB_MV; }
@@ -955,7 +964,7 @@ static uint8_t state_flags(uint32_t now)
 }
 static uint8_t state_flags2(void)
 {
-    return (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) |
+    return (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) | (s_awake_led ? 8 : 0) |
                      (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0));
 }
 // Phones (and anything else not a button) connected to this button.
@@ -1051,7 +1060,12 @@ static void net_publish(uint32_t now)
             .reset_reason = s_reset_reason,
             .uptime_s = now / 1000,
             .boots = s_boot_count,
+            .awake_pm = awake_permille(),
         };
+        int raw, pin;
+        sense_vsys_debug(&raw, &pin);
+        s.vsys_adc = (uint16_t)(raw > 0 ? raw : 0);
+        s.vsys_pin_mv = (uint16_t)(pin > 0 ? pin : 0);
         mesh_publish_status(&s);
     }
 }
@@ -1171,6 +1185,15 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         break;
     case OP_POWER_OFF:
         power_set(PWR_OFF, now);
+        break;
+    case OP_FACTORY_OFF:
+        // A moment first, so the network passes the command on (and hears this button's last state).
+        s_factory_off_at = now + 1500;
+        if (!s_factory_off_at) s_factory_off_at = 1;
+        ESP_LOGW(TAG, "factory off requested");
+        break;
+    case OP_AWAKE_LED:
+        if (n >= 2) awake_led_set(d[1] != 0);
         break;
     default:
         ESP_LOGW(TAG, "unknown command %d", d[0]);
@@ -1455,6 +1478,9 @@ static void power_pins_init(void)
     gpio_config(&io);
     gpio_set_level(PIN_PWR_EN, 0);
     gpio_set_level(PIN_STAT_LED, 0);  // kept off: it's distracting through the case
+    // CONFIG_PM_SLP_DISABLE_GPIO floats every pin during auto light sleep, which would let RQEN1
+    // pull PWR_EN low and cut VSYS and 3V3_SW at every nap while on. Keep this one driven.
+    gpio_sleep_sel_dis(PIN_PWR_EN);
 }
 
 static void startup_test(void)
@@ -1475,12 +1501,55 @@ static void startup_test(void)
     s_last_frame_valid = 0;
 }
 
+// Light sleep accounting (awake_pm in the network status) and the debug "awake LED": the red
+// status LED lit whenever the chip is out of light sleep, so every wake shows as a flash and a
+// chip that never sleeps shows as a steady light. Both run in the idle task around each sleep.
+
+static esp_err_t IRAM_ATTR sleep_enter_cb(int64_t expect_us, void *arg)
+{
+    if (s_awake_led) gpio_ll_set_level(&GPIO, PIN_STAT_LED, 0);
+    return ESP_OK;
+}
+
+static esp_err_t IRAM_ATTR sleep_exit_cb(int64_t slept_us, void *arg)
+{
+    s_slept_us += (uint32_t)slept_us;
+    if (s_awake_led) gpio_ll_set_level(&GPIO, PIN_STAT_LED, 1);
+    return ESP_OK;
+}
+
+static void awake_led_set(bool on)
+{
+    s_awake_led = on;
+    gpio_set_level(PIN_STAT_LED, on);  // awake right now
+    ESP_LOGI(TAG, "awake LED %s", on ? "on" : "off");
+}
+
+// Per mille of the time since the last call spent awake (not in light sleep).
+static uint16_t awake_permille(void)
+{
+    static int64_t last_t;
+    static uint32_t last_slept;
+    int64_t t = esp_timer_get_time();
+    uint32_t slept = s_slept_us;
+    int64_t span = t - last_t;
+    uint32_t d = slept - last_slept;
+    last_t = t;
+    last_slept = slept;
+    if (span <= 0) return 1000;
+    int64_t pm = 1000 - (int64_t)d * 1000 / span;
+    return (uint16_t)(pm < 0 ? 0 : pm > 1000 ? 1000 : pm);
+}
+
 static void pm_init(void)
 {
     esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "usb", &s_usb_lock);
     esp_pm_config_t pm = {.max_freq_mhz = 160, .min_freq_mhz = 40, .light_sleep_enable = true};
     esp_err_t err = esp_pm_configure(&pm);
     if (err != ESP_OK) ESP_LOGW(TAG, "power management: %s", esp_err_to_name(err));
+    esp_pm_sleep_cbs_register_config_t cbs = {.enter_cb = sleep_enter_cb, .exit_cb = sleep_exit_cb};
+    err = esp_pm_light_sleep_register_cbs(&cbs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "light sleep callbacks: %s", esp_err_to_name(err));
     usb_lock_update();
 }
 
@@ -1709,6 +1778,12 @@ void app_main(void)
 
         ble_service(now);
         mesh_tick(now);
+        if (s_factory_off_at && (int32_t)(now - s_factory_off_at) >= 0) {
+            s_factory_off_at = 0;
+            if (s_pwr != PWR_OFF) power_set(PWR_OFF, now);  // the off sound, peripherals down
+            s_batt_mv = read_batt_rest();
+            deep_sleep(true);
+        }
         game_tick(now, dt);
         net_publish(now);
         if (s_pwr == PWR_ON) countdown_blips();

@@ -40,8 +40,11 @@ typedef struct __attribute__((packed)) {
     uint8_t reset_reason;  // 13
     uint32_t uptime_s;     // 14
     uint32_t boots;        // 18
-} mesh_status_t;           // 22 bytes, then u8 n, n x (u16 node, i8 rssi, u8 phy)
-_Static_assert(sizeof(mesh_status_t) == 22, "mesh_status_t layout is part of the BLE protocol");
+    uint16_t vsys_adc;     // 22 raw ADC average behind vsys_mv (0..4095), to check the divider
+    uint16_t vsys_pin_mv;  // 24 calibrated voltage at the ADC pin (vsys_mv is twice this)
+    uint16_t awake_pm;     // 26 time awake since the last status, per mille (light sleep the rest)
+} mesh_status_t;           // 28 bytes, then u8 n, n x (u16 node, i8 rssi, u8 phy)
+_Static_assert(sizeof(mesh_status_t) == 28, "mesh_status_t layout is part of the BLE protocol");
 
 enum { MESH_CMD_OP = 0, MESH_CMD_CONFIG = 1 };
 // now: the game loop's time passed to mesh_tick (not a fresh reading, which can be later).
