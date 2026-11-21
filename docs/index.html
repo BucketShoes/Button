@@ -135,7 +135,6 @@
         <button data-all="identify">Identify all</button>
         <button data-all="on">Power on all</button>
         <button data-all="off" class="danger">Power off all</button>
-        <button data-all="factoryoff" class="danger" title="Shipping mode, what a low battery does: deep sleep with Bluetooth off. Only a lid press or USB wakes each one.">Shipping mode all</button>
       </div>
       <p class="note">Game pause stops every clock; game resume puts each button back as it was, so a
         button that was paused or uncaptured stays that way. While game-paused a button can't be captured; a 6 s hold on it takes it
@@ -929,9 +928,6 @@ document.getElementById("game").addEventListener("click", ev => {
     case "off":
       if (!confirm(`Power off all ${live.length} buttons?`)) return;
       data = cmd(OP.POWER_OFF); break;
-    case "factoryoff":
-      if (!confirm(`Shipping mode for all ${live.length} buttons? Each goes into deep sleep with Bluetooth off, as at a low battery, and only a press on its lid (or USB) wakes it. The page can't turn them back on.`)) return;
-      data = cmd(OP.FACTORY_OFF); break;
   }
   net.command(ALL, CMD_KIND_OP, data);  // one command; every button passes it on and acts on it
 });
