@@ -1,4 +1,5 @@
 #include "config.h"
+#include <math.h>
 #include <string.h>
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -22,7 +23,9 @@ void config_defaults(config_t *c)
     c->led_level = 128;
     c->hold_ms = 3000;
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;
-    static const uint8_t COL[2][3] = {{255, 0, 128}, {255, 127, 0}};  // purple, yellow. (blue die is washed out)
+    // Purple, yellow, as screen colours (the LEDs decode them, see team_colour in main.c): the same LED
+    // mix as the 255/0/128 and 255/127/0 that were tuned by eye before that.
+    static const uint8_t COL[2][3] = {{255, 0, 186}, {255, 186, 0}};
     memcpy(c->colour, COL, sizeof COL);
     c->sparse_min = 11;
     c->dim_min = 31;
@@ -74,6 +77,10 @@ void config_load(config_t *c)
         ESP_LOGI(TAG, "loaded saved settings");
     } else if (got == ESP_OK && len == CONFIG_V2_LEN && tmp.version == 2) {
         memcpy(c, &tmp, CONFIG_V2_LEN);  // the idle times keep their defaults
+        // Version 2 colours were sent to the LEDs as they were; now they are decoded as screen
+        // colours first. Encoded here, so the LEDs look the same as before.
+        for (int t = 0; t < 2; t++)
+            for (int i = 0; i < 3; i++) c->colour[t][i] = (uint8_t)(255.0f * powf(c->colour[t][i] / 255.0f, 1 / 2.2f) + 0.5f);
         config_sanitise(c);
         ESP_LOGI(TAG, "loaded saved settings (version 2, idle times defaulted)");
     } else {

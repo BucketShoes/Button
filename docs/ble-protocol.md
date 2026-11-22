@@ -87,7 +87,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 10 | u8 | LED brightness 0..255 (default 128) |
 | 11 | u8 | debug options: bit0 awake LED (the red status LED is lit whenever the chip is out of light sleep, so every wake shows as a flash; default off) |
 | 12 | u32 ×2 | durations in ms, per team (one timer uses the first) |
-| 20 | u8 ×6 | team 1 RGB, team 2 RGB |
+| 20 | u8 ×6 | team 1 RGB, team 2 RGB, as screen colours: the button decodes them (gamma 2.2) for the LEDs, so the LED matches the colour picker. Version 2 colours, sent to the LEDs as they were, are converted when loaded so they look the same |
 | 26 | char ×16 | name, NUL-terminated (empty = default) |
 | 42 | u8 | idle minutes to half the LEDs (11; 0 = never) |
 | 43 | u8 | idle minutes to 10 % brightness (31) |

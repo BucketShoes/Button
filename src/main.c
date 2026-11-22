@@ -302,7 +302,20 @@ static bool s_boot_off_showing;  // BOOT held towards power-off: displays say "H
 static int s_vsys_mv, s_vbus_mv;
 static int batt_now_mv(void);  // the battery estimate (see the power section)
 
-static rgb_t team_colour(int t) { return (rgb_t){s_cfg.colour[t][0], s_cfg.colour[t][1], s_cfg.colour[t][2]}; }
+// Team colours are picked on a screen, where the channels are gamma-encoded (sRGB): 128 looks about
+// half as bright as 255. A WS2812 is linear in current, so sent as they are, the weaker channel
+// comes out far too strong (255/128/0 is meant as orange and showed yellow-green, purple went
+// pinkish white). Decoded with the screen's curve first, the LED's hue matches the picker. The
+// brightness setting is applied afterwards, separately, so this changes only the mix.
+static uint8_t s_gamma[256];
+static void gamma_init(void)
+{
+    for (int i = 0; i < 256; i++) s_gamma[i] = (uint8_t)(255.0f * powf(i / 255.0f, 2.2f) + 0.5f);
+}
+static rgb_t team_colour(int t)
+{
+    return (rgb_t){s_gamma[s_cfg.colour[t][0]], s_gamma[s_cfg.colour[t][1]], s_gamma[s_cfg.colour[t][2]]};
+}
 static uint32_t hold_capture_ms(void) { return s_cfg.hold_ms; }
 static uint32_t hold_pause_ms(void) { return s_cfg.hold_ms + PAUSE_EXTRA_MS; }
 static uint32_t hold_reset_ms(void) { return s_cfg.hold_ms + RESET_EXTRA_MS; }
@@ -379,12 +392,14 @@ static void game_reset(uint32_t now)
     ESP_LOGI(TAG, "RESET (mode %d, owner %d)", s_cfg.mode, s_owner + 1);
 }
 
+static void activity(uint32_t now);
 static void game_win(int t, uint32_t now)
 {
     s_winner = t;
     s_running = false;
     s_win_alarm_until = now + WIN_ALARM_MS;
     s_win_next_sound = now;
+    activity(now);  // a win is an event: it stays on (lit, the fanfare) for the whole idle time
     ESP_LOGI(TAG, "TEAM %d WINS", t + 1);
 }
 
@@ -789,7 +804,6 @@ static bool long_off(void)
 static int deep_kind_saved(void) { return s_deep_check == (s_deep_kind ^ DEEP_CHECK) && s_deep_kind <= DEEP_OVER ? (int)s_deep_kind : -1; }
 
 static uint32_t s_next_batt_check, s_next_batt_warn, s_next_flash, s_flash_until;
-static bool s_auto_won;  // the game was already won when it went into auto-off
 static int s_low_readings;
 static bool s_dim, s_sparse;
 static esp_pm_lock_handle_t s_usb_lock;
@@ -1028,7 +1042,6 @@ static void power_set(pwr_t to, uint32_t now)
             ble_set_slow(false);  // still in the network, as when on
             mesh_set_off(false);
             s_next_flash = now + AUTO_FLASH_EVERY_MS;
-            s_auto_won = s_winner >= 0;
             s_flash_until = 0;
         } else {
             ble_set_slow(true);
@@ -1117,11 +1130,11 @@ static void power_tick_auto(uint32_t now)
 {
     // (Only a win that happens in auto-off: a game already over when it went dark mustn't bring
     // it straight back, which it did, every auto-off time.)
-    if (s_winner < 0) s_auto_won = false;  // (reset meanwhile: the next win counts)
-    bool won = s_winner >= 0 && !s_auto_won;
+    bool won = s_winner >= 0 && (int32_t)(s_win_alarm_until - now) > 0;  // just won (not a game already over)
     if (won || (countdown_running() && to_win_ms(s_owner) <= AUTO_WAKE_TO_WIN_MS)) {
         ESP_LOGI(TAG, "auto-off: %s, back on", won ? "a win" : "the last 5 min of the countdown");
         power_set(PWR_ON, now);
+        if (won) s_win_next_sound = now;  // the fanfare was due while the speaker was off: now
         return;
     }
     // The ring and displays, for a moment, so the state can be read from a distance (at the set
@@ -1970,6 +1983,7 @@ void app_main(void)
     }
     inputs_init();
     sounds_init();
+    gamma_init();
     sense_init();
     display_init();
     leds_init();

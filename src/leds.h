@@ -9,7 +9,8 @@ void leds_show(const rgb_t *frame, int count);  // count <= LED_COUNT
 
 static inline rgb_t rgb_scale(rgb_t c, int level /*0..255*/)
 {
-    rgb_t o = {(uint8_t)(c.r * level / 255), (uint8_t)(c.g * level / 255), (uint8_t)(c.b * level / 255)};
+    // (Rounded, not truncated: at low brightness truncation shifted the mix towards the strongest channel.)
+    rgb_t o = {(uint8_t)((c.r * level + 127) / 255), (uint8_t)((c.g * level + 127) / 255), (uint8_t)((c.b * level + 127) / 255)};
     return o;
 }
 
