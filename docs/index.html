@@ -291,7 +291,7 @@ function setColour(input, hex) {
   }
   input.value = hex;
   input.defaultValue = hex;
-  input.dl.replaceChildren(...[hex, "#c800ff", "#ff9600", "#ff0000", "#00c000", "#0060ff", "#ffffff"]
+  input.dl.replaceChildren(...[hex, "#ff00ba", "#ffba00", "#ff0000", "#00c000", "#0060ff", "#ffffff"]
     .filter((v, i, a) => a.indexOf(v) === i).map(v => Object.assign(document.createElement("option"), { value: v })));
 }
 function parseConfig(dv) {
@@ -359,6 +359,8 @@ const S_HOT = 0, S_SLOW = 1, S_CFG = 2, S_CMD = 3, K_BUTTON = 1, K_ADMIN = 2, AL
 const CMD_KIND_OP = 0, CMD_KIND_CONFIG = 1;
 const CMD_TTL = 10000;         // a command not acted on within this is dropped (ms)
 const STALE_MS = 30000;        // a button not heard from for this long is shown as stale
+const SILENT_MS = 3000;        // a link that's up but has sent nothing for this long says so
+const SILENT_RECONNECT_MS = 10000;  // ... and is reconnected after this
 const QUIET_MS = 2500;         // the active link has sent nothing for this long: switch
 const SUMMARY_EVERY_MS = 15000;
 const FRAME_MAX = 180;
@@ -502,9 +504,12 @@ class Link {
         return;
       }
       this.chrLink = await svc.getCharacteristic(CHR_LINK).catch(() => null);
-      if (!this.listening) {
+      // On every connect: after the button reboots (or is reflashed) Chrome hands out a new
+      // characteristic object, and a listener left on the old one hears nothing. That left a link
+      // "up" (its signal strength still updating) with no network data, and the page showing the old game.
+      if (this.listenChr !== this.chr) {
         this.chr.addEventListener("characteristicvaluechanged", e => this.onFrame(e.target.value));
-        this.listening = true;
+        this.listenChr = this.chr;
       }
       await this.chr.startNotifications();
       this.up = true;
@@ -582,6 +587,7 @@ class Link {
   linkText() {
     const l = this.info;
     if (!this.up) return this.error ? `not connected (${this.error})` : "reconnecting…";
+    if (performance.now() - this.lastRx > SILENT_MS) return "connected, but no data";
     if (!l) return "connected";
     const phy = l.tx === l.rx ? PHY[l.tx] || "?" : `${PHY[l.tx] || "?"}/${PHY[l.rx] || "?"}`;
     return `${phy} ${+l.itvl.toFixed(1)} ms${l.rssi !== 127 ? ` ${l.rssi} dBm` : ""}`;
@@ -798,7 +804,8 @@ class Btn {
     const s = this.state, c = this.cfg;
     let v = s.time[t];
     // Two timers: the owner's clock runs. One timer: the shared clock runs for either owner.
-    if (s.running && !s.won && s.owner >= 0 && (c.mode === MODE_TWO ? s.owner === t : c.mode === MODE_ONE)) {
+    // Only while it's being heard from: a stale state is shown as last heard, not guessed forward.
+    if (this.live() && s.running && !s.won && s.owner >= 0 && (c.mode === MODE_TWO ? s.owner === t : c.mode === MODE_ONE)) {
       const dt = performance.now() - s.rx;
       v = c.countUp ? v + dt : v - dt;
       const dur = c.dur[c.mode === MODE_ONE ? 0 : t];
@@ -816,7 +823,7 @@ class Btn {
       : s.power === 3 ? "auto-off" + (s.usb ? " USB" : "") + (s.battMv ? ` ${s.batt}%` : "") + (s.gamePaused ? " ⏸" : "")
       : (s.usb ? "USB " : "") + battIcon(s) + `${s.batt}%` + (s.power === 1 ? " peek" : "") + (s.gamePaused ? " ⏸" : "");
     b.classList.toggle("low", live && s.battLow);
-    r.classList.toggle("dim", !live || s.power === 2);
+    r.classList.toggle("dim", !live);  // faded means out of date, nothing else
     [0, 1].forEach(t => {
       const box = r.children[t + 1], col = c ? c.colour[t] : "";
       // One timer, like the button's displays: the shared clock in the owner's box only (both while
@@ -883,7 +890,7 @@ class Btn {
     e.querySelectorAll("[data-owner]").forEach(b => b.classList.toggle("on", +b.dataset.owner === s.owner));
     $(e, ".pw-on").disabled = live && s.power === 0;
     $(e, ".pw-off").disabled = live && s.power === 2;
-    e.classList.toggle("off", !live || s.power === 2);
+    e.classList.toggle("off", !live);
     $(e, ".t1").style.borderColor = c.colour[0];
     $(e, ".t2").style.borderColor = c.colour[1];
   }
@@ -964,6 +971,12 @@ function renderLinks() {
 function tick() {
   const d = new Date();
   document.getElementById("wall").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  // A link that's up but silent (buttons send a heartbeat every second) is broken: reconnect it.
+  for (const l of net.up()) if (performance.now() - l.lastRx > SILENT_RECONNECT_MS) {
+    console.warn(`${l.label()}: no data for ${SILENT_RECONNECT_MS / 1000} s, reconnecting`);
+    l.lastRx = performance.now();
+    l.device.gatt.disconnect();  // onDisconnect reconnects
+  }
   net.pickActive(false);
   if (net.active && net.active.up && performance.now() - net.lastSummary > SUMMARY_EVERY_MS) net.sendSummary(net.active);
   const all = [...buttons.values()], live = all.filter(x => x.live());
