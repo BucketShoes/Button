@@ -101,25 +101,16 @@ static const int RING_CW[6] = {3 /*N*/, 2 /*NE*/, 7 /*SE*/, 6 /*S*/, 5 /*SW*/, 4
 static config_t s_cfg;
 
 // ---------------------------------------------------------------- sounds
-// Square waves carry best on the FS-1540 (resonance ~850 Hz); sines sound weak.
+// The admin sounds: the same in every sound set (plain synth beeps, so they read as not part of the
+// game). The players' sounds are in sounds.c. Square waves carry best on the FS-1540 (resonance
+// ~850 Hz); sines sound weak.
 static const note_t SND_CLICK[] = {{1, 1, 6, W_NOISE, 255}};
 static const note_t SND_SW[3][1] = {
     {{700, 700, 35, W_SQUARE, 180}},
     {{1050, 1050, 35, W_TRI, 255}},
     {{1500, 1500, 35, W_SQUARE, 180}},
 };
-static note_t s_build[1];  // rising whoop up to the capture; length set per hold
 static note_t s_off_warn[1];  // falling tone from the reset to the lid power-off
-static const note_t SND_TEAM[2][5] = {
-    {   // team 1: rising square arpeggio
-        {1047, 1047, 100, W_SQUARE, 255}, {1319, 1319, 100, W_SQUARE, 255}, {1568, 1568, 100, W_SQUARE, 255},
-        {2093, 2093, 350, W_SQUARE, 255}, {0, 0, 1, W_SQUARE, 0},
-    },
-    {   // team 2: square "da-da-DAAA"
-        {880, 880, 90, W_SQUARE, 255}, {0, 0, 40, W_SQUARE, 0}, {880, 880, 90, W_SQUARE, 255},
-        {0, 0, 40, W_SQUARE, 0}, {1319, 1319, 400, W_SQUARE, 255},
-    },
-};
 // Pause-ward: bright "ding" with a short tail.
 static const note_t SND_DING[] = {{1760, 1760, 30, W_SQUARE, 255}, {1760, 1760, 90, W_SQUARE, 110}};
 // Reset-ward: low, dissonant "dun-dunn".
@@ -132,11 +123,6 @@ static const note_t SND_RESET[] = {  // ominous: slow falling minor steps into a
     {0, 0, 40, W_SQUARE, 0}, {175, 110, 1200, W_SQUARE, 255},
 };
 static const note_t SND_SILENCE[] = {{1200, 1200, 40, W_SQUARE, 200}, {600, 600, 80, W_SQUARE, 200}};
-static const note_t SND_WIN[] = {
-    {784, 784, 150, W_SQUARE, 255}, {1047, 1047, 150, W_SQUARE, 255}, {1319, 1319, 150, W_SQUARE, 255},
-    {1568, 1568, 500, W_SQUARE, 255}, {0, 0, 100, W_SQUARE, 0}, {1319, 1319, 150, W_SQUARE, 255},
-    {1568, 1568, 800, W_SQUARE, 255},
-};
 static const note_t SND_BOOT[] = {  // diagnostic: sine 440 / 880 / 1760, then noise, then sweep
     {440, 440, 200, W_SINE, 255}, {880, 880, 200, W_SINE, 255}, {1760, 1760, 200, W_SINE, 255},
     {1, 1, 150, W_NOISE, 160}, {200, 4000, 600, W_TRI, 200},
@@ -155,29 +141,10 @@ static note_t s_whistle[WHISTLE_NOTES];  // pea-whistle trill, built in sounds_i
 #define IDENT_NOTES 80  // up to 10 s of beeps
 static note_t s_ident[IDENT_NOTES];
 
-// Last-seconds warning blips: more pulses, higher and faster as it gets closer.
-// Built once into static buffers (the synth plays from the pointer).
-static const int BLIP_AT[] = {60, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
-#define BLIP_COUNT ((int)(sizeof BLIP_AT / sizeof BLIP_AT[0]))
-#define BLIP_MAX_NOTES 9
-static note_t s_blip[BLIP_COUNT][BLIP_MAX_NOTES];
-static int s_blip_len[BLIP_COUNT];
-static int s_blip_last_sec[2];
+static int s_blip_last_sec[2];  // (the countdown sounds are in sounds.c)
 
-static void sounds_init(void)
+static void admin_sounds_init(void)
 {
-    for (int i = 0; i < BLIP_COUNT; i++) {
-        int pulses = i == 0 ? 1 : i < 3 ? 2 : i < 8 ? 3 : 4;
-        uint16_t f = (uint16_t)(880 + i * 130);  // 880 Hz at 60 s .. ~2440 Hz at 1 s
-        uint16_t on = (uint16_t)(90 - i * 5);    // 90 ms .. 30 ms
-        uint16_t gap = (uint16_t)(60 - i * 3);   // 60 ms .. 24 ms
-        int k = 0;
-        for (int p = 0; p < pulses; p++) {
-            s_blip[i][k++] = (note_t){f, f, on, W_SQUARE, 255};
-            if (p < pulses - 1) s_blip[i][k++] = (note_t){0, 0, gap, W_SQUARE, 0};
-        }
-        s_blip_len[i] = k;
-    }
     for (int i = 0; i < WHISTLE_NOTES; i++) {
         uint16_t f = (i & 1) ? 2100 : 1850;
         s_whistle[i] = (note_t){f, f, 28, W_SQUARE, 255};
@@ -187,140 +154,14 @@ static void sounds_init(void)
     }
 }
 
-// ---------------------------------------------------------------- medieval set
-// The player-facing sounds in instruments: the capture build-up (drums under a rising horn, as long as
-// the hold), a horn call per team, bells for the countdown, a trumpet fanfare for the win. Everything
-// for admins (pause, reset, power, battery) stays the plain synthetic set in both, so it's obviously
-// not part of the game. Frequencies: the speaker carries little below ~500 Hz, so the tunes sit high
-// and the drums rely on their attack and rattle.
+// ---------------------------------------------------------------- the sound set
+// The player-facing sounds come from sounds.c, per the set chosen in the settings.
 static bool medieval(void) { return s_cfg.sound_set == SOUNDS_MEDIEVAL; }
-
-// Team 1: a bright trumpet call. Team 2: a darker natural horn, lower and slower. Each with a drum hit.
-static const note_t MED_TEAM[2][9] = {
-    {{392, 392, 120, W_TRUMPET, 255}, {0, 0, 25, 0, 0}, {392, 392, 120, W_TRUMPET, 255}, {0, 0, 25, 0, 0},
-     {523, 523, 140, W_TRUMPET, 255}, {659, 659, 140, W_TRUMPET, 255}, {784, 784, 650, W_TRUMPET, 255}},
-    {{440, 440, 300, W_HORN, 255}, {0, 0, 40, 0, 0}, {659, 659, 300, W_HORN, 255}, {0, 0, 40, 0, 0},
-     {880, 880, 800, W_HORN, 255}},
-};
-static const int MED_TEAM_LEN[2] = {7, 5};
-static const note_t MED_TEAM_DRUM[] = {{196, 196, 500, W_TIMPANI, 255}};
-// Win: a trumpet fanfare with bells ringing under the end.
-static const note_t MED_WIN[] = {
-    {523, 523, 130, W_TRUMPET, 255}, {0, 0, 20, 0, 0}, {523, 523, 130, W_TRUMPET, 255}, {0, 0, 20, 0, 0},
-    {523, 523, 130, W_TRUMPET, 255}, {659, 659, 450, W_TRUMPET, 255}, {0, 0, 60, 0, 0},
-    {587, 587, 150, W_TRUMPET, 255}, {659, 659, 150, W_TRUMPET, 255}, {784, 784, 1100, W_TRUMPET, 255},
-};
-static const note_t MED_WIN_BELLS[] = {
-    {196, 196, 300, W_TIMPANI, 255}, {196, 196, 300, W_TIMPANI, 200}, {262, 262, 520, W_TIMPANI, 255},
-    {1047, 1047, 500, W_BELL, 200}, {784, 784, 500, W_BELL, 200}, {1047, 1047, 2200, W_BELL, 230},
-};
-
-// Countdown: a horn at a minute, bells at 30 and 20 s, then a bell each second, rising a little to the end.
-static note_t s_med_blip[BLIP_COUNT][4];
-static int s_med_blip_len[BLIP_COUNT];
-static void medieval_init(void)
+static void play(sound_t s)
 {
-    for (int i = 0; i < BLIP_COUNT; i++) {
-        int sec = BLIP_AT[i], k = 0;
-        note_t *b = s_med_blip[i];
-        if (sec == 60) {
-            b[k++] = (note_t){440, 440, 700, W_HORN, 255};
-        } else if (sec >= 20) {
-            int n = sec == 30 ? 2 : 3;
-            for (int p = 0; p < n; p++) b[k++] = (note_t){659, 659, p < n - 1 ? 260 : 900, W_BELL, 255};
-        } else {
-            uint16_t f = (uint16_t)(784 + (10 - sec) * 40);  // rising a little as it closes
-            b[k++] = (note_t){f, f, 700, W_BELL, 255};
-        }
-        s_med_blip_len[i] = k;
-    }
+    for (int i = 0; i < s.count; i++) audio_play(s.v[i].slot, s.v[i].notes, s.v[i].n);
 }
-
-// The capture build-up, made for each hold to last exactly `ms`. It has to say "keep holding" within
-// the first second, so it starts from nothing and grows straight away:
-//   - the opening (about the first 0.4-1 s): a snare roll growing from a whisper, under a horn
-//     swelling up from silence and sliding up into its note;
-//   - then drums (SLOT_BUILD2): a march, accelerating to ~300 beats a minute, a louder hit on each
-//     bar, the off-beats filled in from halfway, and a snare roll for the last fifth;
-//   - over it the horn (SLOT_BUILD) climbs a harmonic minor scale and ends on its leading note, so
-//     the capture's horn call resolves it.
-// Everything gets louder all the way; the drums sit well above the horn.
-#define MED_BUILD_DRUMS 400
-static note_t s_med_drums[MED_BUILD_DRUMS];
-static note_t s_med_climb[8];
-static int build_medieval(uint32_t ms)
-{
-    static const uint16_t SCALE[7] = {440, 494, 523, 587, 659, 698, 831};  // A harmonic minor to G#
-    uint32_t open = ms * 3 / 10;
-    open = open < 400 ? 400 : open > 1000 ? 1000 : open;
-    if (open > ms) open = ms;
-    int n = 0;
-    uint32_t t = 0, roll_at = ms * 4 / 5;
-    // The opening roll: 45 ms strokes, from very quiet to the march's level.
-    while (t < open && n < MED_BUILD_DRUMS - 2) {
-        uint32_t r = open - t < 45 ? open - t : 45;
-        s_med_drums[n++] = (note_t){330, 330, (uint16_t)r, W_SNARE, (uint8_t)(25 + 175 * t / open)};
-        t += r;
-    }
-    for (int beat = 0; t < ms && n < MED_BUILD_DRUMS - 2; beat++) {
-        uint32_t step = 420 - 220 * t / (ms ? ms : 1);  // ms per beat
-        uint8_t vol = (uint8_t)(190 + 65 * t / (ms ? ms : 1));
-        if (t >= roll_at) {  // the roll: 16ths
-            uint32_t r = step / 4 < 35 ? 35 : step / 4;
-            if (t + r > ms) r = ms - t;
-            s_med_drums[n++] = (note_t){330, 330, (uint16_t)r, W_SNARE, vol};
-            t += r;
-            continue;
-        }
-        bool bar = beat % 4 == 0, half = t >= ms / 2;
-        uint32_t len = half ? step / 2 : step;
-        if (t + len > ms) len = ms - t;
-        s_med_drums[n++] = (note_t){(uint16_t)(bar ? 165 : 220), (uint16_t)(bar ? 165 : 220), (uint16_t)len, W_DRUM,
-                                    (uint8_t)(bar ? vol : vol * 4 / 5)};
-        t += len;
-        if (half && t < ms && n < MED_BUILD_DRUMS - 1) {  // the off-beat
-            uint32_t l2 = step - len;
-            if (t + l2 > ms) l2 = ms - t;
-            s_med_drums[n++] = (note_t){300, 300, (uint16_t)l2, W_SNARE, (uint8_t)(vol * 3 / 5)};
-            t += l2;
-        }
-    }
-    if (t < ms) s_med_drums[n++] = (note_t){0, 0, (uint16_t)(ms - t), 0, 0};
-    // The horn: the swell over the opening (sliding up three semitones into A), then the climb, 1 to 6
-    // more notes, about one every 0.8 s, always ending on G#.
-    s_med_climb[0] = (note_t){370, 440, (uint16_t)open, W_SWELL, 120};
-    int c = 1;
-    uint32_t rest = ms - open;
-    if (rest > 0) {
-        int k = (int)(rest / 800);
-        k = k < 1 ? 1 : k > 6 ? 6 : k;
-        uint32_t done = 0;
-        for (int i = 0; i < k; i++) {
-            uint32_t end = rest * (uint32_t)(i + 1) / (uint32_t)k;
-            uint16_t f = SCALE[7 - k + i];
-            s_med_climb[c++] = (note_t){f, f, (uint16_t)(end - done), W_HORN, (uint8_t)(50 + 60 * (i + 1) / k)};
-            done = end;
-        }
-    }
-    audio_play(SLOT_BUILD, s_med_climb, c);
-    audio_play(SLOT_BUILD2, s_med_drums, n);
-    return n;
-}
-// Let go before the capture: the horn sags, a let-down, so it's clear it didn't take.
-static const note_t MED_CANCEL[] = {{440, 311, 380, W_HORN, 150}};
-
-// The build-up to a capture, `ms` long (it ends at the capture).
-static void start_build(uint32_t ms)
-{
-    if (ms > 65000) ms = 65000;  // (note lengths are 16-bit)
-    if (medieval()) {
-        build_medieval(ms);
-    } else {
-        s_build[0] = (note_t){250, 1200, (uint16_t)ms, W_SQUARE, 140};  // the rising whoop
-        AUDIO_PLAY(SLOT_BUILD, s_build);
-    }
-}
-
+static void start_build(uint32_t ms) { play(sounds_build(s_cfg.sound_set, ms)); }  // ends at the capture
 static void stop_build(void)
 {
     audio_stop(SLOT_BUILD);
@@ -331,32 +172,10 @@ static void stop_event(void)
     audio_stop(SLOT_EVENT);
     audio_stop(SLOT_EVENT2);
 }
-static void play_team(int team)
-{
-    if (medieval()) {
-        audio_play(SLOT_EVENT, MED_TEAM[team], MED_TEAM_LEN[team]);
-        AUDIO_PLAY(SLOT_EVENT2, MED_TEAM_DRUM);
-    } else {
-        AUDIO_PLAY(SLOT_EVENT, SND_TEAM[team]);
-    }
-}
-static void play_win(void)
-{
-    if (medieval()) {
-        AUDIO_PLAY(SLOT_EVENT, MED_WIN);
-        AUDIO_PLAY(SLOT_EVENT2, MED_WIN_BELLS);
-    } else {
-        AUDIO_PLAY(SLOT_EVENT, SND_WIN);
-    }
-}
-static void play_blip(int i)
-{
-    if (medieval()) {
-        audio_play(SLOT_DIAG, s_med_blip[i], s_med_blip_len[i]);
-        return;
-    }
-    audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
-}
+static void play_team(int team) { play(sounds_team(s_cfg.sound_set, team)); }
+static void play_win(void) { play(sounds_win(s_cfg.sound_set)); }
+static void play_blip(int i) { play(sounds_blip(s_cfg.sound_set, i)); }
+static void play_let_go(void) { play(sounds_let_go(s_cfg.sound_set)); }
 
 // Sounds the page can play (ids are part of the BLE protocol). The game sounds follow the sound set.
 static void play_sound_id(int id)
@@ -369,7 +188,7 @@ static void play_sound_id(int id)
     case 4: AUDIO_PLAY(SLOT_EVENT, SND_RESET); break;
     case 5: AUDIO_PLAY(SLOT_EVENT, SND_DING); break;
     case 6: AUDIO_PLAY(SLOT_EVENT, SND_DOOM); break;
-    case 7: play_blip(BLIP_COUNT - 1); break;
+    case 7: play_blip(SOUNDS_BLIPS - 1); break;
     case 8: AUDIO_PLAY(SLOT_EVENT, s_whistle); break;
     case 9: AUDIO_PLAY(SLOT_EVENT, SND_HORN); break;
     case 10: AUDIO_PLAY(SLOT_EVENT, SND_BATT); break;
@@ -380,7 +199,7 @@ static void play_sound_id(int id)
     case 15: start_build(8000); break;
     case 16: start_build(20000); break;
     case 17: stop_build(); break;
-    case 18: stop_build(); AUDIO_PLAY(SLOT_BUILD, MED_CANCEL); break;  // let go early (medieval)
+    case 18: stop_build(); play_let_go(); break;  // let go early (medieval; nothing in sci-fi)
     default: break;
     }
 }
@@ -626,7 +445,7 @@ static void on_face_release(uint32_t held)
 {
     if (s_hold_stage == HS_BUILD) {
         stop_build();
-        if (s_build_started && medieval() && held >= 150) AUDIO_PLAY(SLOT_BUILD, MED_CANCEL);  // (not for taps)
+        if (s_build_started && held >= 150) play_let_go();  // (not for taps)
     }
     if (s_hold_stage == HS_RESET) audio_stop(SLOT_DIAG);  // let go before the power-off
     // Uncaptured and let go before the capture: the next press tries the other team.
@@ -775,8 +594,8 @@ static void countdown_blips(void)
         int32_t w = to_win_ms(t);
         int sec = w < 0 ? -1 : (w + 999) / 1000;
         if (s_running && t == s_owner && s_winner < 0 && s_cfg.show_numbers && sec != s_blip_last_sec[t]) {
-            for (int i = 0; i < BLIP_COUNT; i++) {
-                if (BLIP_AT[i] == sec) play_blip(i);
+            for (int i = 0; i < SOUNDS_BLIPS; i++) {
+                if (SOUNDS_BLIP_AT[i] == sec) play_blip(i);
             }
         }
         s_blip_last_sec[t] = sec;
@@ -2215,7 +2034,7 @@ void app_main(void)
     }
     inputs_init();
     sounds_init();
-    medieval_init();
+    admin_sounds_init();
     gamma_init();
     sense_init();
     display_init();

@@ -10,7 +10,7 @@
 #define CFG_DEBUG_AWAKE_LED 1  // config_t.debug
 
 enum { MODE_TEAMS = 0, MODE_ONE_TIMER = 1, MODE_TWO_TIMERS = 2 };
-enum { SOUNDS_SCIFI = 0, SOUNDS_MEDIEVAL = 1, SOUNDS_COUNT };
+#include "sounds.h"  // SOUNDS_*: the sound set (byte 2)
 
 typedef struct __attribute__((packed)) {
     uint8_t version;          //  0 CONFIG_VERSION
