@@ -804,8 +804,8 @@ class Btn {
     const s = this.state, c = this.cfg;
     let v = s.time[t];
     // Two timers: the owner's clock runs. One timer: the shared clock runs for either owner.
-    // Only while it's being heard from: a stale state is shown as last heard, not guessed forward.
-    if (this.live() && s.running && !s.won && s.owner >= 0 && (c.mode === MODE_TWO ? s.owner === t : c.mode === MODE_ONE)) {
+    // Stale (faded): still counted forward, as a guess, since a running clock most likely kept running.
+    if (s.running && !s.won && s.owner >= 0 && (c.mode === MODE_TWO ? s.owner === t : c.mode === MODE_ONE)) {
       const dt = performance.now() - s.rx;
       v = c.countUp ? v + dt : v - dt;
       const dur = c.dur[c.mode === MODE_ONE ? 0 : t];
