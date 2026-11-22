@@ -187,24 +187,179 @@ static void sounds_init(void)
     }
 }
 
-// Sounds the page can play (ids are part of the BLE protocol).
+// ---------------------------------------------------------------- medieval set
+// The player-facing sounds in instruments: the capture build-up (drums under a rising horn, as long as
+// the hold), a horn call per team, bells for the countdown, a trumpet fanfare for the win. Everything
+// for admins (pause, reset, power, battery) stays the plain synthetic set in both, so it's obviously
+// not part of the game. Frequencies: the speaker carries little below ~500 Hz, so the tunes sit high
+// and the drums rely on their attack and rattle.
+static bool medieval(void) { return s_cfg.sound_set == SOUNDS_MEDIEVAL; }
+
+// Team 1: a bright trumpet call. Team 2: a darker natural horn, lower and slower. Each with a drum hit.
+static const note_t MED_TEAM[2][9] = {
+    {{392, 392, 120, W_TRUMPET, 255}, {0, 0, 25, 0, 0}, {392, 392, 120, W_TRUMPET, 255}, {0, 0, 25, 0, 0},
+     {523, 523, 140, W_TRUMPET, 255}, {659, 659, 140, W_TRUMPET, 255}, {784, 784, 650, W_TRUMPET, 255}},
+    {{440, 440, 300, W_HORN, 255}, {0, 0, 40, 0, 0}, {659, 659, 300, W_HORN, 255}, {0, 0, 40, 0, 0},
+     {880, 880, 800, W_HORN, 255}},
+};
+static const int MED_TEAM_LEN[2] = {7, 5};
+static const note_t MED_TEAM_DRUM[] = {{196, 196, 500, W_TIMPANI, 255}};
+// Win: a trumpet fanfare with bells ringing under the end.
+static const note_t MED_WIN[] = {
+    {523, 523, 130, W_TRUMPET, 255}, {0, 0, 20, 0, 0}, {523, 523, 130, W_TRUMPET, 255}, {0, 0, 20, 0, 0},
+    {523, 523, 130, W_TRUMPET, 255}, {659, 659, 450, W_TRUMPET, 255}, {0, 0, 60, 0, 0},
+    {587, 587, 150, W_TRUMPET, 255}, {659, 659, 150, W_TRUMPET, 255}, {784, 784, 1100, W_TRUMPET, 255},
+};
+static const note_t MED_WIN_BELLS[] = {
+    {196, 196, 300, W_TIMPANI, 255}, {196, 196, 300, W_TIMPANI, 200}, {262, 262, 520, W_TIMPANI, 255},
+    {1047, 1047, 500, W_BELL, 200}, {784, 784, 500, W_BELL, 200}, {1047, 1047, 2200, W_BELL, 230},
+};
+
+// Countdown: a horn at a minute, bells at 30 and 20 s, then a bell each second, two in the last three.
+static note_t s_med_blip[BLIP_COUNT][4];
+static int s_med_blip_len[BLIP_COUNT];
+static void medieval_init(void)
+{
+    for (int i = 0; i < BLIP_COUNT; i++) {
+        int sec = BLIP_AT[i], k = 0;
+        note_t *b = s_med_blip[i];
+        if (sec == 60) {
+            b[k++] = (note_t){440, 440, 700, W_HORN, 255};
+        } else if (sec >= 20) {
+            int n = sec == 30 ? 2 : 3;
+            for (int p = 0; p < n; p++) b[k++] = (note_t){659, 659, p < n - 1 ? 260 : 900, W_BELL, 255};
+        } else if (sec > 3) {
+            uint16_t f = (uint16_t)(784 + (10 - sec) * 40);  // rising a little as it closes
+            b[k++] = (note_t){f, f, 700, W_BELL, 255};
+        } else {
+            b[k++] = (note_t){1047, 1047, 170, W_BELL, 255};
+            b[k++] = (note_t){1047, 1047, 600, W_BELL, 255};
+        }
+        s_med_blip_len[i] = k;
+    }
+}
+
+// The capture build-up, made for each hold to last exactly `ms`:
+//   - drums (SLOT_BUILD2): a march, accelerating from ~140 to ~300 beats a minute, a louder hit on each
+//     bar, the off-beats filled in from halfway, and a snare roll for the last fifth;
+//   - a horn (SLOT_BUILD) climbing a harmonic minor scale and ending on its leading note, so the
+//     capture's horn call resolves it.
+// Both get louder all the way.
+#define MED_BUILD_DRUMS 400
+static note_t s_med_drums[MED_BUILD_DRUMS];
+static note_t s_med_climb[8];
+static int build_medieval(uint32_t ms)
+{
+    static const uint16_t SCALE[7] = {440, 494, 523, 587, 659, 698, 831};  // A harmonic minor to G#
+    int n = 0;
+    uint32_t t = 0, roll_at = ms * 4 / 5;
+    for (int beat = 0; t < ms && n < MED_BUILD_DRUMS - 2; beat++) {
+        uint32_t step = 420 - 220 * t / (ms ? ms : 1);  // ms per beat
+        uint8_t vol = (uint8_t)(140 + 115 * t / (ms ? ms : 1));
+        if (t >= roll_at) {  // the roll: 16ths
+            uint32_t r = step / 4 < 35 ? 35 : step / 4;
+            if (t + r > ms) r = ms - t;
+            s_med_drums[n++] = (note_t){330, 330, (uint16_t)r, W_SNARE, vol};
+            t += r;
+            continue;
+        }
+        bool bar = beat % 4 == 0, half = t >= ms / 2;
+        uint32_t len = half ? step / 2 : step;
+        if (t + len > ms) len = ms - t;
+        s_med_drums[n++] = (note_t){(uint16_t)(bar ? 165 : 220), (uint16_t)(bar ? 165 : 220), (uint16_t)len, W_DRUM,
+                                    (uint8_t)(bar ? vol : vol * 3 / 4)};
+        t += len;
+        if (half && t < ms && n < MED_BUILD_DRUMS - 1) {  // the off-beat
+            uint32_t l2 = step - len;
+            if (t + l2 > ms) l2 = ms - t;
+            s_med_drums[n++] = (note_t){300, 300, (uint16_t)l2, W_SNARE, (uint8_t)(vol / 2)};
+            t += l2;
+        }
+    }
+    if (t < ms) s_med_drums[n++] = (note_t){0, 0, (uint16_t)(ms - t), 0, 0};
+    // The climb: 2 to 7 notes, about one every 0.8 s, always ending on G#.
+    int c = (int)(ms / 800);
+    c = c < 2 ? 2 : c > 7 ? 7 : c;
+    uint32_t done = 0;
+    for (int i = 0; i < c; i++) {
+        uint32_t end = ms * (uint32_t)(i + 1) / (uint32_t)c;
+        uint16_t f = SCALE[7 - c + i];
+        s_med_climb[i] = (note_t){f, f, (uint16_t)(end - done), W_HORN, (uint8_t)(110 + 120 * (i + 1) / c)};
+        done = end;
+    }
+    audio_play(SLOT_BUILD, s_med_climb, c);
+    audio_play(SLOT_BUILD2, s_med_drums, n);
+    return n;
+}
+
+// The build-up to a capture, `ms` long (it ends at the capture).
+static void start_build(uint32_t ms)
+{
+    if (ms > 65000) ms = 65000;  // (note lengths are 16-bit)
+    if (medieval()) {
+        build_medieval(ms);
+    } else {
+        s_build[0] = (note_t){250, 1200, (uint16_t)ms, W_SQUARE, 140};  // the rising whoop
+        AUDIO_PLAY(SLOT_BUILD, s_build);
+    }
+}
+
+static void stop_build(void)
+{
+    audio_stop(SLOT_BUILD);
+    audio_stop(SLOT_BUILD2);
+}
+static void stop_event(void)
+{
+    audio_stop(SLOT_EVENT);
+    audio_stop(SLOT_EVENT2);
+}
+static void play_team(int team)
+{
+    if (medieval()) {
+        audio_play(SLOT_EVENT, MED_TEAM[team], MED_TEAM_LEN[team]);
+        AUDIO_PLAY(SLOT_EVENT2, MED_TEAM_DRUM);
+    } else {
+        AUDIO_PLAY(SLOT_EVENT, SND_TEAM[team]);
+    }
+}
+static void play_win(void)
+{
+    if (medieval()) {
+        AUDIO_PLAY(SLOT_EVENT, MED_WIN);
+        AUDIO_PLAY(SLOT_EVENT2, MED_WIN_BELLS);
+    } else {
+        AUDIO_PLAY(SLOT_EVENT, SND_WIN);
+    }
+}
+static void play_blip(int i)
+{
+    if (medieval()) audio_play(SLOT_DIAG, s_med_blip[i], s_med_blip_len[i]);
+    else audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
+}
+
+// Sounds the page can play (ids are part of the BLE protocol). The game sounds follow the sound set.
 static void play_sound_id(int id)
 {
     switch (id) {
-    case 0: AUDIO_PLAY(SLOT_EVENT, SND_TEAM[0]); break;
-    case 1: AUDIO_PLAY(SLOT_EVENT, SND_TEAM[1]); break;
-    case 2: AUDIO_PLAY(SLOT_EVENT, SND_WIN); break;
+    case 0: play_team(0); break;
+    case 1: play_team(1); break;
+    case 2: play_win(); break;
     case 3: AUDIO_PLAY(SLOT_EVENT, SND_PAUSE); break;
     case 4: AUDIO_PLAY(SLOT_EVENT, SND_RESET); break;
     case 5: AUDIO_PLAY(SLOT_EVENT, SND_DING); break;
     case 6: AUDIO_PLAY(SLOT_EVENT, SND_DOOM); break;
-    case 7: audio_play(SLOT_EVENT, s_blip[BLIP_COUNT - 1], s_blip_len[BLIP_COUNT - 1]); break;
+    case 7: play_blip(BLIP_COUNT - 1); break;
     case 8: AUDIO_PLAY(SLOT_EVENT, s_whistle); break;
     case 9: AUDIO_PLAY(SLOT_EVENT, SND_HORN); break;
     case 10: AUDIO_PLAY(SLOT_EVENT, SND_BATT); break;
     case 11: AUDIO_PLAY(SLOT_EVENT, SND_STARTUP); break;
     case 12: AUDIO_PLAY(SLOT_EVENT, SND_BOOT); break;
     case 13: if (audio_pcm_available()) audio_pcm_start(); break;
+    case 14: start_build(3000); break;  // the capture build-up, as for a 3 s, 8 s and 20 s hold
+    case 15: start_build(8000); break;
+    case 16: start_build(20000); break;
+    case 17: stop_build(); break;
     default: break;
     }
 }
@@ -413,7 +568,7 @@ static void clock_changed(void)
     }
     if (s_winner >= 0 && to_win_ms(s_winner) > 0) {
         s_winner = -1;
-        audio_stop(SLOT_EVENT);
+        stop_event();
         ESP_LOGI(TAG, "win undone by a clock change (paused)");
     }
 }
@@ -447,7 +602,7 @@ static void on_face_press(uint32_t now)
 // last contact too, so the debounce doesn't eat into the hand-off time.
 static void on_face_release(uint32_t held)
 {
-    if (s_hold_stage == HS_BUILD) audio_stop(SLOT_BUILD);
+    if (s_hold_stage == HS_BUILD) stop_build();
     if (s_hold_stage == HS_RESET) audio_stop(SLOT_DIAG);  // let go before the power-off
     // Uncaptured and let go before the capture: the next press tries the other team.
     if (s_hold_stage == HS_BUILD && s_owner < 0 && s_winner < 0 && !s_hold_gp) s_next_pick = 1 - s_hold_target;
@@ -465,24 +620,23 @@ static void hold_progress(uint32_t now, uint32_t held)
     const uint32_t h1 = hold_capture_ms(), h2 = hold_pause_ms(), h3 = hold_reset_ms();
     const bool won = s_winner >= 0;
 
-    // Rising whoop into the capture, stretched over the whole hold time, so it
+    // The build-up into the capture (the sound set's), made for the whole hold time, so it
     // means the same thing at 3 s or 20 s.
     if (s_hold_stage == HS_BUILD && !won && !s_hold_gp && !s_build_started) {
         s_build_started = true;
         uint32_t ms = h1 > held ? h1 - held : 1;
-        s_build[0] = (note_t){250, 1200, (uint16_t)ms, W_SQUARE, 140};
-        AUDIO_PLAY(SLOT_BUILD, s_build);
+        start_build(ms);
     }
 
     if (s_hold_stage == HS_BUILD && held >= h1) {
         s_hold_stage = HS_CAPTURED;
-        audio_stop(SLOT_BUILD);
+        stop_build();
         if (s_hold_gp && !won) {
             AUDIO_PLAY(SLOT_CLICK, SND_DING);  // game paused: no capture, dings towards the release
         } else if (won) {
             if ((int32_t)(s_win_alarm_until - now) > 0) {
                 s_win_alarm_until = now;
-                audio_stop(SLOT_EVENT);
+                stop_event();
                 AUDIO_PLAY(SLOT_CLICK, SND_SILENCE);
                 ESP_LOGI(TAG, "win alarm silenced");
             } else {
@@ -495,7 +649,7 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_running = true;
             s_game_paused = false;
             s_fresh = false;
-            AUDIO_PLAY(SLOT_EVENT, SND_TEAM[team]);
+            play_team(team);
             ESP_LOGI(TAG, "CAPTURED by team %d", team + 1);
         }
     }
@@ -576,7 +730,7 @@ static void game_tick(uint32_t now, uint32_t dt)
     // Win alarm repeats until it times out or a hold silences it.
     if (s_winner >= 0 && (int32_t)(s_win_alarm_until - now) > 0 && (int32_t)(now - s_win_next_sound) >= 0) {
         s_win_next_sound = now + WIN_REPEAT_MS;
-        AUDIO_PLAY(SLOT_EVENT, SND_WIN);
+        play_win();
     }
 
     if (!s_face.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
@@ -597,7 +751,7 @@ static void countdown_blips(void)
         int sec = w < 0 ? -1 : (w + 999) / 1000;
         if (s_running && t == s_owner && s_winner < 0 && s_cfg.show_numbers && sec != s_blip_last_sec[t]) {
             for (int i = 0; i < BLIP_COUNT; i++) {
-                if (BLIP_AT[i] == sec) audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
+                if (BLIP_AT[i] == sec) play_blip(i);
             }
         }
         s_blip_last_sec[t] = sec;
@@ -1411,7 +1565,7 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
                 if (s_game_paused) s_game_was_running = true;  // goes live at the game resume
                 else s_running = true;
             }
-            if (o >= 0) AUDIO_PLAY(SLOT_EVENT, SND_TEAM[o]);
+            if (o >= 0) play_team(o);
             ESP_LOGI(TAG, "owner set to %d from the page", o + 1);
         }
         break;
@@ -1419,7 +1573,7 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         if (n >= 2) play_sound_id(d[1]);
         break;
     case OP_STOP_SOUND:
-        audio_stop(SLOT_EVENT);
+        stop_event();
         audio_pcm_stop();
         break;
     case OP_GAME_PAUSE:
@@ -1647,13 +1801,43 @@ static void render_displays(uint32_t now)
     }
 }
 
+// Hold fills: the first LED is lit from the start, and the other five fade up one after another, so the
+// 6th reaches full at the end. The fade is even to the eye (interpolated in perceived brightness).
+// Unfilled LEDs sit at `dim` (0 = off). All levels are duty, 0..255 of the overall brightness.
+//   The capture fill keeps its unfilled LEDs dim (FILL_DIM), so the whole ring shows the team. Dim
+//   copies of a colour need enough duty steps to keep the colour (a channel that rounds to 0 changes
+//   it), so during the capture the overall brightness is at least HOLD_MIN_LEVEL: dim is then 6 %
+//   duty (15 steps for a full channel), bright is 30 % or the setting, whichever is more, and it goes
+//   back to the setting as soon as it's captured. FILL_DIM is 20 % duty: it looks about half as
+//   bright as full, which reads clearly as "not yet".
+#define FILL_DIM        51   // 20 %
+#define HOLD_MIN_LEVEL  77   // 30 %
+static void ring_fill(rgb_t ring[6], rgb_t c, int level, uint32_t done, uint32_t span, int dim)
+{
+    float p = span ? (float)done * 5.0f / (float)span : 5.0f;
+    float d = dim > 0 ? powf(dim / (float)level, 1.0f / 2.2f) : 0.0f;  // dim, in perceived terms
+    for (int i = 0; i < 6; i++) {
+        float t = i == 0 ? 1.0f : p - (float)(i - 1);
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        int v = (int)(level * powf(d + (1.0f - d) * t, 2.2f) + 0.5f);
+        ring[i] = v > 0 ? rgb_scale(c, v) : (rgb_t){0};
+    }
+}
+// The capture fill is showing (a press building to a capture): it gets the brightness floor.
+static bool capture_building(void)
+{
+    return s_face.state && s_pwr == PWR_ON && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
+}
+
 static void render_leds(uint32_t now)
 {
     rgb_t frame[LED_COUNT] = {0};
     rgb_t ring[6] = {0};  // clockwise from north
 
-    frame[LED_IDX_TEAM1] = rgb_scale(team_colour(0), CENTRE_LEVEL);
-    frame[LED_IDX_TEAM2] = rgb_scale(team_colour(1), CENTRE_LEVEL);
+    // The team LEDs: medium, but while a capture builds as bright as the ring's lit LEDs.
+    int centre = capture_building() ? 255 : CENTRE_LEVEL;
+    frame[LED_IDX_TEAM1] = rgb_scale(team_colour(0), centre);
+    frame[LED_IDX_TEAM2] = rgb_scale(team_colour(1), centre);
 
     // Base: owner colour.
     if (s_winner >= 0) {
@@ -1677,25 +1861,19 @@ static void render_leds(uint32_t now)
     if (s_face.state) {
         uint32_t held = input_held_ms(&s_face);
         uint32_t h1 = hold_capture_ms(), h2 = hold_pause_ms(), h3 = hold_reset_ms();
+        // (The fills other than the capture keep their unfilled LEDs off: they're not for players.)
         if (s_winner >= 0 && s_hold_stage < HS_RESET) {
-            int n = (int)(held * 6 / h3);
-            for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(RED, 160) : (rgb_t){0};
+            ring_fill(ring, RED, 160, held, h3, 0);
         } else if (s_hold_gp && s_hold_stage <= HS_CAPTURED) {
             // Game paused: a slow white fill towards the release, never a team colour.
-            int n = (int)(held * 6 / h2);
-            for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(WHITE, 70) : (rgb_t){0};
+            ring_fill(ring, WHITE, 70, held, h2, 0);
         } else if (s_hold_stage == HS_BUILD) {
             rgb_t c = s_hold_target >= 0 ? team_colour(s_hold_target) : WHITE;
-            int n = (int)(held * 6 / h1);
-            int head = (int)((now / 80) % 6);
-            for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(c, 90) : (rgb_t){0};
-            ring[head] = rgb_scale(c, 255);
+            ring_fill(ring, c, 255, held, h1, FILL_DIM);
         } else if (s_hold_stage == HS_CAPTURED) {
-            int n = (int)((held - h1) * 6 / (h2 - h1));
-            for (int i = 0; i < n && i < 6; i++) ring[i] = rgb_scale(WHITE, 70);
+            ring_fill(ring, WHITE, 70, held - h1, h2 - h1, 0);
         } else if (s_hold_stage == HS_PAUSED) {
-            int n = (int)((held - h2) * 6 / (h3 - h2));
-            for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(RED, 160) : (rgb_t){0};
+            ring_fill(ring, RED, 160, held - h2, h3 - h2, 0);
         } else if (held >= hold_off_warn_ms()) {
             // Past the reset, still held: the ring drains towards the power-off.
             uint32_t w = hold_off_warn_ms(), span = hold_off_ms() - w;
@@ -1714,8 +1892,7 @@ static void render_leds(uint32_t now)
     }
     // Peek: holding fills the ring white towards power-on.
     if (s_pwr == PWR_PEEK && s_face.state && s_peek_hold) {
-        int n = (int)(input_held_ms(&s_face) * 6 / POWER_ON_HOLD_MS);
-        for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(WHITE, 160) : (rgb_t){0};
+        ring_fill(ring, WHITE, 160, input_held_ms(&s_face), POWER_ON_HOLD_MS, 0);
     }
     if (identifying(now)) {
         for (int i = 0; i < 6; i++) ring[i] = ((now / 125) & 1) ? WHITE : (rgb_t){0};
@@ -1732,6 +1909,7 @@ static void render_leds(uint32_t now)
         for (int i = 1; i < LED_COUNT_EXT; i += 2) frame[LED_IDX_EXT + i] = (rgb_t){0};
     }
     int level = identifying(now) ? 255 : led_level();
+    if (capture_building() && level < HOLD_MIN_LEVEL) level = HOLD_MIN_LEVEL;
     if (level < 255)
         for (int i = 0; i < LED_COUNT; i++) frame[i] = rgb_scale(frame[i], level);
     // Only send when something changed (saves the RMT transfer and lets the CPU sleep).
@@ -2004,6 +2182,7 @@ void app_main(void)
     }
     inputs_init();
     sounds_init();
+    medieval_init();
     gamma_init();
     sense_init();
     display_init();

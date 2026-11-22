@@ -4,7 +4,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef enum { W_SQUARE, W_TRI, W_SINE, W_NOISE } wave_t;
+// The plain waves (with a fixed 2 ms attack and 8 ms release), then the instruments: FM voices with
+// their own envelopes, pitch and timbre, which are what the themed sets use.
+//   W_BELL       struck bell: inharmonic, bright at the strike, rings down over the note
+//   W_TRUMPET    bright brass: a fast attack with a slight scoop up into the pitch, vibrato on long notes
+//   W_HORN       natural / animal horn: darker, slower, a bigger scoop and some breath
+//   W_FLUTE      soft breathy tone, slow attack, vibrato
+//   W_DRUM       tabor / tom: a pitched thump with a quick pitch drop and a little rattle
+//   W_SNARE      mostly rattle, a short tone under it
+//   W_TIMPANI    a tuned drum: holds its pitch and rings
+// For the struck ones (bell, drums, timpani) ms is how long they ring: they fade to about -45 dB by then.
+typedef enum { W_SQUARE, W_TRI, W_SINE, W_NOISE, W_BELL, W_TRUMPET, W_HORN, W_FLUTE, W_DRUM, W_SNARE, W_TIMPANI } wave_t;
 
 // One step of a sound: frequency sweeps linearly f0 -> f1 over ms.
 // f0 = 0 is a rest. vol 0..255.
@@ -21,7 +31,9 @@ enum {
     SLOT_SW2,
     SLOT_SW3,
     SLOT_BUILD,
+    SLOT_BUILD2,  // a second voice for the build-up (the drums under it)
     SLOT_EVENT,
+    SLOT_EVENT2,  // a second voice for event sounds (bells that ring on, harmony)
     SLOT_DIAG,
     SLOT_COUNT
 };

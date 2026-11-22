@@ -27,7 +27,7 @@
 
   function makeSim(d) {
     const cfg = {
-      mode: d.mode ?? MODE_TWO, timerTeam: 0, countUp: 0, show: 1, initial: 0, defCapture: 0,
+      mode: d.mode ?? MODE_TWO, soundSet: 1, countUp: 0, show: 1, initial: 0, defCapture: 0,
       volume: 128, ledLevel: 128, debug: 0, idle: [11, 31, 61, 121], holdMs: 3000, dur: [600000, 600000], colour: ["#9600ff", "#ffaa00"], name: d.name,
     };
     const s = {

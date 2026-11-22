@@ -27,6 +27,7 @@ void config_defaults(config_t *c)
     // mix as the 255/0/128 and 255/127/0 that were tuned by eye before that.
     static const uint8_t COL[2][3] = {{255, 0, 186}, {255, 186, 0}};
     memcpy(c->colour, COL, sizeof COL);
+    c->sound_set = SOUNDS_MEDIEVAL;
     c->sparse_min = 11;
     c->dim_min = 31;
     c->auto_off_min = 61;
@@ -37,7 +38,7 @@ void config_sanitise(config_t *c)
 {
     c->version = CONFIG_VERSION;
     if (c->mode > MODE_TWO_TIMERS) c->mode = MODE_TWO_TIMERS;
-    c->reserved2 = 0;
+    if (c->sound_set >= SOUNDS_COUNT) c->sound_set = SOUNDS_SCIFI;
     c->count_up = c->count_up ? 1 : 0;
     c->show_numbers = c->show_numbers ? 1 : 0;
     if (c->initial_owner > 2) c->initial_owner = 0;

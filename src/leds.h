@@ -7,10 +7,17 @@ typedef struct { uint8_t r, g, b; } rgb_t;
 void leds_init(void);
 void leds_show(const rgb_t *frame, int count);  // count <= LED_COUNT
 
+static inline uint8_t rgb_scale1(uint8_t v, int level)
+{
+    int o = (v * level + 127) / 255;
+    return (uint8_t)(o == 0 && v * level >= 51 ? 1 : o);  // (0.2 of a step and up: a trace stays a trace)
+}
+
 static inline rgb_t rgb_scale(rgb_t c, int level /*0..255*/)
 {
-    // (Rounded, not truncated: at low brightness truncation shifted the mix towards the strongest channel.)
-    rgb_t o = {(uint8_t)((c.r * level + 127) / 255), (uint8_t)((c.g * level + 127) / 255), (uint8_t)((c.b * level + 127) / 255)};
+    // Rounded, not truncated (truncation shifted the mix towards the strongest channel), and a channel
+    // that's lit stays lit (at 1, down to 0.2 of a step), so a dim "red with some blue" never becomes plain red.
+    rgb_t o = {rgb_scale1(c.r, level), rgb_scale1(c.g, level), rgb_scale1(c.b, level)};
     return o;
 }
 

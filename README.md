@@ -182,7 +182,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
 - **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
 - **Hold**, where H is the hold time (default 3 s):
-  - **Up to H:** the ring fills one LED at a time in the colour of the team about to capture, with a bright spinning LED on top, and a rising whoop. Letting go early puts it back as it was. The whoop is stretched over the whole hold time, so it sounds the same at 3 s or 20 s, just slower.
+  - **Up to H:** the ring shows the team about to capture: the first LED lit at once, the others dim (20 %), each fading up in turn, so the capture happens as the 6th reaches full. While it builds, the brightness is at least 30 % and the team LEDs light as bright as the ring, so the dim LEDs keep their colour; it goes back to the set brightness once captured. The build-up sound is made for the hold time, so it lasts exactly until the capture: a rising whoop (sci-fi), or drums accelerating under a climbing horn, ending in a snare roll (medieval). Letting go early puts it back as it was.
   - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
   - **Uncaptured:** the team is decided the moment the hold starts and shows straight away: the ring fills in its colour and its display lights. Wrong colour? Let go and press again: every press that doesn't capture flips the team for the next press. The first press uses the "first capture" setting, which is random by default.
   - **H to H+4 s:** a ding each second, then a **pause** at H+4 s (7 s with the default hold). The clocks go back to where they were before the hold, and the paused owner is:
@@ -210,7 +210,8 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - Volume and brightness start capped at 50 % (not saved), so the startup sound can't cause another brown-out.
 - **Display brightness:** 1/8 is the GN1650's lowest step. At low settings the highlighted display stays one step above the dim one, so you can still tell them apart.
 - **Displays:** the running owner's display is bright, with its colon flashing at 4 Hz. The others are dim (two timers) or blank (one timer, teams only).
-- **Countdown blips:** at 60, 30, 20 and 10..1 s from a win. Skipped when the numbers are hidden.
+- **Countdown:** at 60, 30, 20 and 10..1 s from a win: blips (sci-fi), or a horn at a minute and then bells (medieval). Skipped when the numbers are hidden.
+- **Sound sets** (setting "Sounds"): medieval (the default) or sci-fi. They change what players hear: the capture build-up, the capture calls (a trumpet for team 1, a horn for team 2), the countdown and the win fanfare. Pause, reset, power and the other admin sounds stay plain synth beeps in both, so they read as not part of the game. The medieval set is synthesised (FM bells, brass, drums), not recordings.
 - **LEDs:**
   - LED1 and LED2 show the team colours at medium brightness.
   - The ring shows the owner.

@@ -77,7 +77,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 |---|---|---|
 | 0 | u8 | config version (3); writes with a different version are ignored (a saved version 2 is loaded with the idle times at their defaults) |
 | 1 | u8 | mode: 0 teams only, 1 one timer, 2 two timers |
-| 2 | u8 | unused, write 0 (was the one-timer team; one timer is now one shared clock) |
+| 2 | u8 | sound set: 0 sci-fi (synth), 1 medieval (drums, horns, bells); the default is 1. It sets the capture build-up, the capture calls, the countdown and the win; admin sounds stay the same (was unused, 0, so older settings read as sci-fi) |
 | 3 | u8 | count up (0/1) |
 | 4 | u8 | show numbers (0/1) |
 | 5 | u8 | owner after reset: 0 uncaptured, 1 team 1, 2 team 2 |
@@ -134,6 +134,10 @@ Sound ids:
 | 4 | reset | 11 | startup |
 | 5 | ding | 12 | diagnostic |
 | 6 | doom | 13 | music clip |
+| 14 | capture build-up, as for a 3 s hold | 15 | the same, 8 s |
+| 16 | the same, 20 s | 17 | stop the build-up |
+
+The game sounds (0, 1, 2, 7 and the build-ups) follow the sound set (config byte 2); the others are the same in both.
 
 There is no pairing or PIN yet, so anyone with the page can connect, and a command sent to one button reaches
 them all.

@@ -10,11 +10,12 @@
 #define CFG_DEBUG_AWAKE_LED 1  // config_t.debug
 
 enum { MODE_TEAMS = 0, MODE_ONE_TIMER = 1, MODE_TWO_TIMERS = 2 };
+enum { SOUNDS_SCIFI = 0, SOUNDS_MEDIEVAL = 1, SOUNDS_COUNT };
 
 typedef struct __attribute__((packed)) {
     uint8_t version;          //  0 CONFIG_VERSION
     uint8_t mode;             //  1 MODE_*
-    uint8_t reserved2;        //  2 unused, 0 (was the one-timer team; one timer is now a shared clock)
+    uint8_t sound_set;        //  2 SOUNDS_*: the capture build-up, captures, countdown and win (was unused, 0)
     uint8_t count_up;         //  3 0 = count down to 0, 1 = count up (to duration, 0 = no limit)
     uint8_t show_numbers;     //  4 1 = clocks on the displays, 0 = hidden (admins see them in the page)
     uint8_t initial_owner;    //  5 after reset: 0 uncaptured, 1 team 1, 2 team 2
