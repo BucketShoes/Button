@@ -857,7 +857,7 @@ class Btn {
     $(e, ".batt").textContent = `${pct}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;
     // Voltages and sleep, in Advanced (always the same fields, so the line doesn't jump about). Battery: the
     // long average of VSYS while on (VSYS itself is the charger on USB), the last rest reading while off.
-    $(e, ".diag").textContent = `Battery ${(s.battMv / 1000).toFixed(2)} V · USB ${(s.vbus / 1000).toFixed(2)} V · awake ${(s.awakePm / 10).toFixed(1)} % (since the last status)`;
+    $(e, ".diag").textContent = `Battery ${(s.battMv / 1000).toFixed(2)} V${s.usb ? " (on USB: the charger's voltage)" : ""} · USB ${(s.vbus / 1000).toFixed(2)} V · awake ${(s.awakePm / 10).toFixed(1)} % (since the last status)`;
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }

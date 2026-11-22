@@ -720,7 +720,6 @@ static bool s_peek_hold;
 #define AUTO_WAKE_TO_WIN_MS  (5 * 60 * 1000 + 5000)  // a countdown in auto-off turns it on here, for the last 5 min
 #define AUTO_FLASH_EVERY_MS  20000              // auto-off: the displays show for a moment, for anyone looking
 #define AUTO_FLASH_MS        500
-#define AUTO_BATT_CHECK_MS   60000              // auto-off: a rest reading this often (VSYS isn't powered)
 #define OFF_BATT_CHECK_MS    (60 * 60 * 1000)
 #define OFF_RECHECK_MS       60000              // off: a low reading is confirmed once before acting
 #define DEAD_CHECK_US        (60ULL * 60 * 1000000)       // dead (deep sleep): watching for overdischarge
@@ -790,6 +789,7 @@ static bool long_off(void)
 static int deep_kind_saved(void) { return s_deep_check == (s_deep_kind ^ DEEP_CHECK) && s_deep_kind <= DEEP_OVER ? (int)s_deep_kind : -1; }
 
 static uint32_t s_next_batt_check, s_next_batt_warn, s_next_flash, s_flash_until;
+static bool s_auto_won;  // the game was already won when it went into auto-off
 static int s_low_readings;
 static bool s_dim, s_sparse;
 static esp_pm_lock_handle_t s_usb_lock;
@@ -1022,12 +1022,13 @@ static void power_set(pwr_t to, uint32_t now)
         }
         periph_power(false);
         s_batt_until = s_ident_until = 0;
-        s_next_batt_check = now + (to == PWR_AUTO ? AUTO_BATT_CHECK_MS : 10000);  // first check soon, then hourly
+        s_next_batt_check = now + 10000;  // off: first check soon, then hourly (auto-off reads it at each flash)
         s_low_readings = 0;
         if (to == PWR_AUTO) {
             ble_set_slow(false);  // still in the network, as when on
             mesh_set_off(false);
             s_next_flash = now + AUTO_FLASH_EVERY_MS;
+            s_auto_won = s_winner >= 0;
             s_flash_until = 0;
         } else {
             ble_set_slow(true);
@@ -1114,12 +1115,18 @@ static void power_tick_on(uint32_t now)
 // Called every loop pass in auto-off.
 static void power_tick_auto(uint32_t now)
 {
-    if (s_winner >= 0 || (countdown_running() && to_win_ms(s_owner) <= AUTO_WAKE_TO_WIN_MS)) {
-        ESP_LOGI(TAG, "auto-off: %s, back on", s_winner >= 0 ? "a win" : "the last 5 min of the countdown");
+    // (Only a win that happens in auto-off: a game already over when it went dark mustn't bring
+    // it straight back, which it did, every auto-off time.)
+    if (s_winner < 0) s_auto_won = false;  // (reset meanwhile: the next win counts)
+    bool won = s_winner >= 0 && !s_auto_won;
+    if (won || (countdown_running() && to_win_ms(s_owner) <= AUTO_WAKE_TO_WIN_MS)) {
+        ESP_LOGI(TAG, "auto-off: %s, back on", won ? "a win" : "the last 5 min of the countdown");
         power_set(PWR_ON, now);
         return;
     }
-    // The displays, for a moment, so the state can be read from a distance.
+    // The ring and displays, for a moment, so the state can be read from a distance (at the set
+    // brightness: idle dimming and the sparse ring don't apply to the flash). The battery is read
+    // as it starts, with VSYS just powered and nothing lit yet: close to a rest reading, for free.
     if (s_flash_until && (int32_t)(now - s_flash_until) >= 0) {
         s_flash_until = 0;
         periph_power(false);
@@ -1129,14 +1136,13 @@ static void power_tick_auto(uint32_t now)
         audio_set_allowed(false);
         s_flash_until = now + 30 + AUTO_FLASH_MS;  // (30 ms of that is the rails starting)
         if (!s_flash_until) s_flash_until = 1;
-    }
-    if ((int32_t)(now - s_next_batt_check) >= 0) {
-        s_next_batt_check = now + AUTO_BATT_CHECK_MS;
-        batt_check_rest(now);
-        int d = batt_deep(false);
-        if (d >= 0) {
-            ESP_LOGW(TAG, "auto-off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
-            show_low_and_sleep((deep_t)d);
+        if (!on_usb()) {
+            batt_loaded(sense_vsys_mv(), now);
+            int d = batt_deep(false);
+            if (d >= 0) {
+                ESP_LOGW(TAG, "auto-off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
+                show_low_and_sleep((deep_t)d);
+            }
         }
     }
     uint32_t so = s_cfg.switch_off_min * 60000u;
@@ -1237,7 +1243,7 @@ static void publish_state(uint32_t now)
         .boots = s_boot_count,
         .power = (uint8_t)s_pwr,
         .flags2 = state_flags2(),
-        .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
+        .batt_mv = (uint16_t)batt_now_mv(),  // (on USB: VSYS, the charger)
         .vsys_mv = (uint16_t)s_vsys_mv,
         .vbus_mv = (uint16_t)s_vbus_mv,
         .batt_pct = (int16_t)batt_percent(batt_now_mv()),
@@ -1301,7 +1307,7 @@ static void net_publish(uint32_t now)
             .vsys_mv = (uint16_t)s_vsys_mv,
             .vbus_mv = (uint16_t)s_vbus_mv,
             .batt_pct = (int16_t)batt_percent(batt_now_mv()),
-            .batt_mv = (uint16_t)(s_batt_mv > 0 ? s_batt_mv : 0),
+            .batt_mv = (uint16_t)batt_now_mv(),  // (on USB: VSYS, the charger)
             .phones = (uint8_t)phones,
             .reset_reason = s_reset_reason,
             .uptime_s = now / 1000,
@@ -1480,13 +1486,13 @@ static int led_curve(int setting)
 static int led_level(void)
 {
     int v = led_curve(s_cfg.led_level);
-    return s_dim && v > DIM_LEVEL ? DIM_LEVEL : v;
+    return s_dim && s_pwr != PWR_AUTO && v > DIM_LEVEL ? DIM_LEVEL : v;
 }
 static int disp_max(void)
 {
     int m = 1 + (s_cfg.led_level * 7 + 38) / 77;  // 77 = 30 % of 255
     if (m > DISP_FULL) m = DISP_FULL;
-    return s_dim && m > 2 ? 2 : m;
+    return s_dim && s_pwr != PWR_AUTO && m > 2 ? 2 : m;
 }
 static int disp_level(int bright)
 {
@@ -1628,13 +1634,13 @@ static void render_leds(uint32_t now)
         for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(s_owner), RING_LEVEL);
     } else if (s_owner >= 0) {
         // Paused with an owner: faint slow blink, only noticeable up close.
-        if ((now / 500) & 1)
+        if (((now / 500) & 1) || s_pwr == PWR_AUTO)  // (auto-off's flash: lit throughout)
             for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(s_owner), PAUSED_LEVEL);
     } else {
         // Uncaptured: slow (0.5 Hz) faint pale green pulse. No team colour, so it can
         // never be mistaken for claimed.
         float ph = (float)(now % 2000) / 2000.0f;
-        int level = (int)(UNCAPTURED_LEVEL * 0.5f * (1.0f - cosf(2.0f * (float)M_PI * ph)) + 0.5f);
+        int level = s_pwr == PWR_AUTO ? UNCAPTURED_LEVEL : (int)(UNCAPTURED_LEVEL * 0.5f * (1.0f - cosf(2.0f * (float)M_PI * ph)) + 0.5f);
         for (int i = 0; i < 6; i++) ring[i] = rgb_scale(UNCAPTURED_COLOUR, level);
     }
 
@@ -1692,7 +1698,7 @@ static void render_leds(uint32_t now)
     // the hold animation, the same whichever switch is down.)
 
     // Idle 10 min+: every second ring and strip LED off (LED1/2 stay), still visible, less power.
-    if (s_sparse) {
+    if (s_sparse && s_pwr != PWR_AUTO) {
         for (int i = 1; i < 6; i += 2) frame[RING_CW[i]] = (rgb_t){0};
         for (int i = 1; i < LED_COUNT_EXT; i += 2) frame[LED_IDX_EXT + i] = (rgb_t){0};
     }
@@ -2159,7 +2165,7 @@ void app_main(void)
         if (s_periph_on) {
             if ((int32_t)(now - next_led) >= 0) {
                 next_led = now + 20;
-                if (s_pwr != PWR_AUTO) render_leds(now);  // (auto-off's flash is the displays only)
+                render_leds(now);
             }
             if ((int32_t)(now - next_refresh) >= 0) {
                 next_refresh = now + 2000;

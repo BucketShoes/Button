@@ -12,7 +12,7 @@ Notes on how the button moves between power states, what each state keeps runnin
 | State | Peripherals | Radio | Game | Leaves by |
 |---|---|---|---|---|
 | On | powered | full: network, Coded, phones | runs | idle → auto-off; lid 17 s / BOOT 3 s / page → off; dead battery → dead sleep |
-| Auto-off | dark; displays 0.5 s every 20 s | as on | runs | tap or any command → on (no startup test); countdown at 5:05 or a win → on; idle (setting) → off, not while a countdown runs; dead battery → dead sleep |
+| Auto-off | dark; ring and displays 0.5 s every 20 s (battery read then) | as on | runs | tap or any command → on (no startup test); countdown at 5:05 or a win → on; idle (setting) → off, not while a countdown runs; dead battery → dead sleep |
 | Peek | powered (battery shown 6 s) | as on | as it was | 2 more presses or a 1.5 s hold → on; otherwise back to off / shipping / low sleep |
 | Off | dark | legacy adverts every 2–2.5 s, phones only | clocks paused (teams owner stays) | lid → peek; page → on; low battery or 8 days → low sleep |
 | Shipping (deep) | off | none | saved | lid or USB appearing → peek → shipping again; USB going → sleeps again |
@@ -43,7 +43,21 @@ The cell is unprotected, so the 3.1 V cut-out is the firmware's job. Deep sleep 
 
 The brown-out detector stays at the IDF default (2.51 V on the 3.3 V rail). It's only a backstop for sag under load. A brown-out reset doesn't save power over deep sleep (the chip keeps restarting as the rail recovers), so a high level would just turn load dips into reboot loops.
 
-Shipping has no timer either, as asked: only a press or USB wakes it. A year in shipping at about 30 µA is about 260 mAh, so a cell put away near empty could still reach the cut-out level unnoticed. Revisit if that matters (a daily check costs about 1 µA on average).
+Shipping has no timer, as asked: only a press or USB wakes it. That's the same as the overdischarge sleep, except that the lid can wake it. So if shipping drifts below 3.1 V, nothing changes until someone taps it. That wake reads the cell and goes straight into the overdischarge sleep, with no peek. A year in shipping at about 30 µA is about 260 mAh, so a cell put away near empty can still sit below 3.1 V unnoticed until then.
+
+The C6 keeps its RTC slow clock, the LP timer counter and RTC RAM running in every deep sleep. IDF can't power them down on this chip (there's no RTC memory power-down option for it). They're part of the deep-sleep current, not something added on top. Nothing else runs in shipping or overdischarge: no timer wake, no ULP, no peripherals, no radio.
+
+## USB: power and data are separate
+
+- **USB power** is the VBUS rail, read digitally on IO4 (0.6 × VBUS, high above about 4.1 V). It's the only USB input that any power or battery decision uses:
+  - the battery levels don't apply while it's there, because VSYS is then the charger;
+  - in every deep sleep it's an ext1 wake: appearing in all of them, going in all but overdischarge;
+  - in light sleep it's read whenever something else wakes the chip.
+  A power bank, a charger and a computer all look the same here.
+- **USB data** means a computer has enumerated the button and sends it a frame every millisecond. Only the awake states care about it:
+  - **On and peek:** the button holds itself awake for a while, so a computer can enumerate it: 10 s after a boot, after turning on and after USB power appears, and 5 min after a BOOT press.
+  - **On, peek, auto-off and off:** while a computer is sending frames, ESP-IDF keeps the chip out of light sleep (`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`). In auto-off and off a computer only gets there if it enumerated the button while it was awake, because light sleep takes the USB pad down. Once it has, it keeps the chip awake (not on) for as long as it stays connected, which is harmless on a computer's power.
+  - **Deep sleeps:** data counts for nothing. The USB peripheral is off and only the VBUS rail can wake the chip.
 
 ## Idle times (settings, config bytes 42–45)
 

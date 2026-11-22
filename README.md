@@ -234,7 +234,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **Auto-off:**
   - Dark (PWR_EN low), but still in the game and the network: the clocks keep running, and it relays and can be reached exactly as when on.
   - A tap, or any command from the page or the network, brings it straight back as if it had stayed on. The tap isn't a game press, and there's no startup test.
-  - The displays show the state for half a second every 20 s, for anyone looking from a distance.
+  - The ring, strip and displays show the state for half a second every 20 s (at the set brightness, all the LEDs), for anyone too far away to tap it. The battery is read then too.
   - A countdown running on it brings it back for its last 5 min (at 5:05), and a win brings it back too.
   - After 121 min idle it turns off, unless a countdown is running on it.
 - **Turning it off:**
@@ -261,9 +261,9 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - **Low, below 3.5 V:** on works as usual, with the battery shown for 0.9 s (and a beep) every 30 s, and auto-off after 11 min idle at most. Off has no BLE (deep sleep, a press peeks and can still turn it on; it checks the cell every 6 h).
   - **Dead, below 3.3 V (0 %):** no radio, speaker or LEDs. On or auto-off goes dark at once ("bAtt Lo" for 3 s at the lowest brightness) into deep sleep. The game is kept, clocks running on the LP timer. It checks the cell hourly. A press shows "bAtt Lo" again; it won't turn on. USB brings it back in auto-off (or off, if it was off).
   - **Overdischarge, below 3.1 V:** the cell is unprotected, so this is the cut-out. Deep sleep with only USB appearing as a wake source: no timer, no lid, the clocks stop.
-- **On USB:**
-  - While on, it stays awake 10 s after a boot, after turning on and after USB power appears, and 5 min after a BOOT press, so a computer can connect. While a computer has it enumerated (it sends a USB frame every millisecond), ESP-IDF keeps it awake; a power bank sends none.
-  - While off it sleeps as on battery, so a power bank turning itself on and off doesn't keep it awake. The battery levels don't apply.
+- **On USB:** USB power (the VBUS rail, read digitally) and USB data (a computer that has enumerated it) are separate. See design/power-lifecycle.md.
+  - USB power is all the battery and sleep decisions use. The battery levels don't apply while it's there, and in deep sleep only the VBUS rail appearing or going wakes it. A power bank turning itself on and off just peeks (from shipping) or does nothing.
+  - USB data only matters while it's awake. While on, it stays awake 10 s after a boot, after turning on and after USB power appears, and 5 min after a BOOT press, so a computer can connect. A computer that is connected keeps it awake through ESP-IDF, but doesn't turn it on.
 - **Not measured yet:** the actual currents. BLE sleep uses the main crystal as its low-power clock (Espressif's RC-clock option supports legacy adverts and scanning only, not connections). A 32 kHz crystal on IO0/IO1 would allow lower sleep current.
 - **Volume:** the slider is in dB (-40 dB to full), so each step sounds about the same.
 
