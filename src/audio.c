@@ -53,6 +53,8 @@ static chan_t s_ch[SLOT_COUNT];
 static int16_t s_sine[1 << SINE_BITS];  // full scale (32767)
 #define SINE(ph) s_sine[(ph) >> (32 - SINE_BITS)]
 #define CTRL 32                          // instrument control period in samples (0.67 ms)
+#define LIM_T 20000                      // soft limiter knee (see render_block)
+#define LIM_R (32767 - LIM_T)
 static int16_t s_buf[BLOCK];
 static volatile int32_t s_master = MASTER_DEFAULT;
 
@@ -202,6 +204,14 @@ static void inst_ctrl(chan_t *c, const note_t *nt)
         noise = 0.08f * e;
         break;
     }
+    case W_SWELL: {
+        float e = sus_env(c, c->len * (1000.0f / SR), 1);  // the attack is the whole note
+        e = e * e;                                          // (slow at first, so it grows from nothing)
+        tone = e;
+        index = 0.3f + 3.0f * e;
+        noise = 0.08f * e;
+        break;
+    }
     case W_FLUTE: {
         float e = sus_env(c, 70, 60);
         tone = e;
@@ -215,12 +225,12 @@ static void inst_ctrl(chan_t *c, const note_t *nt)
         tone = c->a;
         pitch = 1.0f + 0.9f * c->q;
         index = 0.6f * c->q;
-        noise = 0.45f * c->nz;
+        noise = 0.7f * c->nz;
         break;
     case W_SNARE:
-        tone = 0.45f * c->a;
+        tone = 0.5f * c->a;
         pitch = 1.0f + 0.6f * c->q;
-        noise = 0.9f * c->nz;
+        noise = 1.0f * c->nz;
         break;
     case W_TIMPANI:
         tone = c->a;
@@ -354,8 +364,15 @@ static void render_block(void)
     }
     for (int i = 0; i < BLOCK; i++) {
         int32_t v = (int32_t)(((int64_t)acc[i] * s_master) >> 16);
-        if (v > 32767) v = 32767;
-        if (v < -32767) v = -32767;
+        // Soft limit above LIM_T: a smooth knee towards full scale instead of a hard clip, so voices
+        // that overlap at full volume (the drums under the horn, the bells under the fanfare) thicken
+        // rather than buzz. Unchanged below the knee (all of it at the default volume).
+        int32_t a = v < 0 ? -v : v;
+        if (a > LIM_T) {
+            int32_t d = a - LIM_T;
+            a = LIM_T + (int32_t)((int64_t)LIM_R * d / (LIM_R + d));
+            v = v < 0 ? -a : a;
+        }
         s_buf[i] = (int16_t)v;
     }
 }

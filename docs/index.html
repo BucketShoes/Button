@@ -264,7 +264,7 @@ const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash",
                        8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
 const SOUNDS = ["Team 1 capture", "Team 2 capture", "Win fanfare", "Pause", "Reset", "Ding", "Doom",
                 "Countdown blip", "Whistle", "Horn", "Battery chirp", "Startup", "Diagnostic", "Music clip",
-                "Capture build-up (3 s hold)", "Capture build-up (8 s hold)", "Capture build-up (20 s hold)", "Stop build-up"];
+                "Capture build-up (3 s hold)", "Capture build-up (8 s hold)", "Capture build-up (20 s hold)", "Stop build-up", "Let go early (medieval)"];
 const MODE_TEAMS = 0, MODE_ONE = 1, MODE_TWO = 2;
 const DEBUG_AWAKE_LED = 1;  // config byte 11, bit0: awake LED
 
@@ -293,6 +293,7 @@ function setColour(input, hex) {
   }
   input.value = hex;
   input.defaultValue = hex;
+  // (#ff00ba and #ffba00 are the defaults: purple and yellow on the LEDs, whose green is far brighter than the red.)
   input.dl.replaceChildren(...[hex, "#ff00ba", "#ffba00", "#ff0000", "#00c000", "#0060ff", "#ffffff"]
     .filter((v, i, a) => a.indexOf(v) === i).map(v => Object.assign(document.createElement("option"), { value: v })));
 }

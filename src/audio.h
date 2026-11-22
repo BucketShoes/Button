@@ -13,8 +13,9 @@
 //   W_DRUM       tabor / tom: a pitched thump with a quick pitch drop and a little rattle
 //   W_SNARE      mostly rattle, a short tone under it
 //   W_TIMPANI    a tuned drum: holds its pitch and rings
+//   W_SWELL      the horn, growing from nothing over the whole note (louder and brighter): a crescendo
 // For the struck ones (bell, drums, timpani) ms is how long they ring: they fade to about -45 dB by then.
-typedef enum { W_SQUARE, W_TRI, W_SINE, W_NOISE, W_BELL, W_TRUMPET, W_HORN, W_FLUTE, W_DRUM, W_SNARE, W_TIMPANI } wave_t;
+typedef enum { W_SQUARE, W_TRI, W_SINE, W_NOISE, W_BELL, W_TRUMPET, W_HORN, W_FLUTE, W_DRUM, W_SNARE, W_TIMPANI, W_SWELL } wave_t;
 
 // One step of a sound: frequency sweeps linearly f0 -> f1 over ms.
 // f0 = 0 is a rest. vol 0..255.

@@ -23,9 +23,12 @@ void config_defaults(config_t *c)
     c->led_level = 128;
     c->hold_ms = 3000;
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;
-    // Purple, yellow, as screen colours (the LEDs decode them, see team_colour in main.c): the same LED
-    // mix as the 255/0/128 and 255/127/0 that were tuned by eye before that.
-    static const uint8_t COL[2][3] = {{255, 0, 186}, {255, 186, 0}};  // purple and orange, as tuned on these LEDs
+    // Team 1 purple, team 2 yellow. The numbers don't look like that on a screen (they look pink and
+    // orange), because they're tuned for these LEDs, whose green is far brighter than the red and
+    // whose blue is cyan-ish: 255/255/0 shows plainly green and 0/255/255 nearly white. They're screen
+    // values (the LEDs decode them, see team_colour in main.c), the same LED mix as the 255/0/128 and
+    // 255/127/0 that were tuned by eye before that.
+    static const uint8_t COL[2][3] = {{255, 0, 186}, {255, 186, 0}};  // purple, yellow (on the LEDs)
     memcpy(c->colour, COL, sizeof COL);
     c->sound_set = SOUNDS_MEDIEVAL;
     c->sparse_min = 11;

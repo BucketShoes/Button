@@ -216,8 +216,11 @@ static const note_t MED_WIN_BELLS[] = {
 };
 
 // Countdown: a horn at a minute, bells at 30 and 20 s, then a bell each second, two in the last three.
+// (A struck note rings for its own length, so the second strike of the last three is on its own voice,
+// SLOT_EVENT2: in one voice the first would have to die away in 170 ms and sounded cut off.)
 static note_t s_med_blip[BLIP_COUNT][4];
 static int s_med_blip_len[BLIP_COUNT];
+static const note_t MED_BLIP_SECOND[] = {{0, 0, 170, 0, 0}, {1047, 1047, 750, W_BELL, 255}};
 static void medieval_init(void)
 {
     for (int i = 0; i < BLIP_COUNT; i++) {
@@ -232,30 +235,41 @@ static void medieval_init(void)
             uint16_t f = (uint16_t)(784 + (10 - sec) * 40);  // rising a little as it closes
             b[k++] = (note_t){f, f, 700, W_BELL, 255};
         } else {
-            b[k++] = (note_t){1047, 1047, 170, W_BELL, 255};
-            b[k++] = (note_t){1047, 1047, 600, W_BELL, 255};
+            b[k++] = (note_t){1047, 1047, 800, W_BELL, 255};  // (and MED_BLIP_SECOND)
         }
         s_med_blip_len[i] = k;
     }
 }
 
-// The capture build-up, made for each hold to last exactly `ms`:
-//   - drums (SLOT_BUILD2): a march, accelerating from ~140 to ~300 beats a minute, a louder hit on each
+// The capture build-up, made for each hold to last exactly `ms`. It has to say "keep holding" within
+// the first second, so it starts from nothing and grows straight away:
+//   - the opening (about the first 0.4-1 s): a snare roll growing from a whisper, under a horn
+//     swelling up from silence and sliding up into its note;
+//   - then drums (SLOT_BUILD2): a march, accelerating to ~300 beats a minute, a louder hit on each
 //     bar, the off-beats filled in from halfway, and a snare roll for the last fifth;
-//   - a horn (SLOT_BUILD) climbing a harmonic minor scale and ending on its leading note, so the
-//     capture's horn call resolves it.
-// Both get louder all the way.
+//   - over it the horn (SLOT_BUILD) climbs a harmonic minor scale and ends on its leading note, so
+//     the capture's horn call resolves it.
+// Everything gets louder all the way; the drums sit well above the horn.
 #define MED_BUILD_DRUMS 400
 static note_t s_med_drums[MED_BUILD_DRUMS];
 static note_t s_med_climb[8];
 static int build_medieval(uint32_t ms)
 {
     static const uint16_t SCALE[7] = {440, 494, 523, 587, 659, 698, 831};  // A harmonic minor to G#
+    uint32_t open = ms * 3 / 10;
+    open = open < 400 ? 400 : open > 1000 ? 1000 : open;
+    if (open > ms) open = ms;
     int n = 0;
     uint32_t t = 0, roll_at = ms * 4 / 5;
+    // The opening roll: 45 ms strokes, from very quiet to the march's level.
+    while (t < open && n < MED_BUILD_DRUMS - 2) {
+        uint32_t r = open - t < 45 ? open - t : 45;
+        s_med_drums[n++] = (note_t){330, 330, (uint16_t)r, W_SNARE, (uint8_t)(25 + 175 * t / open)};
+        t += r;
+    }
     for (int beat = 0; t < ms && n < MED_BUILD_DRUMS - 2; beat++) {
         uint32_t step = 420 - 220 * t / (ms ? ms : 1);  // ms per beat
-        uint8_t vol = (uint8_t)(140 + 115 * t / (ms ? ms : 1));
+        uint8_t vol = (uint8_t)(190 + 65 * t / (ms ? ms : 1));
         if (t >= roll_at) {  // the roll: 16ths
             uint32_t r = step / 4 < 35 ? 35 : step / 4;
             if (t + r > ms) r = ms - t;
@@ -267,30 +281,38 @@ static int build_medieval(uint32_t ms)
         uint32_t len = half ? step / 2 : step;
         if (t + len > ms) len = ms - t;
         s_med_drums[n++] = (note_t){(uint16_t)(bar ? 165 : 220), (uint16_t)(bar ? 165 : 220), (uint16_t)len, W_DRUM,
-                                    (uint8_t)(bar ? vol : vol * 3 / 4)};
+                                    (uint8_t)(bar ? vol : vol * 4 / 5)};
         t += len;
         if (half && t < ms && n < MED_BUILD_DRUMS - 1) {  // the off-beat
             uint32_t l2 = step - len;
             if (t + l2 > ms) l2 = ms - t;
-            s_med_drums[n++] = (note_t){300, 300, (uint16_t)l2, W_SNARE, (uint8_t)(vol / 2)};
+            s_med_drums[n++] = (note_t){300, 300, (uint16_t)l2, W_SNARE, (uint8_t)(vol * 3 / 5)};
             t += l2;
         }
     }
     if (t < ms) s_med_drums[n++] = (note_t){0, 0, (uint16_t)(ms - t), 0, 0};
-    // The climb: 2 to 7 notes, about one every 0.8 s, always ending on G#.
-    int c = (int)(ms / 800);
-    c = c < 2 ? 2 : c > 7 ? 7 : c;
-    uint32_t done = 0;
-    for (int i = 0; i < c; i++) {
-        uint32_t end = ms * (uint32_t)(i + 1) / (uint32_t)c;
-        uint16_t f = SCALE[7 - c + i];
-        s_med_climb[i] = (note_t){f, f, (uint16_t)(end - done), W_HORN, (uint8_t)(110 + 120 * (i + 1) / c)};
-        done = end;
+    // The horn: the swell over the opening (sliding up three semitones into A), then the climb, 1 to 6
+    // more notes, about one every 0.8 s, always ending on G#.
+    s_med_climb[0] = (note_t){370, 440, (uint16_t)open, W_SWELL, 120};
+    int c = 1;
+    uint32_t rest = ms - open;
+    if (rest > 0) {
+        int k = (int)(rest / 800);
+        k = k < 1 ? 1 : k > 6 ? 6 : k;
+        uint32_t done = 0;
+        for (int i = 0; i < k; i++) {
+            uint32_t end = rest * (uint32_t)(i + 1) / (uint32_t)k;
+            uint16_t f = SCALE[7 - k + i];
+            s_med_climb[c++] = (note_t){f, f, (uint16_t)(end - done), W_HORN, (uint8_t)(50 + 60 * (i + 1) / k)};
+            done = end;
+        }
     }
     audio_play(SLOT_BUILD, s_med_climb, c);
     audio_play(SLOT_BUILD2, s_med_drums, n);
     return n;
 }
+// Let go before the capture: the horn sags, a let-down, so it's clear it didn't take.
+static const note_t MED_CANCEL[] = {{440, 311, 380, W_HORN, 150}};
 
 // The build-up to a capture, `ms` long (it ends at the capture).
 static void start_build(uint32_t ms)
@@ -334,8 +356,12 @@ static void play_win(void)
 }
 static void play_blip(int i)
 {
-    if (medieval()) audio_play(SLOT_DIAG, s_med_blip[i], s_med_blip_len[i]);
-    else audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
+    if (medieval()) {
+        audio_play(SLOT_DIAG, s_med_blip[i], s_med_blip_len[i]);
+        if (BLIP_AT[i] <= 3) AUDIO_PLAY(SLOT_EVENT2, MED_BLIP_SECOND);
+        return;
+    }
+    audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
 }
 
 // Sounds the page can play (ids are part of the BLE protocol). The game sounds follow the sound set.
@@ -360,6 +386,7 @@ static void play_sound_id(int id)
     case 15: start_build(8000); break;
     case 16: start_build(20000); break;
     case 17: stop_build(); break;
+    case 18: stop_build(); AUDIO_PLAY(SLOT_BUILD, MED_CANCEL); break;  // let go early (medieval)
     default: break;
     }
 }
@@ -459,8 +486,9 @@ static int batt_now_mv(void);  // the battery estimate (see the power section)
 
 // Team colours are picked on a screen, where the channels are gamma-encoded (sRGB): 128 looks about
 // half as bright as 255. A WS2812 is linear in current, so sent as they are, the weaker channel
-// comes out far too strong (255/128/0 is meant as orange and showed yellow-green, purple went
-// pinkish white). Decoded with the screen's curve first, the LED's hue matches the picker. The
+// comes out far too strong (255/128/0 is meant as yellow and showed green, purple went
+// pinkish white). Decoded with the screen's curve first, the mix gets much closer to the picker (these
+// LEDs' own primaries still differ: see the defaults in config.c). The
 // brightness setting is applied afterwards, separately, so this changes only the mix.
 static uint8_t s_gamma[256];
 static void gamma_init(void)
@@ -602,7 +630,10 @@ static void on_face_press(uint32_t now)
 // last contact too, so the debounce doesn't eat into the hand-off time.
 static void on_face_release(uint32_t held)
 {
-    if (s_hold_stage == HS_BUILD) stop_build();
+    if (s_hold_stage == HS_BUILD) {
+        stop_build();
+        if (s_build_started && medieval() && held >= 150) AUDIO_PLAY(SLOT_BUILD, MED_CANCEL);  // (not for taps)
+    }
     if (s_hold_stage == HS_RESET) audio_stop(SLOT_DIAG);  // let go before the power-off
     // Uncaptured and let go before the capture: the next press tries the other team.
     if (s_hold_stage == HS_BUILD && s_owner < 0 && s_winner < 0 && !s_hold_gp) s_next_pick = 1 - s_hold_target;
@@ -2292,7 +2323,7 @@ void app_main(void)
             if (i <= IN_FACE3) any_face |= raw;
             int e = input_update(&s_in[i], raw, now);
             if (e) ESP_LOGI(TAG, "%s %s", s_in[i].name, e > 0 ? "down" : "up");
-            if (e > 0 && i <= IN_FACE3 && s_pwr == PWR_ON) AUDIO_PLAY(SLOT_SW1 + i, SND_SW[i]);
+            if (e > 0 && i <= IN_FACE3 && s_pwr == PWR_ON && !medieval()) AUDIO_PLAY(SLOT_SW1 + i, SND_SW[i]);
             if (e > 0 && i == IN_BOOT && audio_pcm_playing()) {
                 audio_pcm_stop();
                 boot_skip_press = s_in[IN_BOOT].press_ms;  // that press only stops the clip

@@ -136,6 +136,7 @@ Sound ids:
 | 6 | doom | 13 | music clip |
 | 14 | capture build-up, as for a 3 s hold | 15 | the same, 8 s |
 | 16 | the same, 20 s | 17 | stop the build-up |
+| 18 | let go early (medieval) | | |
 
 The game sounds (0, 1, 2, 7 and the build-ups) follow the sound set (config byte 2); the others are the same in both.
 
