@@ -628,9 +628,13 @@ enum {
     // 19 was the awake LED switch; it is a setting now (config_t.debug)
 };
 
-// Boots since power-on (survives resets, not power loss), to spot brown-outs.
+// Restarts since power-on (they survive resets, not power loss), to spot brown-outs. Wakes from deep
+// sleep aren't restarts and don't count. The last restart's reason and LP-timer time are kept with it.
 static RTC_NOINIT_ATTR uint32_t s_boot_count;
-static RTC_NOINIT_ATTR uint32_t s_boot_check;  // s_boot_count ^ BOOT_CHECK when valid
+static RTC_NOINIT_ATTR uint32_t s_boot_check;  // s_boot_count ^ s_restart_reason ^ BOOT_CHECK when valid
+static RTC_NOINIT_ATTR uint32_t s_restart_reason;  // esp_reset_reason_t of the last restart
+static RTC_NOINIT_ATTR uint64_t s_restart_rtc_us;  // LP timer at the last restart
+static uint32_t since_restart_s(void) { return (uint32_t)((esp_rtc_get_time_us() - s_restart_rtc_us) / 1000000u); }
 #define BOOT_CHECK 0x5A3CB007u
 static uint32_t s_factory_off_at;  // OP_FACTORY_OFF: when to go (0 = not asked)
 static volatile uint32_t s_slept_us;  // light sleep total (wraps; only differences over a status period are used)
@@ -650,9 +654,9 @@ typedef struct __attribute__((packed)) {
     uint16_t vbus_mv;     // 18
     int16_t batt_pct;     // 20
     uint8_t connections;  // 22
-    uint8_t reset_reason; // 23 esp_reset_reason_t of the last boot (9 = brown-out)
-    uint32_t uptime_s;    // 24
-    uint32_t boots;       // 28 boots since power-on
+    uint8_t reset_reason; // 23 esp_reset_reason_t of the last restart (9 = brown-out; deep-sleep wakes are not restarts)
+    uint32_t uptime_s;    // 24 seconds since the last restart
+    uint32_t boots;       // 28 restarts since power-on (counting it)
     uint8_t power;        // 32 0 on, 1 peek, 2 off
     uint8_t flags2;       // 33 bit0 dimmed (idle), bit1 battery low warning, bit2 sparse
     uint16_t batt_mv;     // 34 averaged VSYS while on, last rest reading while off (0 = unknown)
@@ -734,7 +738,8 @@ static bool s_peek_hold;
 #define LOW_AUTO_OFF_MS      (11 * 60 * 1000)   // low battery: auto-off at most this long after the last event
 #define AUTO_WAKE_TO_WIN_MS  (5 * 60 * 1000 + 5000)  // a countdown in auto-off turns it on here, for the last 5 min
 #define AUTO_FLASH_EVERY_MS  20000              // auto-off: the displays show for a moment, for anyone looking
-#define AUTO_FLASH_MS        500
+#define AUTO_FLASH_MS        1500  // won: the ring blinks on-off-on-off-on in it (AUTO_WON_BLINK_MS each)
+#define AUTO_WON_BLINK_MS    300
 #define OFF_BATT_CHECK_MS    (60 * 60 * 1000)
 #define OFF_RECHECK_MS       60000              // off: a low reading is confirmed once before acting
 #define DEAD_CHECK_US        (60ULL * 60 * 1000000)       // dead (deep sleep): watching for overdischarge
@@ -1252,7 +1257,7 @@ static void publish_state(uint32_t now)
         .hold_stage = (uint8_t)(held ? s_hold_stage : 0),
         .held_ms = (uint16_t)(hm > 65535 ? 65535 : hm),
         .time_ms = {s_val[0], s_val[1]},
-        .reset_reason = s_reset_reason,
+        .reset_reason = (uint8_t)s_restart_reason,
         .boots = s_boot_count,
         .power = (uint8_t)s_pwr,
         .flags2 = state_flags2(),
@@ -1261,7 +1266,7 @@ static void publish_state(uint32_t now)
         .vbus_mv = (uint16_t)s_vbus_mv,
         .batt_pct = (int16_t)batt_percent(batt_now_mv()),
         .connections = (uint8_t)phone_links(),
-        .uptime_s = now / 1000,
+        .uptime_s = since_restart_s(),
     };
     ble_publish_state(&p, sizeof p);
 }
@@ -1322,8 +1327,8 @@ static void net_publish(uint32_t now)
             .batt_pct = (int16_t)batt_percent(batt_now_mv()),
             .batt_mv = (uint16_t)batt_now_mv(),  // (on USB: VSYS, the charger)
             .phones = (uint8_t)phones,
-            .reset_reason = s_reset_reason,
-            .uptime_s = now / 1000,
+            .reset_reason = (uint8_t)s_restart_reason,
+            .uptime_s = since_restart_s(),
             .boots = s_boot_count,
             .awake_pm = awake_permille(),
         };
@@ -1546,6 +1551,16 @@ static void render_clock(uint8_t seg[4], int32_t ms, bool round_up)
     seg[3] = display_digit(s % 10);
 }
 
+// A won game in auto-off's flash: the ring blinks on-off-on-off-on (from the moment it lights, after
+// the rails' 30 ms), so it reads as "already won" from a distance; the displays stay lit throughout.
+static bool auto_won_ring_on(uint32_t now)
+{
+    int32_t left = (int32_t)(s_flash_until - now);
+    int32_t in = AUTO_FLASH_MS - left;
+    if (in < 0) in = 0;
+    return ((in / AUTO_WON_BLINK_MS) & 1) == 0;
+}
+
 static void render_displays(uint32_t now)
 {
     for (int t = 0; t < 2; t++) {
@@ -1599,7 +1614,8 @@ static void render_displays(uint32_t now)
                 }
                 bool colon = true;
                 if (s_winner >= 0) {
-                    bright = src == s_winner ? (((now / 250) & 1) ? DISP_FULL : 0) : DISP_DIM;
+                    bool lit = s_pwr == PWR_AUTO || ((now / 250) & 1);  // (auto-off's flash: lit throughout)
+                    bright = src == s_winner ? (lit ? DISP_FULL : 0) : DISP_DIM;
                 } else if (holding) {
                     bright = src == s_hold_target ? DISP_FULL : DISP_DIM;
                     if (s_running && src == s_owner) colon = (now % 250) >= 125;
@@ -1641,7 +1657,7 @@ static void render_leds(uint32_t now)
 
     // Base: owner colour.
     if (s_winner >= 0) {
-        if ((now / 250) & 1)
+        if (s_pwr == PWR_AUTO ? auto_won_ring_on(now) : (now / 250) & 1)
             for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(s_winner), RING_LEVEL);
     } else if (s_owner >= 0 && s_running) {
         for (int i = 0; i < 6; i++) ring[i] = rgb_scale(team_colour(s_owner), RING_LEVEL);
@@ -1949,9 +1965,14 @@ void app_main(void)
     s_reset_reason = (uint8_t)esp_reset_reason();
     // RTC RAM that hasn't been through a power-on reset can hold anything (a cell plugged in can
     // come up as a brown-out reset), so the count is only trusted next to its check word.
-    if (s_reset_reason == ESP_RST_POWERON || s_boot_check != (s_boot_count ^ BOOT_CHECK)) s_boot_count = 0;
-    s_boot_count++;
-    s_boot_check = s_boot_count ^ BOOT_CHECK;
+    bool count_ok = s_boot_check == (s_boot_count ^ s_restart_reason ^ BOOT_CHECK);
+    if (s_reset_reason == ESP_RST_POWERON || !count_ok) s_boot_count = 0;
+    if (s_reset_reason != ESP_RST_DEEPSLEEP || !count_ok) {
+        s_boot_count++;
+        s_restart_reason = s_reset_reason;
+        s_restart_rtc_us = esp_rtc_get_time_us();
+    }
+    s_boot_check = s_boot_count ^ s_restart_reason ^ BOOT_CHECK;
     // Any wake from deep sleep (low battery or shipping mode) counts, whatever woke it: one that
     // isn't a lid press or USB must not come up on.
     bool from_deep = s_reset_reason == ESP_RST_DEEPSLEEP;
@@ -2063,7 +2084,8 @@ void app_main(void)
             // Auto-off: the game and the network run as when on, but nothing is shown: wake for the
             // display flash (and its end), else once a second. Presses and BLE wake it at once.
             int32_t until = (int32_t)((s_flash_until ? s_flash_until : s_next_flash) - t);
-            period = busy ? LOOP_MS : until < 1 ? 1 : until > 1000 ? 1000 : (uint32_t)until;
+            int32_t most = s_flash_until && s_winner >= 0 ? 20 : 1000;  // a won game's flash blinks
+            period = busy ? LOOP_MS : until < 1 ? 1 : until > most ? (uint32_t)most : (uint32_t)until;
         } else if (s_pwr != PWR_OFF) period = busy ? LOOP_MS : 20;
         else if (ble_connections() || s_factory_off_at) period = 1000;
         else {

@@ -167,7 +167,7 @@ press **Connect a button**. You can connect several buttons. With no hardware, a
   - durations (one in one-timer mode), the owner after reset, the first capture (random / team 1 / team 2), the hold time, the team colours, the volume and the LED brightness;
   - "Copy to all" sends the settings to every connected button, keeping each name.
 - **More for all buttons** (under the overview): identify, power on and power off all of them at once.
-- **Reboots:** the panel shows how many times the button rebooted since power-on, and why (for example BROWN-OUT).
+- **Reboots:** the panel shows how many times the button restarted since power-on, why it last did (for example brown-out) and how long ago. Wakes from deep sleep (shipping, low battery) don't count. The count is kept in RTC RAM: a reset, a reflash or a brown-out keeps it; only losing all power (the cell and USB both gone) clears it.
 - **Wall clock** with seconds in the top corner.
 
 The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
@@ -234,7 +234,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
 - **Auto-off:**
   - Dark (PWR_EN low), but still in the game and the network: the clocks keep running, and it relays and can be reached exactly as when on.
   - A tap, or any command from the page or the network, brings it straight back as if it had stayed on. The tap isn't a game press, and there's no startup test.
-  - The ring, strip and displays show the state for half a second every 20 s (at the set brightness, all the LEDs), for anyone too far away to tap it. The battery is read then too.
+  - The ring, strip and displays show the state for 1.5 s every 20 s (at the set brightness, all the LEDs, both displays), for anyone too far away to tap it. After a win the ring blinks on-off-on-off-on in it, so it reads as already won. The battery is read then too.
   - A countdown running on it brings it back for its last 5 min (at 5:05), and a win brings it back too.
   - After 121 min idle it turns off, unless a countdown is running on it.
 - **Turning it off:**

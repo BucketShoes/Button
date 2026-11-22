@@ -858,7 +858,9 @@ class Btn {
     $(e, '[data-op="reconnect"]').disabled = !!(l && l.up);
     if (!s || !c) return;
     $(e, ".name").textContent = this.label();
-    const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason})` : "";
+    // Restarts since power-on (deep-sleep wakes don't count), the last one's reason and how long ago.
+    const since = u => u < 120 ? `${u} s` : u < 7200 ? `${Math.round(u / 60)} min` : u < 172800 ? `${Math.round(u / 3600)} h` : `${Math.round(u / 86400)} days`;
+    const reboots = s.boots > 1 ? ` · ${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason}, ${since(s.uptime)} ago)` : "";
     const known = s.power !== 2 || s.battMv;  // off: the % is from the last rest reading
     const pct = (s.usb ? "USB · " : "") + (known ? `${battIcon(s)}${s.batt}%` : "");
     $(e, ".batt").textContent = `${pct}${s.battLow ? " · LOW" : ""}${s.conns > 1 ? ` · ${s.conns} phones` : ""}${reboots}`;

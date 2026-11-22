@@ -62,9 +62,9 @@ Each read describes the reading central's own connection.
 | 18 | u16 | VBUS mV |
 | 20 | i16 | battery % estimate (can be below 0 or above 100) |
 | 22 | u8 | connected centrals |
-| 23 | u8 | reset reason of the last boot (esp_reset_reason_t: 1 power-on, 8 woke from off, 9 brown-out, 4 crash, 5-7 watchdog) |
-| 24 | u32 | uptime s |
-| 28 | u32 | boots since power-on (more than 1 means it has rebooted) |
+| 23 | u8 | reason for the last restart (esp_reset_reason_t: 1 power-on, 3 software, 9 brown-out, 4 crash, 5-7 watchdog); a wake from deep sleep is not a restart |
+| 24 | u32 | seconds since the last restart (LP timer, so it runs on through deep sleep) |
+| 28 | u32 | restarts since power-on, counting the first (more than 1 means it has rebooted); kept in RTC RAM, so only a power-on (the cell and USB both gone) clears it |
 | 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off, 3 auto-off (dark after an idle time, still in the game and the network; a tap or any command is back on) |
 | 33 | u8 | bit0 dimmed (idle, config byte 43), bit1 battery low (below 3.5 V), bit2 sparse LEDs (idle, config byte 42) |
 | 34 | u16 | battery mV: the estimate (the highest recent reading, falling at most 3 mV a minute under load; an unloaded reading is taken as it is); 0 = unknown or on USB |
@@ -186,7 +186,7 @@ the timestamp; receivers extrapolate while running or held.
 
 **Status** (28 bytes, then the links): u32 network ms, u16 VSYS mV (not read while off), u16 VBUS mV (0 without USB), i16 battery % (while off, from
 the last rest reading), u16 battery mV,
-u8 phone connections, u8 reset reason, u32 uptime s, u32 boots since power-on, u16 raw VSYS ADC average
+u8 phone connections, u8 last restart reason, u32 s since the last restart, u32 restarts since power-on (as in the state), u16 raw VSYS ADC average
 (0..4095), u16 VSYS ADC pin mV (VSYS is twice this), u16 time awake since the last status in per mille (light
 sleep the rest), then u8 n and n × (u16 node id,
 i8 RSSI, u8 PHY) for each other button it has a working link to.

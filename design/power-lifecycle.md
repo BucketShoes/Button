@@ -12,7 +12,7 @@ Notes on how the button moves between power states, what each state keeps runnin
 | State | Peripherals | Radio | Game | Leaves by |
 |---|---|---|---|---|
 | On | powered | full: network, Coded, phones | runs | idle → auto-off; lid 17 s / BOOT 3 s / page → off; dead battery → dead sleep |
-| Auto-off | dark; ring and displays 0.5 s every 20 s (battery read then) | as on | runs | tap or any command → on (no startup test); countdown at 5:05 or a win → on; idle (setting) → off, not while a countdown runs; dead battery → dead sleep |
+| Auto-off | dark; ring and displays 1.5 s every 20 s (won: the ring blinks on-off-on-off-on; battery read then) | as on | runs | tap or any command → on (no startup test); countdown at 5:05 or a win → on; idle (setting) → off, not while a countdown runs; dead battery → dead sleep |
 | Peek | powered (battery shown 6 s) | as on | as it was | 2 more presses or a 1.5 s hold → on; otherwise back to off / shipping / low sleep |
 | Off | dark | legacy adverts every 2–2.5 s, phones only | clocks paused (teams owner stays) | lid → peek; page → on; low battery or 8 days → low sleep |
 | Shipping (deep) | off | none | saved | lid or USB appearing → peek → shipping again; USB going → sleeps again |
