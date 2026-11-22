@@ -372,7 +372,7 @@ def main():
     for team in (0, 1):
         files[f"medieval_team{team + 1}_capture"] = [(0, SLOT_EVENT, MED_TEAM[team]), (0, SLOT_EVENT2, MED_TEAM_DRUM)]
         files[f"scifi_team{team + 1}_capture"] = [(0, SLOT_EVENT, SND_TEAM[team])]
-    for hold in (3000, 8000, 20000):
+    for hold in (1000, 3000, 8000, 20000):
         s = hold // 1000
         # The build-up and the capture call that ends it, as in a game (team 1)
         files[f"medieval_hold_{s}s"] = med_build(hold) + [(hold, SLOT_EVENT, MED_TEAM[0]), (hold, SLOT_EVENT2, MED_TEAM_DRUM)]
