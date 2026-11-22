@@ -3,9 +3,10 @@
 // keep it packed, little-endian, and bump CONFIG_VERSION on any change.
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
-#define CONFIG_VERSION 2
+#define CONFIG_VERSION 3
 #define CFG_DEBUG_AWAKE_LED 1  // config_t.debug
 
 enum { MODE_TEAMS = 0, MODE_ONE_TIMER = 1, MODE_TWO_TIMERS = 2 };
@@ -25,9 +26,15 @@ typedef struct __attribute__((packed)) {
     uint32_t duration_ms[2];  // 12, 16 per team; one timer uses [0]
     uint8_t colour[2][3];     // 20, 23 RGB
     char name[16];            // 26 NUL-terminated, empty = default "Button-XXXX"
-} config_t;                   // 42 bytes
+    // Idle times in minutes (idle = no press, no page command); 0 = never.
+    uint8_t sparse_min;       // 42 every 2nd LED off (default 11)
+    uint8_t dim_min;          // 43 10 % brightness (31)
+    uint8_t auto_off_min;     // 44 auto-off: dark, still in the game and the network; a tap is back (61)
+    uint8_t switch_off_min;   // 45 auto-off becomes off, out of the network (121); not with a countdown running
+} config_t;                   // 46 bytes (fits a network command, 48 at most)
 
-_Static_assert(sizeof(config_t) == 42, "config_t layout is part of the BLE protocol");
+_Static_assert(sizeof(config_t) == 46, "config_t layout is part of the BLE protocol");
+#define CONFIG_V2_LEN 42  // version 2 was the same without the idle times
 
 void config_defaults(config_t *c);
 void config_sanitise(config_t *c);  // clamps everything into range
@@ -39,3 +46,7 @@ uint8_t config_load_power(void);
 void config_save_power(uint8_t p);
 // True once after each new firmware image (it stores the image's hash).
 bool config_firmware_changed(void);
+// Small blobs in the same NVS namespace (the saved game). Load is true only for exactly n bytes.
+bool config_blob_load(const char *key, void *p, size_t n);
+void config_blob_save(const char *key, const void *p, size_t n);  // skips an unchanged value
+void config_blob_erase(const char *key);

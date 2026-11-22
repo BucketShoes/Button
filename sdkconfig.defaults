@@ -10,9 +10,10 @@ CONFIG_FREERTOS_HZ=1000
 
 # Brown-out detector. It watches the +3V3 rail (LDO output), not the cell.
 # C6 levels: SEL_7=2.51V (IDF default), 6=2.64, 5=2.76, 4=2.92, 3=3.10, 2=3.27.
-# Left at the default for the USB-only bench test (no cell fitted, the
-# charger output alone feeds the LDO). For field use with a cell, swap to:
-#   CONFIG_ESP_BROWNOUT_DET_LVL_SEL_3=y   (3.10 V)
+# Kept at the default: the firmware's battery levels (dead at 3.3 V, overdischarge cut-out at
+# 3.1 V, see src/main.c) act long before this. It's only a backstop for a fast sag under load: a
+# brown-out reset costs more than deep sleep (the chip restarts, and keeps trying as the rail
+# recovers), so a high level here would just turn load dips into reboot loops.
 CONFIG_ESP_BROWNOUT_DET=y
 CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
 

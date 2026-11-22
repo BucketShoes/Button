@@ -24,6 +24,10 @@ void config_defaults(config_t *c)
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;
     static const uint8_t COL[2][3] = {{255, 0, 128}, {255, 128, 0}};  // purple, yellow. (blue die is washed out)
     memcpy(c->colour, COL, sizeof COL);
+    c->sparse_min = 11;
+    c->dim_min = 31;
+    c->auto_off_min = 61;
+    c->switch_off_min = 121;
 }
 
 void config_sanitise(config_t *c)
@@ -63,10 +67,15 @@ void config_load(config_t *c)
     }
     config_t tmp;
     size_t len = sizeof tmp;
-    if (nvs_get_blob(h, "cfg", &tmp, &len) == ESP_OK && len == sizeof tmp && tmp.version == CONFIG_VERSION) {
+    esp_err_t got = nvs_get_blob(h, "cfg", &tmp, &len);
+    if (got == ESP_OK && len == sizeof tmp && tmp.version == CONFIG_VERSION) {
         config_sanitise(&tmp);
         *c = tmp;
         ESP_LOGI(TAG, "loaded saved settings");
+    } else if (got == ESP_OK && len == CONFIG_V2_LEN && tmp.version == 2) {
+        memcpy(c, &tmp, CONFIG_V2_LEN);  // the idle times keep their defaults
+        config_sanitise(c);
+        ESP_LOGI(TAG, "loaded saved settings (version 2, idle times defaulted)");
     } else {
         ESP_LOGI(TAG, "saved settings missing or old, using defaults");
     }
@@ -112,4 +121,37 @@ bool config_firmware_changed(void)
         ESP_LOGW(TAG, "firmware hash save failed");
     nvs_close(h);
     return changed;
+}
+
+bool config_blob_load(const char *key, void *p, size_t n)
+{
+    nvs_handle_t h;
+    if (nvs_open("button", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = n;
+    bool ok = nvs_get_blob(h, key, p, &len) == ESP_OK && len == n;
+    nvs_close(h);
+    return ok;
+}
+
+void config_blob_save(const char *key, const void *p, size_t n)
+{
+    nvs_handle_t h;
+    if (nvs_open("button", NVS_READWRITE, &h) != ESP_OK) return;
+    // (Reading first: an unchanged value isn't written again, which saves flash wear on repeated sleeps.)
+    uint8_t old[64];
+    size_t len = sizeof old;
+    if (n <= sizeof old && nvs_get_blob(h, key, old, &len) == ESP_OK && len == n && memcmp(old, p, n) == 0) {
+        nvs_close(h);
+        return;
+    }
+    if (nvs_set_blob(h, key, p, n) != ESP_OK || nvs_commit(h) != ESP_OK) ESP_LOGW(TAG, "%s save failed", key);
+    nvs_close(h);
+}
+
+void config_blob_erase(const char *key)
+{
+    nvs_handle_t h;
+    if (nvs_open("button", NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_erase_key(h, key) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
 }

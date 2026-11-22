@@ -300,6 +300,7 @@ static uint32_t s_boot_factory_done, s_boot_off_done;
 static bool s_boot_off_showing;  // BOOT held towards power-off: displays say "HoLd" "oFF"
 
 static int s_vsys_mv, s_vbus_mv;
+static int batt_now_mv(void);  // the battery estimate (see the power section)
 
 static rgb_t team_colour(int t) { return (rgb_t){s_cfg.colour[t][0], s_cfg.colour[t][1], s_cfg.colour[t][2]}; }
 static uint32_t hold_capture_ms(void) { return s_cfg.hold_ms; }
@@ -567,7 +568,7 @@ static void game_tick(uint32_t now, uint32_t dt)
         if (s_taps == 3) {
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
-            ESP_LOGI(TAG, "triple tap: VSYS %d mV (~%d %%), VBUS %d mV", s_vsys_mv, batt_percent(s_vsys_mv),
+            ESP_LOGI(TAG, "triple tap: VSYS %d mV (~%d %%), VBUS %d mV", s_vsys_mv, batt_percent(batt_now_mv()),
                      s_vbus_mv);
         }
         s_taps = 0;
@@ -691,20 +692,22 @@ static bool any_face_raw(void)
 }
 
 // ---------------------------------------------------------------- power
-// ON    everything powered; the CPU light-sleeps between 20 ms loop passes
-//       when nothing is happening (auto light sleep, not on USB).
-// PEEK  woken from OFF by a press or the page: battery shown for a few
-//       seconds. Turns on only on a clear intent: PEEK_ON_PRESSES
-//       presses during the peek, or a press started during it held for
-//       POWER_ON_HOLD_MS (the waking press doesn't count, so a bump can't).
-//       Otherwise back to OFF (or shipping) when the battery display ends.
-// OFF   PWR_EN low (only the ESP powered), light sleep, slow low-power BLE
-//       adverts so the page can still find it. Battery checked hourly.
-// SHIPPING (a saved choice, see intent_t): deep sleep; a press or USB peeks, then back to it.
-// Low battery (not on USB): deep sleep. Below BATT_LOW_MV a press wakes it
-// to show "bAtt Lo" and sleep again; below BATT_DEAD_MV only USB wakes it.
-typedef enum { PWR_ON, PWR_PEEK, PWR_OFF } pwr_t;
-static const char *const PWR_NAME[] = {"on", "peek", "off"};
+// See design/power-lifecycle.md for the whole picture.
+// ON    everything powered; the CPU light-sleeps between 20 ms loop passes when nothing is happening.
+// AUTO  auto-off after an idle time: dark (PWR_EN low), but still in the game (clocks tick) and in
+//       the network exactly as when on. A tap or any command is back on at once, as if it had stayed
+//       on; so is a countdown reaching AUTO_WAKE_TO_WIN_MS. The displays flash every AUTO_FLASH_EVERY_MS.
+//       After a longer idle time it becomes OFF (not while a countdown runs).
+// PEEK  woken from OFF (or a deep sleep) by a press or the page: battery shown for a few seconds.
+//       Turns on only on a clear intent: PEEK_ON_PRESSES presses during the peek, or a press started
+//       during it held for POWER_ON_HOLD_MS (the waking press doesn't count, so a bump can't).
+//       Otherwise back to where it was when the battery display ends.
+// OFF   switched off: PWR_EN low, light sleep, slow legacy BLE adverts so the page can still find it.
+//       Battery checked hourly.
+// Deep sleeps (everything unpowered, the game state in RTC RAM and flash): shipping (a choice), and
+// the battery's: low (off with a low cell), dead and overdischarge. See batt_level_t.
+typedef enum { PWR_ON, PWR_PEEK, PWR_OFF, PWR_AUTO } pwr_t;  // values are in the BLE state
+static const char *const PWR_NAME[] = {"on", "peek", "off", "auto-off"};
 
 #define POWER_ON_HOLD_MS   1500  // a hold that starts during a peek turns it on
 #define PEEK_ON_PRESSES    2     // ... or this many presses during the peek
@@ -712,21 +715,38 @@ static const char *const PWR_NAME[] = {"on", "peek", "off"};
 // whether the current press started during the peek.
 static int s_peek_presses;
 static bool s_peek_hold;
-// Idle = no press and no page command (game state is kept throughout; a tap
-// brings it straight back). Mid-game something always happens well within these.
-#define IDLE_SPARSE_MS     (10 * 60 * 1000)      // every 2nd ring/strip LED off (LED1/2 stay)
-#define IDLE_DIM_MS        (60 * 60 * 1000)      // probably forgotten: 10 % brightness
-#define AUTO_OFF_MS        (4 * 60 * 60 * 1000)  // then off
-#define DIM_LEVEL          26                    // brightness cap while dimmed (10 %)
-#define OFF_BATT_CHECK_MS  (60 * 60 * 1000)
-#define OFF_RECHECK_MS     60000             // a low reading is confirmed once before acting
-#define BATT_TAU_MS        60000             // averaging while on, so speaker/LED dips don't count
-#define BATT_WARN_MV       3450
-#define BATT_WARN_EVERY_MS (5 * 60 * 1000)
-#define BATT_LOW_MV        3300
-#define BATT_DEAD_MV       3000
-#define BATT_STORAGE_MV    3500              // off below this (or after OFF_BLE_MAX_MS): BLE off too
-#define OFF_BLE_MAX_MS     (8ULL * 24 * 3600 * 1000)  // off-BLE lasts this long at most
+#define DIM_LEVEL            26                 // brightness cap while dimmed (10 %)
+#define LOW_AUTO_OFF_MS      (11 * 60 * 1000)   // low battery: auto-off at most this long after the last event
+#define AUTO_WAKE_TO_WIN_MS  (5 * 60 * 1000 + 5000)  // a countdown in auto-off turns it on here, for the last 5 min
+#define AUTO_FLASH_EVERY_MS  20000              // auto-off: the displays show for a moment, for anyone looking
+#define AUTO_FLASH_MS        500
+#define AUTO_BATT_CHECK_MS   60000              // auto-off: a rest reading this often (VSYS isn't powered)
+#define OFF_BATT_CHECK_MS    (60 * 60 * 1000)
+#define OFF_RECHECK_MS       60000              // off: a low reading is confirmed once before acting
+#define DEAD_CHECK_US        (60ULL * 60 * 1000000)       // dead (deep sleep): watching for overdischarge
+#define LOW_DEEP_CHECK_US    (6ULL * 60 * 60 * 1000000)   // low (deep sleep): the same, less often
+#define OFF_BLE_MAX_MS       (8ULL * 24 * 3600 * 1000)    // off with BLE lasts this long at most
+#define BATT_WARN_EVERY_MS   30000              // low battery while on: the battery shows briefly, with a beep
+#define BATT_WARN_MS         900
+
+// Battery levels, from the estimate below (the levels don't apply on USB).
+//   normal          everything.
+//   low      < 3.5  on works as usual, with warnings, and auto-off after 11 min idle at most. Off: no
+//                   BLE (deep sleep); a press peeks and can turn it on.
+//   dead     < 3.3  (0 %) out of regulation: no radio, speaker or LEDs. On (or auto-off) goes dark at
+//                   once, keeping the game (clocks run on the LP timer) and checking the cell hourly. A
+//                   press shows "bAtt Lo" at the lowest brightness and sleeps again. Only USB (or a new
+//                   cell) brings it back: on USB it comes back in auto-off (or off).
+//   overdischarge < 3.1  the cell is unprotected, so this is the only cut-out: deep sleep with only
+//                   USB as a wake source, no timer. The clocks stop.
+typedef enum { BATT_NORMAL, BATT_LOW, BATT_DEAD, BATT_OVER } batt_level_t;
+static const char *const BATT_LEVEL_NAME[] = {"normal", "low", "dead", "overdischarge"};
+#define BATT_LOW_MV        3500
+#define BATT_DEAD_MV       3300
+#define BATT_OVER_MV       3100
+#define BATT_SAG_OVER_MV   3000  // the 1 min average of the loaded reading this low counts as overdischarge-near: dead
+#define BATT_FALL_UV_PER_MS 50   // the estimate falls at most 3 mV a minute (see batt_loaded)
+#define BATT_TAU_MS        60000
 
 static pwr_t s_pwr = PWR_ON;
 static bool s_periph_on;
@@ -735,6 +755,7 @@ static uint32_t s_last_activity;
 // What the user last chose, saved in flash: any reset (USB, a crash, the cell swapped) comes back
 // to it, and a peek goes back to it. Only a press, a hold or a page command changes it; nothing
 // else turns the button on, and nothing but a press or command takes it out of shipping.
+// (Auto-off isn't a choice: it's still "on". A dead battery doesn't change it either.)
 typedef enum { INTENT_ON, INTENT_OFF, INTENT_SHIP } intent_t;
 static const char *const INTENT_NAME[] = {"on", "off", "shipping"};
 static intent_t s_intent;
@@ -747,11 +768,15 @@ static void intent_set(intent_t i)
     config_save_power((uint8_t)i);
 }
 
-// When it was turned off, on the LP timer, which keeps counting through deep sleep and every reset
-// but a power-on (the check word catches that).
+// RTC RAM (kept through deep sleep and every reset but a power-on; check words catch that).
+// When it was turned off, on the LP timer; and which deep sleep it's in.
+typedef enum { DEEP_SHIP, DEEP_LOW, DEEP_DEAD, DEEP_OVER } deep_t;
+static const char *const DEEP_NAME[] = {"shipping", "low battery", "dead battery", "overdischarge"};
 static RTC_NOINIT_ATTR uint64_t s_off_since_rtc;
 static RTC_NOINIT_ATTR uint32_t s_off_since_check;
+static RTC_NOINIT_ATTR uint32_t s_deep_kind, s_deep_check;
 #define OFF_SINCE_CHECK 0x0FF51ACEu
+#define DEEP_CHECK 0xDEE95EEFu
 static void off_since_mark(void)
 {
     s_off_since_rtc = esp_rtc_get_time_us();
@@ -762,8 +787,9 @@ static bool long_off(void)
     if (s_off_since_check != ((uint32_t)s_off_since_rtc ^ OFF_SINCE_CHECK)) off_since_mark();
     return esp_rtc_get_time_us() - s_off_since_rtc > OFF_BLE_MAX_MS * 1000;
 }
-static uint32_t s_next_batt_check, s_next_batt_warn;
-static int s_batt_mv;     // averaged VSYS while on, last rest reading while off
+static int deep_kind_saved(void) { return s_deep_check == (s_deep_kind ^ DEEP_CHECK) && s_deep_kind <= DEEP_OVER ? (int)s_deep_kind : -1; }
+
+static uint32_t s_next_batt_check, s_next_batt_warn, s_next_flash, s_flash_until;
 static int s_low_readings;
 static bool s_dim, s_sparse;
 static esp_pm_lock_handle_t s_usb_lock;
@@ -771,25 +797,81 @@ static bool s_usb_lock_held;
 
 static void startup_test(void);
 static uint16_t awake_permille(void);
+static void game_save(void);
+static void game_save_flash(void);
+static void game_flash_clear(void);
 static uint8_t s_last_frame_valid;
 
 static bool s_usb;  // USB power, from the VBUS pin's digital level (updated every loop pass)
 static bool on_usb(void) { return s_usb; }
-// For the battery %: while off VSYS isn't read, so the last rest reading.
-static int batt_now_mv(void) { return s_pwr == PWR_OFF && s_batt_mv ? s_batt_mv : s_vsys_mv; }
+
+// The battery estimate: as close to the open-circuit voltage as it has seen. A rest reading (nothing
+// powered) is taken as it is. A loaded reading above the estimate pushes it up at once; below, it pulls
+// it down by at most 3 mV a minute, so the LEDs', speaker's and radio's droop doesn't count but a real
+// discharge does. A one-minute average of the loaded readings backs it up near the bottom, where the
+// estimate could lag a fast fall (and the brown-out detector watches the loaded 3.3 V rail).
+// On USB VSYS is the charger: nothing is learnt, and it starts again when USB goes.
+static int s_batt_uv;  // the estimate in uV (0 = none yet)
+static int s_batt_mv;  // the same in mV
+static int s_batt_avg_mv;  // 1 min average of the loaded readings (0 = none)
+static uint32_t s_batt_at;
+static void batt_rest(int mv, uint32_t now)
+{
+    s_batt_uv = mv * 1000;
+    s_batt_mv = mv;
+    s_batt_avg_mv = 0;
+    s_batt_at = now;
+}
+static void batt_loaded(int mv, uint32_t now)
+{
+    uint32_t dt = now - s_batt_at;
+    s_batt_at = now;
+    if (!s_batt_uv || mv * 1000 >= s_batt_uv) {
+        s_batt_uv = mv * 1000;
+    } else {
+        int fall = dt > 60000 ? 60000 * BATT_FALL_UV_PER_MS : (int)dt * BATT_FALL_UV_PER_MS;
+        int gap = s_batt_uv - mv * 1000;
+        s_batt_uv -= fall < gap ? fall : gap;
+    }
+    s_batt_mv = s_batt_uv / 1000;
+    s_batt_avg_mv = s_batt_avg_mv ? s_batt_avg_mv + (int)(((int64_t)(mv - s_batt_avg_mv) * (int64_t)(dt > BATT_TAU_MS ? BATT_TAU_MS : dt)) / BATT_TAU_MS) : mv;
+}
+static void batt_forget(void) { s_batt_uv = s_batt_mv = s_batt_avg_mv = 0; }
+static batt_level_t batt_level(void)
+{
+    if (on_usb() || !s_batt_mv) return BATT_NORMAL;
+    if (s_batt_mv < BATT_OVER_MV) return BATT_OVER;
+    if (s_batt_mv < BATT_DEAD_MV || (s_batt_avg_mv && s_batt_avg_mv < BATT_SAG_OVER_MV)) return BATT_DEAD;
+    if (s_batt_mv < BATT_LOW_MV) return BATT_LOW;
+    return BATT_NORMAL;
+}
+// For the battery %: the estimate (on USB, VSYS: the charger).
+static int batt_now_mv(void) { return !on_usb() && s_batt_mv ? s_batt_mv : s_vsys_mv; }
 
 static void activity(uint32_t now) { s_last_activity = now; }
+static uint32_t idle_ms(uint32_t now)
+{
+    // (Activity stamped a moment after this loop's "now" must count as no idle time, not as 49 days of it.)
+    int32_t since = (int32_t)(now - s_last_activity);
+    return since > 0 ? (uint32_t)since : 0;
+}
+// A countdown running on this button (it decides the game, so it keeps the button in it).
+static bool countdown_running(void)
+{
+    return s_running && s_owner >= 0 && s_winner < 0 && has_clock(s_owner) && !s_cfg.count_up;
+}
 
 // USB power alone (a power bank) shouldn't keep the chip awake; a USB host (the serial console,
 // flashing) does. IDF holds its own no-light-sleep lock for as long as the host is sending USB
 // frames (CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION). But light sleep takes the USB pad down, so a host
 // only gets to enumerate if the chip stays awake for a moment first. While on (or peeking) this
 // lock gives it USB_PLUG_MS after a boot, after turning on with USB there, and after USB power
-// appears; a BOOT press gives USB_BOOT_PRESS_MS. While off it never holds: off sleeps on USB too.
+// appears; a BOOT press gives USB_BOOT_PRESS_MS. While off (or auto-off) it never holds.
 #define USB_PLUG_MS       10000
 #define USB_BOOT_PRESS_MS (5 * 60 * 1000)
 static uint32_t s_usb_enum_until;
 static bool s_usb_seen;
+static bool usb_lock_mode(void) { return s_pwr == PWR_ON || s_pwr == PWR_PEEK; }
 
 static void usb_enum_window(uint32_t now, uint32_t ms)
 {
@@ -801,9 +883,9 @@ static void usb_enum_window(uint32_t now, uint32_t ms)
 static void usb_lock_update(uint32_t now)
 {
     if (!s_usb_lock) return;
-    if (on_usb() && !s_usb_seen && s_pwr != PWR_OFF) usb_enum_window(now, USB_PLUG_MS);
+    if (on_usb() && !s_usb_seen && usb_lock_mode()) usb_enum_window(now, USB_PLUG_MS);
     s_usb_seen = on_usb();
-    bool want = s_pwr != PWR_OFF && on_usb() && (int32_t)(s_usb_enum_until - now) > 0;
+    bool want = usb_lock_mode() && on_usb() && (int32_t)(s_usb_enum_until - now) > 0;
     if (want == s_usb_lock_held) return;
     s_usb_lock_held = want;
     if (want) esp_pm_lock_acquire(s_usb_lock);
@@ -833,7 +915,7 @@ static void periph_power(bool on)
     }
 }
 
-// Unloaded battery reading while off: power VSYS just long enough to read it.
+// Unloaded battery reading while dark: power VSYS just long enough to read it.
 static int read_batt_rest(void)
 {
     if (s_periph_on) return sense_vsys_mv();
@@ -843,16 +925,27 @@ static int read_batt_rest(void)
     gpio_set_level(PIN_PWR_EN, 0);
     return mv;
 }
-
-// Deep sleep (~10 uA) with everything unpowered: shipping mode, and off with a low cell or after
-// OFF_BLE_MAX_MS. USB appearing or going always wakes it (a wake that finds USB gone just sleeps
-// again, re-armed for it coming back); a lid press too unless the cell is nearly flat. BOOT (IO9)
-// isn't an LP pin, so it can't wake deep sleep.
-static void deep_sleep(void)
+static void batt_check_rest(uint32_t now)
 {
-    bool press_wake = on_usb() || !s_batt_mv || s_batt_mv >= BATT_DEAD_MV;
-    ESP_LOGW(TAG, "deep sleep (%s, battery %d mV%s): %s", INTENT_NAME[s_intent], s_batt_mv, on_usb() ? ", USB" : "",
-             press_wake ? "a press or USB wakes it" : "only USB wakes it");
+    if (on_usb()) return;
+    batt_rest(read_batt_rest(), now);
+}
+
+// Deep sleep (~10 uA) with everything unpowered. The game state goes to RTC RAM (kept, with the LP
+// timer for the time) and to flash (for a power-on). Wakes:
+//   shipping, low  USB appearing or going, a lid press (and for low, a timer: overdischarge watch)
+//   dead           the same, the timer hourly; a press only shows "bAtt Lo"
+//   overdischarge  USB appearing only: no timer, no press (the pull-ups are off too)
+// BOOT (IO9) isn't an LP pin, so it can't wake deep sleep.
+static void deep_sleep(deep_t kind)
+{
+    if (kind == DEEP_OVER) s_running = false;  // nothing keeps time any more
+    game_save();
+    game_save_flash();
+    s_deep_kind = kind;
+    s_deep_check = kind ^ DEEP_CHECK;
+    bool press_wake = kind != DEEP_OVER;
+    ESP_LOGW(TAG, "deep sleep: %s (battery %d mV%s)", DEEP_NAME[kind], s_batt_mv, on_usb() ? ", USB" : "");
     periph_power(false);
     for (int i = 0; i < 500 && press_wake && any_face_raw(); i++) vTaskDelay(pdMS_TO_TICKS(10));
     // Clear every wake source first. Auto light sleep arms a timer wake before each nap and leaves
@@ -862,82 +955,102 @@ static void deep_sleep(void)
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     const gpio_num_t light_wake[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_BOOT};
     for (int i = 0; i < 4; i++) gpio_wakeup_disable(light_wake[i]);
-    // 0.6 x VBUS: wake on a change, either way (ext1 levels are per pin on the C6).
-    esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
-    if (press_wake) {
-        const gpio_num_t wake[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
-        uint64_t mask = 0;
-        for (int i = 0; i < 3; i++) {
-            rtc_gpio_pullup_en(wake[i]);
-            rtc_gpio_pulldown_dis(wake[i]);
-            mask |= 1ULL << wake[i];
+    // 0.6 x VBUS: wake on a change (ext1 levels are per pin on the C6). Overdischarge: only appearing.
+    if (kind != DEEP_OVER || !on_usb())
+        esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+    const gpio_num_t face[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
+    uint64_t mask = 0;
+    for (int i = 0; i < 3; i++) {
+        if (press_wake) {
+            rtc_gpio_pullup_en(face[i]);
+            rtc_gpio_pulldown_dis(face[i]);
+            mask |= 1ULL << face[i];
+        } else {
+            gpio_pullup_dis(face[i]);  // a held lid would draw pull-up current for nothing
         }
-        esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
     }
+    if (mask) esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
+    if (!on_usb() && kind == DEEP_DEAD) esp_sleep_enable_timer_wakeup(DEAD_CHECK_US);
+    if (!on_usb() && kind == DEEP_LOW) esp_sleep_enable_timer_wakeup(LOW_DEEP_CHECK_US);
     esp_deep_sleep_start();
 }
 
-// Off, not on USB, with a low cell or off for long enough: BLE goes too (deep sleep). It's what
-// shipping mode does, but it isn't a choice: charged again (or on USB) it's plain off again.
-static bool off_wants_deep(void)
+// "bAtt" / "Lo" for 3 s at the lowest brightness, quietly, then deep sleep.
+static void show_low_and_sleep(deep_t kind)
 {
-    return !on_usb() && ((s_batt_mv && s_batt_mv < BATT_STORAGE_MV) || long_off());
+    periph_power(true);
+    uint8_t a[4] = {display_char('b'), display_char('A'), 0x31, 0x31};  // each t a mirrored 7
+    uint8_t b[4] = {0, 0, 0x38 /*L*/, 0x5C /*o*/};
+    display_set(0, a, 1);
+    display_set(1, b, 1);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    deep_sleep(kind);
 }
 
-static void show_low_and_sleep(int mv)
+// The deep sleep for the battery as it is now, if it wants one (on USB, none). Off: from low down.
+// On or auto-off: from dead down.
+static int batt_deep(bool off)
 {
-    // "bAtt Lo" for 3 s, quietly, then back to deep sleep.
-    periph_power(true);
-    // "bAtt" (t as a mirrored 7) / "  Lo".
-    uint8_t a[4] = {display_char('b'), display_char('A'), 0x31, 0x31};
-    uint8_t b[4] = {0, 0, 0x38 /*L*/, 0x5C /*o*/};
-    display_set(0, a, 8);
-    display_set(1, b, 8);
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    s_batt_mv = mv;
-    deep_sleep();
+    batt_level_t l = batt_level();
+    if (l == BATT_OVER) return DEEP_OVER;
+    if (l == BATT_DEAD) return off ? DEEP_LOW : DEEP_DEAD;
+    if (off && (l == BATT_LOW || (!on_usb() && long_off()))) return DEEP_LOW;
+    return -1;
 }
 
 static void power_set(pwr_t to, uint32_t now)
 {
     if (to == s_pwr) return;
     pwr_t from = s_pwr;
-    // Empty (0 %): it won't turn on, only peek (it turns itself off at this level too).
-    if (to == PWR_ON && !on_usb() && s_batt_mv && s_batt_mv < BATT_LOW_MV) {
+    // Dead (0 %): it won't turn on, only peek.
+    if ((to == PWR_ON || to == PWR_AUTO) && batt_level() >= BATT_DEAD) {
         ESP_LOGW(TAG, "battery %d mV: too low to turn on", s_batt_mv);
         if (from == PWR_PEEK) s_batt_until = now + BATT_SHOW_MS;
         return;
     }
     ESP_LOGI(TAG, "power %s -> %s", PWR_NAME[from], PWR_NAME[to]);
     if (to == PWR_ON) intent_set(INTENT_ON);
-    if (to == PWR_OFF && from == PWR_ON) {
+    if (to == PWR_ON || to == PWR_AUTO) game_flash_clear();  // the live state is the truth again
+    if (to == PWR_OFF && (from == PWR_ON || from == PWR_AUTO)) {
         intent_set(INTENT_OFF);
         off_since_mark();
     }
-    if (to == PWR_OFF) {
-        if (s_periph_on) {
+    if (to == PWR_OFF || to == PWR_AUTO) {
+        if (s_periph_on && to == PWR_OFF && from != PWR_AUTO) {
             AUDIO_PLAY(SLOT_EVENT, SND_OFF);
             vTaskDelay(pdMS_TO_TICKS(550));
         }
         periph_power(false);
-        ble_set_slow(true);
-        mesh_set_off(true);
-        s_next_batt_check = now + 10000;  // first check soon, then hourly
-        s_low_readings = 0;
         s_batt_until = s_ident_until = 0;
-        if (s_cfg.mode != MODE_TEAMS) s_running = false;  // clocks pause while off
+        s_next_batt_check = now + (to == PWR_AUTO ? AUTO_BATT_CHECK_MS : 10000);  // first check soon, then hourly
+        s_low_readings = 0;
+        if (to == PWR_AUTO) {
+            ble_set_slow(false);  // still in the network, as when on
+            mesh_set_off(false);
+            s_next_flash = now + AUTO_FLASH_EVERY_MS;
+            s_flash_until = 0;
+        } else {
+            ble_set_slow(true);
+            mesh_set_off(true);
+            if (s_cfg.mode != MODE_TEAMS) s_running = false;  // clocks pause while off
+            game_save();
+            game_save_flash();
+        }
     } else {
         periph_power(true);
+        audio_set_allowed(true);  // (already powered mid auto-off flash, with the speaker held off)
+        s_flash_until = 0;
         ble_set_slow(false);
         mesh_set_off(false);
-        s_batt_mv = s_vsys_mv = sense_vsys_mv();
+        s_vsys_mv = sense_vsys_mv();
+        batt_loaded(s_vsys_mv, now);
         if (to == PWR_PEEK) {
             s_peek_presses = 0;
             s_peek_hold = false;
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
         } else {
-            startup_test();
+            if (from != PWR_AUTO) startup_test();  // back from auto-off: as if it had stayed on
             if (on_usb()) usb_enum_window(now, USB_PLUG_MS);
             activity(now);
             s_next_batt_warn = now;
@@ -946,12 +1059,20 @@ static void power_set(pwr_t to, uint32_t now)
     s_pwr = to;
 }
 
-// Called every loop pass while on or peeking (after the ADC is read).
-static void power_tick_on(uint32_t now, uint32_t dt)
+static uint32_t auto_off_ms(void)
 {
+    uint32_t ms = s_cfg.auto_off_min ? s_cfg.auto_off_min * 60000u : 0;
+    if (batt_level() == BATT_LOW && (!ms || ms > LOW_AUTO_OFF_MS)) ms = LOW_AUTO_OFF_MS;
+    return ms;
+}
+
+// Called every loop pass while on or peeking (after the ADC is read).
+static void power_tick_on(uint32_t now)
+{
+    if (s_periph_on && !on_usb()) batt_loaded(s_vsys_mv, now);
     if (s_pwr == PWR_PEEK) {
         // Hold to turn on (a second press also does, in the main loop);
-        // otherwise drop back to off once the battery display ends.
+        // otherwise drop back once the battery display ends.
         if (s_peek_hold && s_face.state && input_held_ms(&s_face) >= POWER_ON_HOLD_MS) {
             power_set(PWR_ON, now);
             return;
@@ -960,36 +1081,68 @@ static void power_tick_on(uint32_t now, uint32_t dt)
         if ((int32_t)(now - s_batt_until) >= 0) {
             // Back to what it was left in: off, or deep sleep for shipping (or off with a low cell).
             power_set(PWR_OFF, now);
-            if (!on_usb()) s_batt_mv = read_batt_rest();
-            if (s_intent == INTENT_SHIP || off_wants_deep()) deep_sleep();
+            batt_check_rest(now);
+            if (s_intent == INTENT_SHIP) deep_sleep(DEEP_SHIP);
+            int d = batt_deep(true);
+            if (d >= 0) deep_sleep((deep_t)d);
         }
         return;
     }
 
-    // (Activity stamped a moment after this loop's "now" must count as no idle time, not as
-    // 49 days of it.)
-    int32_t since = (int32_t)(now - s_last_activity);
-    uint32_t idle = since > 0 ? (uint32_t)since : 0;
-    s_sparse = idle >= IDLE_SPARSE_MS;
-    s_dim = idle >= IDLE_DIM_MS;
-    if (idle >= AUTO_OFF_MS) {
-        ESP_LOGI(TAG, "idle for %lu min: auto off", (unsigned long)(idle / 60000));
-        power_set(PWR_OFF, now);
+    uint32_t idle = idle_ms(now);
+    s_sparse = s_cfg.sparse_min && idle >= s_cfg.sparse_min * 60000u;
+    s_dim = s_cfg.dim_min && idle >= s_cfg.dim_min * 60000u;
+    int d = batt_deep(false);
+    if (d >= 0) {
+        ESP_LOGW(TAG, "battery %d mV (%s): going dark", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
+        show_low_and_sleep((deep_t)d);
+    }
+    uint32_t ao = auto_off_ms();
+    if (ao && idle >= ao && !(countdown_running() && to_win_ms(s_owner) <= AUTO_WAKE_TO_WIN_MS)) {
+        ESP_LOGI(TAG, "idle for %lu min: auto-off", (unsigned long)(idle / 60000));
+        power_set(PWR_AUTO, now);
         return;
     }
-
-    if (on_usb()) return;  // VSYS is the charger, not the cell
-    // Long average of VSYS (the cell less QBAT1's drop).
-    s_batt_mv += (int)(((int64_t)(s_vsys_mv - s_batt_mv) * (int64_t)dt) / BATT_TAU_MS);
-    if (s_batt_mv < BATT_LOW_MV) {
-        intent_set(INTENT_OFF);  // like a flat phone: charged again, it stays off until turned on
-        off_since_mark();
-        show_low_and_sleep(s_batt_mv);
-    } else if (s_batt_mv < BATT_WARN_MV && (int32_t)(now - s_next_batt_warn) >= 0) {
+    if (batt_level() == BATT_LOW && (int32_t)(now - s_next_batt_warn) >= 0) {
         s_next_batt_warn = now + BATT_WARN_EVERY_MS;
-        s_batt_until = now + BATT_SHOW_MS;
+        s_batt_until = now + BATT_WARN_MS;
         AUDIO_PLAY(SLOT_EVENT, SND_BATT);
-        ESP_LOGW(TAG, "battery low: %d mV average", s_batt_mv);
+        ESP_LOGW(TAG, "battery low: %d mV (estimate), %d mV (1 min average)", s_batt_mv, s_batt_avg_mv);
+    }
+}
+
+// Called every loop pass in auto-off.
+static void power_tick_auto(uint32_t now)
+{
+    if (s_winner >= 0 || (countdown_running() && to_win_ms(s_owner) <= AUTO_WAKE_TO_WIN_MS)) {
+        ESP_LOGI(TAG, "auto-off: %s, back on", s_winner >= 0 ? "a win" : "the last 5 min of the countdown");
+        power_set(PWR_ON, now);
+        return;
+    }
+    // The displays, for a moment, so the state can be read from a distance.
+    if (s_flash_until && (int32_t)(now - s_flash_until) >= 0) {
+        s_flash_until = 0;
+        periph_power(false);
+    } else if (!s_flash_until && (int32_t)(now - s_next_flash) >= 0) {
+        s_next_flash = now + AUTO_FLASH_EVERY_MS;
+        periph_power(true);
+        audio_set_allowed(false);
+        s_flash_until = now + 30 + AUTO_FLASH_MS;  // (30 ms of that is the rails starting)
+        if (!s_flash_until) s_flash_until = 1;
+    }
+    if ((int32_t)(now - s_next_batt_check) >= 0) {
+        s_next_batt_check = now + AUTO_BATT_CHECK_MS;
+        batt_check_rest(now);
+        int d = batt_deep(false);
+        if (d >= 0) {
+            ESP_LOGW(TAG, "auto-off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
+            show_low_and_sleep((deep_t)d);
+        }
+    }
+    uint32_t so = s_cfg.switch_off_min * 60000u;
+    if (s_cfg.switch_off_min && idle_ms(now) >= so && !countdown_running()) {
+        ESP_LOGI(TAG, "idle for %lu min: off", (unsigned long)(idle_ms(now) / 60000));
+        power_set(PWR_OFF, now);
     }
 }
 
@@ -1001,20 +1154,19 @@ static void power_tick_off(uint32_t now)
         s_next_batt_check = now + OFF_BATT_CHECK_MS;
         return;
     }
-    int mv = read_batt_rest();
-    s_batt_mv = mv;
-    bool low = off_wants_deep();
-    ESP_LOGI(TAG, "off: battery %d mV%s", mv, low ? " (low)" : "");
-    if (!low) {
+    batt_check_rest(now);
+    int d = batt_deep(true);
+    ESP_LOGI(TAG, "off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
+    if (d < 0) {
         s_low_readings = 0;
         s_next_batt_check = now + OFF_BATT_CHECK_MS;
         return;
     }
-    if (++s_low_readings < 2) {
+    if (++s_low_readings < 2 && d != DEEP_OVER) {
         s_next_batt_check = now + OFF_RECHECK_MS;
         return;
     }
-    deep_sleep();
+    deep_sleep((deep_t)d);
 }
 
 // Face switches (and BOOT) wake the CPU from light sleep, and the interrupt wakes the
@@ -1059,7 +1211,7 @@ static uint8_t state_flags(uint32_t now)
 static uint8_t state_flags2(void)
 {
     return (uint8_t)((s_dim ? 1 : 0) | (s_sparse ? 4 : 0) |
-                     (!on_usb() && s_batt_mv && s_batt_mv < BATT_WARN_MV ? 2 : 0));
+                     (batt_level() >= BATT_LOW ? 2 : 0));
 }
 // Phones (and anything else not a button) connected to this button.
 static int phone_links(void)
@@ -1179,6 +1331,8 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
 {
     if (n < 1) return;
     activity(now);
+    // Auto-off: any command (from the page or the network) is back on first, as if it had stayed on.
+    if (s_pwr == PWR_AUTO) power_set(PWR_ON, now);
     // Off: things that need the displays, LEDs or speaker wake it briefly (peek).
     if (s_pwr == PWR_OFF && (d[0] == OP_IDENTIFY || d[0] == OP_SHOW_BATTERY || d[0] == OP_PLAY_SOUND))
         power_set(PWR_PEEK, now);
@@ -1300,6 +1454,7 @@ static void ble_service(uint32_t now)
             if (m.len == sizeof(config_t) && m.data[0] == CONFIG_VERSION) {
                 config_t c;
                 memcpy(&c, m.data, sizeof c);
+                if (s_pwr == PWR_AUTO) power_set(PWR_ON, now);
                 apply_config(&c, now);
             } else {
                 ESP_LOGW(TAG, "config write ignored (%d bytes, version %d)", m.len, m.data[0]);
@@ -1351,7 +1506,19 @@ static bool identifying(uint32_t now) { return (int32_t)(s_ident_until - now) > 
 static void render_clock(uint8_t seg[4], int32_t ms, bool round_up)
 {
     int s = round_up ? (ms + 999) / 1000 : ms / 1000;
-    if (s > 99 * 60 + 59) s = 99 * 60 + 59;
+    if (s > 99 * 60 + 59) {
+        // Over 99:59, hours and minutes: "9h:59" while it fits, then "12:34" (99:59 at most).
+        // (Counting down, the minute shown is the one under way, as the seconds are below this.)
+        int m = round_up ? (s + 59) / 60 : s / 60;
+        if (m > 99 * 60 + 59) m = 99 * 60 + 59;
+        int h = m / 60;
+        m %= 60;
+        seg[0] = display_digit(h < 10 ? h : h / 10);
+        seg[1] = h < 10 ? display_char('h') : display_digit(h % 10);
+        seg[2] = display_digit(m / 10);
+        seg[3] = display_digit(m % 10);
+        return;
+    }
     int m = s / 60;
     s %= 60;
     seg[0] = m >= 10 ? display_digit(m / 10) : 0;
@@ -1382,7 +1549,7 @@ static void render_displays(uint32_t now)
                 seg[1] = display_char('A');
                 seg[2] = seg[3] = 0x31;
             } else {
-                int pct = batt_percent(s_vsys_mv);
+                int pct = batt_percent(batt_now_mv());
                 if (pct < -999) pct = -999;
                 if (pct > 9999) pct = 9999;
                 display_number(seg, pct < 0 ? -pct : pct);
@@ -1506,7 +1673,7 @@ static void render_leds(uint32_t now)
 
     // Battery gauge: green fill by estimated percent (at least one LED).
     if (batt_showing(now)) {
-        int n = (batt_percent(s_vsys_mv) * 6 + 50) / 100;
+        int n = (batt_percent(batt_now_mv()) * 6 + 50) / 100;
         if (n < 1) n = 1;
         for (int i = 0; i < 6; i++) ring[i] = (i < n) ? rgb_scale(GREEN, 120) : (rgb_t){0};
     }
@@ -1571,6 +1738,7 @@ static void on_mesh_cmd(uint8_t kind, const uint8_t *d, int n, uint32_t now)
         if (n == sizeof(config_t) && d[0] == CONFIG_VERSION) {
             config_t c;
             memcpy(&c, d, sizeof c);
+            if (s_pwr == PWR_AUTO) power_set(PWR_ON, now);
             apply_config(&c, now);
         } else {
             ESP_LOGW(TAG, "network config ignored (%d bytes, version %d)", n, n ? d[0] : 0);
@@ -1666,14 +1834,16 @@ static void pm_init(void)
 }
 
 // ---------------------------------------------------------------- surviving a reset
-// The game state is copied to RTC RAM every loop pass (a plain memory write, no flash wear).
-// A brown-out is a system reset on the C6 (IDF's setting), which leaves the low-power domain
-// alone: RTC RAM keeps its contents and the LP timer keeps counting. So after a brown-out
-// (or a crash / watchdog) the button carries on where it was, with the clock advanced by the
-// time it spent rebooting. A real power loss (power-on reset) or a reboot asked for from the
-// page starts fresh. The checksum catches RAM that didn't survive.
+// The game state is copied to RTC RAM every loop pass (a plain memory write, no flash wear). RTC RAM
+// and the LP timer survive deep sleep and every reset but a power-on (a brown-out is a system reset on
+// the C6, IDF's setting). So after a deep sleep, a brown-out, a crash or a USB reset the button carries
+// on where it was, with the clocks advanced by the time it was away (a clock that ran out meanwhile
+// wins). Every shutdown (off, any deep sleep) also writes it to flash, for a power-on (the cell
+// swapped): then the time away is unknown, so the clocks come back paused. A reboot asked for from
+// the page starts fresh. The checksum catches RAM that didn't survive.
 #define SAVED_MAGIC (0x47414D45u ^ (uint32_t)sizeof(saved_game_t))  // changes with the layout
-#define RESTORE_MAX_GAP_US (10ULL * 60 * 1000 * 1000)  // a longer gap means the timer can't be trusted
+#define RESTORE_MAX_GAP_US (10ULL * 60 * 1000 * 1000)       // after a reset: longer means the timer can't be trusted
+#define RESTORE_MAX_DEEP_US (60ULL * 24 * 3600 * 1000000)  // after a deep sleep
 typedef struct {
     uint32_t magic;
     uint8_t mode, count_up, pwr;
@@ -1685,7 +1855,7 @@ typedef struct {
 } saved_game_t;
 static RTC_NOINIT_ATTR saved_game_t s_saved;
 
-static uint32_t saved_crc(void) { return esp_rom_crc32_le(0, (const uint8_t *)&s_saved, offsetof(saved_game_t, crc)); }
+static uint32_t game_crc(const saved_game_t *g) { return esp_rom_crc32_le(0, (const uint8_t *)g, offsetof(saved_game_t, crc)); }
 
 static void game_save(void)
 {
@@ -1695,41 +1865,64 @@ static void game_save(void)
         .owner = (int8_t)s_owner, .winner = (int8_t)s_winner, .next_pick = (int8_t)s_next_pick,
         .val = {s_val[0], s_val[1]}, .rtc_us = esp_rtc_get_time_us(),
     };
-    s_saved.crc = saved_crc();
+    s_saved.crc = game_crc(&s_saved);
+}
+// (rtc_us zeroed in the flash copy, so an unchanged game isn't written again at every sleep.)
+static void game_save_flash(void)
+{
+    saved_game_t g = s_saved;
+    g.rtc_us = 0;
+    g.crc = game_crc(&g);
+    config_blob_save("game", &g, sizeof g);
+}
+static void game_flash_clear(void) { config_blob_erase("game"); }
+
+static bool game_fits(const saved_game_t *g)
+{
+    return g->magic == SAVED_MAGIC && g->crc == game_crc(g) && g->mode == s_cfg.mode && g->count_up == s_cfg.count_up &&
+           g->owner >= -1 && g->owner <= 1 && g->winner >= -1 && g->winner <= 1 && g->pwr <= PWR_AUTO;
+}
+static void game_apply(const saved_game_t *g)
+{
+    s_running = g->running;
+    s_fresh = g->fresh;
+    s_game_paused = g->game_paused;
+    s_game_was_running = g->game_was_running;
+    s_owner = g->owner;
+    s_winner = g->winner;
+    s_next_pick = g->next_pick;
+    s_val[0] = g->val[0];
+    s_val[1] = g->val[1];
 }
 
-// After game_reset at boot. Returns the power state to come back in, or -1 to boot as usual.
-static int game_restore(uint32_t now)
+// After game_reset at boot. Returns the power state it was in (on or auto-off; off for the rest)
+// when the RTC copy was used after a reset, or -1 (a deep sleep, flash or nothing: boot as usual).
+static int game_restore(uint32_t now, bool from_deep, bool new_firmware)
 {
     esp_reset_reason_t why = (esp_reset_reason_t)s_reset_reason;
-    bool unexpected = why == ESP_RST_BROWNOUT || why == ESP_RST_PANIC || why == ESP_RST_INT_WDT ||
-                      why == ESP_RST_TASK_WDT || why == ESP_RST_WDT;
-    if (!unexpected) return -1;
-    if (s_saved.magic != SAVED_MAGIC || s_saved.crc != saved_crc()) {
-        ESP_LOGW(TAG, "reset: no saved game state survived");
-        return -1;
+    bool reset = why == ESP_RST_BROWNOUT || why == ESP_RST_PANIC || why == ESP_RST_INT_WDT ||
+                 why == ESP_RST_TASK_WDT || why == ESP_RST_WDT || why == ESP_RST_USB;
+    if (why == ESP_RST_SW || new_firmware) return -1;  // the page's reboot (or a new image): fresh
+    if ((from_deep || reset) && game_fits(&s_saved)) {
+        game_apply(&s_saved);
+        // The time away, from the LP timer (if it went backwards or jumped, it was reset: skip).
+        uint64_t t = esp_rtc_get_time_us();
+        uint64_t max = from_deep ? RESTORE_MAX_DEEP_US : RESTORE_MAX_GAP_US;
+        uint32_t gap = t > s_saved.rtc_us && t - s_saved.rtc_us < max ? (uint32_t)((t - s_saved.rtc_us) / 1000) : 0;
+        if (gap) game_tick(now, gap);  // a clock that ran out meanwhile wins now
+        ESP_LOGI(TAG, "game state restored (%s, owner %d, %ld/%ld ms, %lu s away)", state_name(), s_owner + 1,
+                 (long)s_val[0], (long)s_val[1], (unsigned long)(gap / 1000));
+        if (from_deep) return -1;
+        return s_saved.pwr == PWR_ON || s_saved.pwr == PWR_AUTO ? s_saved.pwr : PWR_OFF;  // a peek goes back to off
     }
-    if (s_saved.mode != s_cfg.mode || s_saved.count_up != s_cfg.count_up || s_saved.owner < -1 || s_saved.owner > 1 ||
-        s_saved.winner < -1 || s_saved.winner > 1 || s_saved.pwr > PWR_OFF) {
-        ESP_LOGW(TAG, "reset: saved game state doesn't fit, starting fresh");
-        return -1;
+    saved_game_t g;
+    if (config_blob_load("game", &g, sizeof g) && game_fits(&g)) {
+        game_apply(&g);
+        if (s_cfg.mode != MODE_TEAMS) s_running = false;  // how long it was away is unknown
+        ESP_LOGI(TAG, "game state restored from flash (%s, owner %d, %ld/%ld ms), clocks paused", state_name(),
+                 s_owner + 1, (long)s_val[0], (long)s_val[1]);
     }
-    s_running = s_saved.running;
-    s_fresh = s_saved.fresh;
-    s_game_paused = s_saved.game_paused;
-    s_game_was_running = s_saved.game_was_running;
-    s_owner = s_saved.owner;
-    s_winner = s_saved.winner;
-    s_next_pick = s_saved.next_pick;
-    s_val[0] = s_saved.val[0];
-    s_val[1] = s_saved.val[1];
-    // The time lost rebooting, from the LP timer (if it went backwards or jumped, it was reset: skip).
-    uint64_t t = esp_rtc_get_time_us();
-    uint32_t gap = t > s_saved.rtc_us && t - s_saved.rtc_us < RESTORE_MAX_GAP_US ? (uint32_t)((t - s_saved.rtc_us) / 1000) : 0;
-    if (gap) game_tick(now, gap);  // a clock that ran out meanwhile wins now
-    ESP_LOGW(TAG, "reset: game state restored (%s, owner %d, %ld/%ld ms, %lu ms lost rebooting)", state_name(),
-             s_owner + 1, (long)s_val[0], (long)s_val[1], (unsigned long)gap);
-    return s_saved.pwr == PWR_ON ? PWR_ON : PWR_OFF;  // a peek goes back to off
+    return -1;
 }
 
 void app_main(void)
@@ -1795,36 +1988,38 @@ void app_main(void)
 
     uint32_t last = now_ms();
     game_reset(last);
-    int restored = game_restore(last);
+    int restored = game_restore(last, from_deep, new_firmware);
+    if (!on_usb()) batt_rest(read_batt_rest(), last);
 
     // Where to come up. Nothing here turns it on except the saved choice being on (or a new
-    // firmware image, so a flash shows the startup test). Out of deep sleep: a press peeks (with
-    // enough battery; "bAtt Lo" otherwise), USB appearing peeks, and anything else (USB going)
-    // goes straight back to sleep. A peek ends back in shipping, or off.
-    ESP_LOGI(TAG, "power choice %s%s", INTENT_NAME[s_intent], new_firmware ? ", new firmware" : "");
-    s_pwr = PWR_PEEK;  // (peripherals still off, so power_set(PWR_OFF) below is quiet)
+    // firmware image, so a flash shows the startup test). Out of deep sleep, see deep_sleep().
+    ESP_LOGI(TAG, "power choice %s%s, battery %d mV (%s)", INTENT_NAME[s_intent], new_firmware ? ", new firmware" : "",
+             s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
+    s_pwr = PWR_PEEK;  // nothing set up yet, so the first power_set does it all (quietly: peripherals are off)
+    if (batt_level() == BATT_OVER) deep_sleep(DEEP_OVER);
     if (from_deep) {
-        uint64_t pins = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
+        int kind = deep_kind_saved();
+        if (kind < 0) kind = s_intent == INTENT_SHIP ? DEEP_SHIP : s_intent == INTENT_ON ? DEEP_DEAD : DEEP_LOW;
+        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        uint64_t pins = cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
         bool press = pins & ((1ULL << PIN_FACE1) | (1ULL << PIN_FACE2) | (1ULL << PIN_FACE3));
-        bool plugged = (pins & (1ULL << PIN_VBUS_SENSE)) && on_usb();
-        s_batt_mv = on_usb() ? 0 : read_batt_rest();
-        ESP_LOGI(TAG, "woken by %s, battery %d mV", press ? "a press" : plugged ? "USB" : "USB going (or nothing)",
-                 s_batt_mv);
-        power_set(PWR_OFF, last);
-        if (press && s_batt_mv && s_batt_mv < BATT_LOW_MV) show_low_and_sleep(s_batt_mv);
-        if (press || plugged) power_set(PWR_PEEK, last);
-        else if (s_intent == INTENT_SHIP || off_wants_deep()) deep_sleep();
-    } else if (restored >= 0) {
-        power_set((pwr_t)restored, last);  // crash or brown-out mid-game: carry on
-    } else if (new_firmware || s_intent == INTENT_ON) {
-        s_pwr = PWR_OFF;
-        power_set(PWR_ON, last);
+        // On USB out of a battery sleep: charging, so back as it was (auto-off, or off after a peek).
+        bool plugged = on_usb() && ((pins & (1ULL << PIN_VBUS_SENSE)) || kind != DEEP_SHIP);
+        ESP_LOGI(TAG, "%s sleep, woken by %s", DEEP_NAME[kind],
+                 press ? "a press" : plugged ? "USB" : cause == ESP_SLEEP_WAKEUP_TIMER ? "the battery check" : "USB going (or nothing)");
+        if (plugged && kind != DEEP_SHIP && s_intent == INTENT_ON) power_set(PWR_AUTO, last);
+        else if (plugged) power_set(PWR_PEEK, last);
+        else if (press && kind != DEEP_DEAD && batt_level() < BATT_DEAD) power_set(PWR_PEEK, last);
+        else if (press) show_low_and_sleep((deep_t)kind);
+        else deep_sleep((deep_t)kind);  // the battery check (still not overdischarged), or USB gone
     } else {
-        power_set(PWR_OFF, last);
-        if (s_intent == INTENT_SHIP) {
-            s_batt_mv = on_usb() ? 0 : read_batt_rest();
-            deep_sleep();
-        }
+        bool coming_on = restored >= 0 ? restored != PWR_OFF : new_firmware || s_intent == INTENT_ON;
+        int d = batt_deep(!coming_on);
+        if (d >= 0) deep_sleep((deep_t)d);
+        if (restored >= 0) power_set((pwr_t)restored, last);  // a crash, brown-out or USB reset: carry on
+        else if (new_firmware || s_intent == INTENT_ON) power_set(PWR_ON, last);
+        else if (s_intent == INTENT_SHIP) deep_sleep(DEEP_SHIP);
+        else power_set(PWR_OFF, last);
     }
     ESP_LOGI(TAG, "VSYS %d mV, VBUS %d mV, display NAKs %lu/%lu", s_vsys_mv, s_vbus_mv,
              (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1));
@@ -1844,7 +2039,12 @@ void app_main(void)
         // With a connection it runs at least once a second for the heartbeats, but frames arriving run
         // it anyway and restart that wait, so it mostly runs when the radio has woken the chip already.
         uint32_t period;
-        if (s_pwr != PWR_OFF) period = busy ? LOOP_MS : 20;
+        if (s_pwr == PWR_AUTO) {
+            // Auto-off: the game and the network run as when on, but nothing is shown: wake for the
+            // display flash (and its end), else once a second. Presses and BLE wake it at once.
+            int32_t until = (int32_t)((s_flash_until ? s_flash_until : s_next_flash) - t);
+            period = busy ? LOOP_MS : until < 1 ? 1 : until > 1000 ? 1000 : (uint32_t)until;
+        } else if (s_pwr != PWR_OFF) period = busy ? LOOP_MS : 20;
         else if (ble_connections() || s_factory_off_at) period = 1000;
         else {
             int32_t until = (int32_t)(s_next_batt_check - t);
@@ -1898,12 +2098,14 @@ void app_main(void)
             if (any_face) any_face = false;
             else ignore_face = false;
         }
+        pwr_t pwr_before = s_pwr;  // a press that turns it on isn't a game press
         int fe = input_update(&s_face, any_face, now);
         if (fe > 0 && s_pwr == PWR_PEEK) {
             s_peek_hold = true;
             if (++s_peek_presses >= PEEK_ON_PRESSES) power_set(PWR_ON, now);  // tapping away: wants it on
         } else if (fe > 0 && s_pwr == PWR_OFF) power_set(PWR_PEEK, now);
-        if (s_pwr == PWR_ON) {
+        else if (fe > 0 && s_pwr == PWR_AUTO) power_set(PWR_ON, now);  // a tap: straight back, still ticking
+        if (s_pwr == PWR_ON && pwr_before == PWR_ON) {
             if (fe > 0) {
                 on_face_press(now);
                 activity(now);
@@ -1925,8 +2127,7 @@ void app_main(void)
             s_factory_off_at = 0;
             if (s_pwr != PWR_OFF) power_set(PWR_OFF, now);  // the off sound, peripherals down
             intent_set(INTENT_SHIP);  // kept through every wake but a press or command that turns it on
-            s_batt_mv = on_usb() ? 0 : read_batt_rest();
-            deep_sleep();
+            deep_sleep(DEEP_SHIP);
         }
         game_tick(now, dt);
         net_publish(now);
@@ -1937,7 +2138,9 @@ void app_main(void)
 
         // USB presence is a digital read every pass. The ADC runs only while on (or peeking), and for
         // VBUS while off only when USB is there: off on battery, nothing is converted.
+        bool was_usb = s_usb;
         s_usb = sense_vbus_present();
+        if (was_usb != s_usb) batt_forget();  // on USB VSYS is the charger; off it, start again from the cell
         if (!s_usb) s_vbus_mv = 0;
         if ((int32_t)(now - next_adc) >= 0) {
             next_adc = now + 250;
@@ -1946,16 +2149,17 @@ void app_main(void)
         }
         usb_lock_update(now);
         if (s_pwr == PWR_OFF) power_tick_off(now);
-        else power_tick_on(now, dt);
+        else if (s_pwr == PWR_AUTO) power_tick_auto(now);
+        else power_tick_on(now);
 
         if ((int32_t)(now - next_ble) >= 0) {
-            next_ble = now + (s_pwr == PWR_OFF ? 1000 : STATE_PUBLISH_MS);
+            next_ble = now + (s_pwr == PWR_OFF || s_pwr == PWR_AUTO ? 1000 : STATE_PUBLISH_MS);
             publish_state(now);
         }
         if (s_periph_on) {
             if ((int32_t)(now - next_led) >= 0) {
                 next_led = now + 20;
-                render_leds(now);
+                if (s_pwr != PWR_AUTO) render_leds(now);  // (auto-off's flash is the displays only)
             }
             if ((int32_t)(now - next_refresh) >= 0) {
                 next_refresh = now + 2000;
@@ -1967,7 +2171,7 @@ void app_main(void)
             }
         }
         if ((int32_t)(now - next_status) >= 0) {
-            next_status = now + (s_pwr == PWR_OFF ? 10000 : 1000);
+            next_status = now + (s_pwr == PWR_OFF || s_pwr == PWR_AUTO ? 10000 : 1000);
             status_line(now);
         }
         game_save();
