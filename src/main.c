@@ -1801,23 +1801,25 @@ static void render_displays(uint32_t now)
     }
 }
 
-// Hold fills: the first LED is lit from the start, and the other five fade up one after another, so the
-// 6th reaches full at the end. The fade is even to the eye (interpolated in perceived brightness).
-// Unfilled LEDs sit at `dim` (0 = off). All levels are duty, 0..255 of the overall brightness.
-//   The capture fill keeps its unfilled LEDs dim (FILL_DIM), so the whole ring shows the team. Dim
-//   copies of a colour need enough duty steps to keep the colour (a channel that rounds to 0 changes
-//   it), so during the capture the overall brightness is at least HOLD_MIN_LEVEL: dim is then 6 %
-//   duty (15 steps for a full channel), bright is 30 % or the setting, whichever is more, and it goes
-//   back to the setting as soon as it's captured. FILL_DIM is 20 % duty: it looks about half as
-//   bright as full, which reads clearly as "not yet".
-#define FILL_DIM        51   // 20 %
-#define HOLD_MIN_LEVEL  77   // 30 %
+// Hold fills: the first LED is lit from the start, and the other five come on one after another, each
+// at the end of its fifth of the hold, so the 6th reaches full at the end. Each one waits at `dim`
+// (0 = off), then rises in a short smooth fade (FILL_RAMP_MS, or the whole fifth if that's shorter),
+// even to the eye: a clear step around the ring, not a slow creep. Levels are 0..255 of the overall
+// brightness.
+//   The capture fill keeps its unfilled LEDs dim, so the whole ring shows the team. Dim is the lowest
+//   brightness the setting allows (FILL_DIM_ABS, the same 2 % duty, which still holds the colour), and
+//   while a capture builds the overall brightness is at least HOLD_MIN_LEVEL, 8 times that, so lit and
+//   unlit are clearly apart even at the lowest setting (they look about 3 times apart). It goes back
+//   to the setting as soon as it's captured.
+#define FILL_RAMP_MS    200
+#define FILL_DIM_ABS    5    // 2 % duty: led_curve(0)
+#define HOLD_MIN_LEVEL  40   // 16 % duty
 static void ring_fill(rgb_t ring[6], rgb_t c, int level, uint32_t done, uint32_t span, int dim)
 {
-    float p = span ? (float)done * 5.0f / (float)span : 5.0f;
+    float slot = span / 5.0f, ramp = slot < FILL_RAMP_MS ? slot : FILL_RAMP_MS;
     float d = dim > 0 ? powf(dim / (float)level, 1.0f / 2.2f) : 0.0f;  // dim, in perceived terms
     for (int i = 0; i < 6; i++) {
-        float t = i == 0 ? 1.0f : p - (float)(i - 1);
+        float t = i == 0 ? 1.0f : ((float)done - (slot * i - ramp)) / ramp;
         t = t < 0 ? 0 : t > 1 ? 1 : t;
         int v = (int)(level * powf(d + (1.0f - d) * t, 2.2f) + 0.5f);
         ring[i] = v > 0 ? rgb_scale(c, v) : (rgb_t){0};
@@ -1827,6 +1829,11 @@ static void ring_fill(rgb_t ring[6], rgb_t c, int level, uint32_t done, uint32_t
 static bool capture_building(void)
 {
     return s_face.state && s_pwr == PWR_ON && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
+}
+static int capture_level(void)
+{
+    int l = led_level();
+    return l < HOLD_MIN_LEVEL ? HOLD_MIN_LEVEL : l;
 }
 
 static void render_leds(uint32_t now)
@@ -1869,7 +1876,8 @@ static void render_leds(uint32_t now)
             ring_fill(ring, WHITE, 70, held, h2, 0);
         } else if (s_hold_stage == HS_BUILD) {
             rgb_t c = s_hold_target >= 0 ? team_colour(s_hold_target) : WHITE;
-            ring_fill(ring, c, 255, held, h1, FILL_DIM);
+            int cl = capture_level();  // (dim is absolute: relative to the overall level here)
+            ring_fill(ring, c, 255, held, h1, (FILL_DIM_ABS * 255 + cl / 2) / cl);
         } else if (s_hold_stage == HS_CAPTURED) {
             ring_fill(ring, WHITE, 70, held - h1, h2 - h1, 0);
         } else if (s_hold_stage == HS_PAUSED) {
@@ -1909,7 +1917,7 @@ static void render_leds(uint32_t now)
         for (int i = 1; i < LED_COUNT_EXT; i += 2) frame[LED_IDX_EXT + i] = (rgb_t){0};
     }
     int level = identifying(now) ? 255 : led_level();
-    if (capture_building() && level < HOLD_MIN_LEVEL) level = HOLD_MIN_LEVEL;
+    if (capture_building()) level = capture_level();
     if (level < 255)
         for (int i = 0; i < LED_COUNT; i++) frame[i] = rgb_scale(frame[i], level);
     // Only send when something changed (saves the RMT transfer and lets the CPU sleep).

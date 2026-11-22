@@ -25,7 +25,7 @@ void config_defaults(config_t *c)
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;
     // Purple, yellow, as screen colours (the LEDs decode them, see team_colour in main.c): the same LED
     // mix as the 255/0/128 and 255/127/0 that were tuned by eye before that.
-    static const uint8_t COL[2][3] = {{255, 0, 186}, {255, 186, 0}};
+    static const uint8_t COL[2][3] = {{255, 0, 186}, {255, 186, 0}};  // purple and orange, as tuned on these LEDs
     memcpy(c->colour, COL, sizeof COL);
     c->sound_set = SOUNDS_MEDIEVAL;
     c->sparse_min = 11;
