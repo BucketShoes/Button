@@ -26,7 +26,7 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 |---|---|---|
 | 1 | service | |
 | 2 | state (36 bytes) | read, notify (5 Hz on, 1 Hz off) |
-| 3 | config (42 bytes) | read, write, notify (on change) |
+| 3 | config (46 bytes) | read, write, notify (on change) |
 | 4 | command | write |
 | 5 | link (9 bytes) | read |
 | 6 | network frames | write, write without response, notify |
@@ -65,9 +65,9 @@ Each read describes the reading central's own connection.
 | 23 | u8 | reset reason of the last boot (esp_reset_reason_t: 1 power-on, 8 woke from off, 9 brown-out, 4 crash, 5-7 watchdog) |
 | 24 | u32 | uptime s |
 | 28 | u32 | boots since power-on (more than 1 means it has rebooted) |
-| 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off |
-| 33 | u8 | bit0 dimmed (idle 1 h), bit1 battery low warning, bit2 sparse LEDs (idle 10 min) |
-| 34 | u16 | battery mV: long average of VSYS while on; last unloaded reading while off; 0 = unknown |
+| 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off, 3 auto-off (dark after an idle time, still in the game and the network; a tap or any command is back on) |
+| 33 | u8 | bit0 dimmed (idle, config byte 43), bit1 battery low (below 3.5 V), bit2 sparse LEDs (idle, config byte 42) |
+| 34 | u16 | battery mV: the estimate (the highest recent reading, falling at most 3 mV a minute under load; an unloaded reading is taken as it is); 0 = unknown or on USB |
 
 ## Config
 
@@ -75,7 +75,7 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 
 | Offset | Type | Field |
 |---|---|---|
-| 0 | u8 | config version (2); writes with a different version are ignored |
+| 0 | u8 | config version (3); writes with a different version are ignored (a saved version 2 is loaded with the idle times at their defaults) |
 | 1 | u8 | mode: 0 teams only, 1 one timer, 2 two timers |
 | 2 | u8 | unused, write 0 (was the one-timer team; one timer is now one shared clock) |
 | 3 | u8 | count up (0/1) |
@@ -89,6 +89,10 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 | 12 | u32 ×2 | durations in ms, per team (one timer uses the first) |
 | 20 | u8 ×6 | team 1 RGB, team 2 RGB |
 | 26 | char ×16 | name, NUL-terminated (empty = default) |
+| 42 | u8 | idle minutes to half the LEDs (11; 0 = never) |
+| 43 | u8 | idle minutes to 10 % brightness (31) |
+| 44 | u8 | idle minutes to auto-off (61; 11 at most with a low battery) |
+| 45 | u8 | idle minutes to off, from auto-off (121; never while a countdown runs on it) |
 
 - **Mode or direction changes:** the game resets.
 - **Other changes:** they take effect at once only if nothing has happened since the last reset.
@@ -169,7 +173,7 @@ Everything on characteristic 6 is a frame: centrals write them, the button notif
 |---|---|---|
 | 0 hot | game state (below) | on change, and every 10 s |
 | 1 status | status (below) | every 30 s, and when the button's links or phone count change |
-| 2 config | `config_t` (42 bytes, as characteristic 3) | on change |
+| 2 config | `config_t` (46 bytes, as characteristic 3) | on change |
 | 3 command | command (below) | from admins only |
 
 For streams 0–2 the highest version wins; versions start with the button's boot count in the top byte, so a
@@ -188,7 +192,7 @@ sleep the rest), then u8 n and n × (u16 node id,
 i8 RSSI, u8 PHY) for each other button it has a working link to.
 
 **Command:** u16 the button it entered the network at, u32 expiry (network ms), u16 target node (0xFFFF = all),
-u8 kind (0 = an opcode and its arguments as for characteristic 4, 1 = a 42-byte config write), then the data. A
+u8 kind (0 = an opcode and its arguments as for characteristic 4, 1 = a 46-byte config write), then the data. A
 command past its expiry is still passed on but not acted on.
 
 ### Network time

@@ -227,20 +227,28 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - Everything is powered.
   - Between loop passes (20 ms when idle), the CPU light-sleeps.
   - The amp and PDM output stop 1 s after the last sound, because a running PDM keeps the chip awake. The PDM and amp then start together, which may give a small click. The first sound of an interaction is queued behind exactly 50 ms of silence (`AMP_WAKE_MS` in `src/audio.c`) that plays while the amp starts, so it's a fixed 50 ms late but never cut short. Sounds that start while already awake wait behind up to 30 ms of DMA buffering. Quick follow-ups (taps, holds) aren't delayed. In the last 61 s of a countdown the speaker stays awake.
-  - **Idle** means no press and no page command; the game state is kept throughout, and a tap brings it straight back.
-    - After 10 min, every second ring and strip LED goes off (LED1 and LED2 stay).
-    - After 1 h, brightness drops to 10 % (or stays lower if it's already set lower).
-    - After 4 h, it powers off.
+  - **Idle** means no press and no page command. The times are settings (Advanced, in minutes, 0 = never):
+    - After 11 min, every second ring and strip LED goes off (LED1 and LED2 stay).
+    - After 31 min, brightness drops to 10 % (or stays lower if it's already set lower).
+    - After 61 min, **auto-off** (below).
+- **Auto-off:**
+  - Dark (PWR_EN low), but still in the game and the network: the clocks keep running, and it relays and can be reached exactly as when on.
+  - A tap, or any command from the page or the network, brings it straight back as if it had stayed on. The tap isn't a game press, and there's no startup test.
+  - The displays show the state for half a second every 20 s, for anyone looking from a distance.
+  - A countdown running on it brings it back for its last 5 min (at 5:05), and a win brings it back too.
+  - After 121 min idle it turns off, unless a countdown is running on it.
 - **Turning it off:**
-  - Hold the lid for 17 s (hold + 14 s), hold BOOT for 3 s, use the page's Power off, or let it auto-off.
-  - Clocks pause; a teams-only owner stays.
+  - Hold the lid for 17 s (hold + 14 s), hold BOOT for 3 s, use the page's Power off (the page then lets go of its link to that button), or let auto-off run out.
+  - Clocks pause; a teams-only owner stays. The game is saved to flash as well.
 - **The power choice:** on, off or shipping, whichever was last chosen, is saved in flash.
   - Any reset (USB, a crash, the cell swapped) comes back to it. A new firmware image comes up on, so a flash shows the startup test.
-  - Only a press, a hold or a page command changes it. Nothing else turns the button on or takes it out of shipping.
+  - Only a press, a hold or a page command changes it. Nothing else turns the button on or takes it out of shipping. Auto-off and a dead battery don't change it.
+- **The game state:** kept in RTC RAM, which survives deep sleep and every reset but a power-on, with the LP timer for the time away (a clock that ran out meanwhile wins). Every shutdown also writes it to flash. After a power-on (the cell swapped) it comes back from flash with the clocks paused. A reboot from the page starts fresh.
 - **Off:**
   - PWR_EN is low, so only the ESP is powered, and it light-sleeps.
-  - BLE keeps advertising slowly (every 2–2.5 s), so the page can connect and power it on, or identify it.
+  - BLE keeps advertising slowly (legacy only, every 2–2.5 s), so the page can connect and power it on, or identify it.
   - It checks the battery hourly, briefly powering VSYS to read it.
+  - BLE only runs for 8 days; then it goes to deep sleep, as in shipping (a press peeks).
 - **Shipping** (the page's Shipping button):
   - Deep sleep with BLE off and everything unpowered, on battery or USB.
   - A lid press wakes it, and so does USB appearing or going (BOOT can't: IO9 isn't an LP pin).
@@ -249,13 +257,12 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - A lid press while off or shipping shows the battery for about 6 s.
   - It turns on only on a clear intent, so a bump doesn't wake it: two more presses during the peek, or a press started during the peek and held for 1.5 s (the ring fills white). The press that woke it doesn't count.
   - Otherwise it goes back to off, or shipping.
-- **Low battery (not on USB):**
-  - Below 3.45 V average while on: a battery warning every 5 min.
-  - Below 3.3 V (0 %): it shows "bAtt Lo" and turns off into deep sleep. That counts as off, so once charged it stays off until turned on. Below 3.3 V a press shows "bAtt Lo" and it won't turn on.
-  - Below 3.0 V: deep sleep, and only USB wakes it.
-  - While off, BLE only runs until the battery reads below 3.5 V or 8 days have passed; then it goes to deep sleep, as in shipping. A press peeks, and it can still turn on above 3.3 V. On USB, or charged to 3.5 V again, it's plain off again.
+- **Battery levels** (not on USB). The battery figure is an estimate close to the unloaded voltage: the highest recent reading, falling at most 3 mV a minute under load, so LED and speaker droop doesn't count. A one-minute average of the loaded reading below 3.0 V also counts as dead.
+  - **Low, below 3.5 V:** on works as usual, with the battery shown for 0.9 s (and a beep) every 30 s, and auto-off after 11 min idle at most. Off has no BLE (deep sleep, a press peeks and can still turn it on; it checks the cell every 6 h).
+  - **Dead, below 3.3 V (0 %):** no radio, speaker or LEDs. On or auto-off goes dark at once ("bAtt Lo" for 3 s at the lowest brightness) into deep sleep. The game is kept, clocks running on the LP timer. It checks the cell hourly. A press shows "bAtt Lo" again; it won't turn on. USB brings it back in auto-off (or off, if it was off).
+  - **Overdischarge, below 3.1 V:** the cell is unprotected, so this is the cut-out. Deep sleep with only USB appearing as a wake source: no timer, no lid, the clocks stop.
 - **On USB:**
-  - While on, it stays awake 10 s after a boot, after turning on and after USB power appears, and 5 min after a BOOT press, so a computer can connect. While a computer is connected, ESP-IDF keeps it awake.
+  - While on, it stays awake 10 s after a boot, after turning on and after USB power appears, and 5 min after a BOOT press, so a computer can connect. While a computer has it enumerated (it sends a USB frame every millisecond), ESP-IDF keeps it awake; a power bank sends none.
   - While off it sleeps as on battery, so a power bank turning itself on and off doesn't keep it awake. The battery levels don't apply.
 - **Not measured yet:** the actual currents. BLE sleep uses the main crystal as its low-power clock (Espressif's RC-clock option supports legacy adverts and scanning only, not connections). A 32 kHz crystal on IO0/IO1 would allow lower sleep current.
 - **Volume:** the slider is in dB (-40 dB to full), so each step sounds about the same.
