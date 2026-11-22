@@ -296,7 +296,6 @@ MED_WIN = [N(523, 523, 130, W_TRUMPET, 255), N(0, 0, 20), N(523, 523, 130, W_TRU
            N(587, 587, 150, W_TRUMPET, 255), N(659, 659, 150, W_TRUMPET, 255), N(784, 784, 1100, W_TRUMPET, 255)]
 MED_WIN_BELLS = [N(196, 196, 300, W_TIMPANI, 255), N(196, 196, 300, W_TIMPANI, 200), N(262, 262, 520, W_TIMPANI, 255),
                  N(1047, 1047, 500, W_BELL, 200), N(784, 784, 500, W_BELL, 200), N(1047, 1047, 2200, W_BELL, 230)]
-MED_BLIP_SECOND = [N(0, 0, 170), N(1047, 1047, 750, W_BELL, 255)]
 MED_CANCEL = [N(440, 311, 380, W_HORN, 150)]
 
 
@@ -306,10 +305,8 @@ def med_blip(sec):
     if sec >= 20:
         n = 2 if sec == 30 else 3
         return [N(659, 659, 260 if p < n - 1 else 900, W_BELL, 255) for p in range(n)]
-    if sec > 3:
-        f = 784 + (10 - sec) * 40
-        return [N(f, f, 700, W_BELL, 255)]
-    return [N(1047, 1047, 800, W_BELL, 255)]
+    f = 784 + (10 - sec) * 40  # rising a little as it closes
+    return [N(f, f, 700, W_BELL, 255)]
 
 
 def med_build(ms):
@@ -381,7 +378,7 @@ def main():
     files["medieval_win"] = [(0, SLOT_EVENT, MED_WIN), (0, SLOT_EVENT2, MED_WIN_BELLS)]
     files["scifi_win"] = [(0, SLOT_EVENT, SND_WIN)]
     secs = [60, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
-    second = lambda s: [(SLOT_EVENT2, MED_BLIP_SECOND)] if s <= 3 else []
+    second = lambda s: []
     files["medieval_countdown_60_30_20"] = countdown(med_blip, second, [60, 30, 20])
     files["medieval_countdown_10_to_1"] = countdown(med_blip, second, secs[3:])
     files["scifi_countdown_60_30_20"] = countdown(lambda s: scifi_blip(secs.index(s)), lambda s: [], [60, 30, 20])

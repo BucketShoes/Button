@@ -215,12 +215,9 @@ static const note_t MED_WIN_BELLS[] = {
     {1047, 1047, 500, W_BELL, 200}, {784, 784, 500, W_BELL, 200}, {1047, 1047, 2200, W_BELL, 230},
 };
 
-// Countdown: a horn at a minute, bells at 30 and 20 s, then a bell each second, two in the last three.
-// (A struck note rings for its own length, so the second strike of the last three is on its own voice,
-// SLOT_EVENT2: in one voice the first would have to die away in 170 ms and sounded cut off.)
+// Countdown: a horn at a minute, bells at 30 and 20 s, then a bell each second, rising a little to the end.
 static note_t s_med_blip[BLIP_COUNT][4];
 static int s_med_blip_len[BLIP_COUNT];
-static const note_t MED_BLIP_SECOND[] = {{0, 0, 170, 0, 0}, {1047, 1047, 750, W_BELL, 255}};
 static void medieval_init(void)
 {
     for (int i = 0; i < BLIP_COUNT; i++) {
@@ -231,11 +228,9 @@ static void medieval_init(void)
         } else if (sec >= 20) {
             int n = sec == 30 ? 2 : 3;
             for (int p = 0; p < n; p++) b[k++] = (note_t){659, 659, p < n - 1 ? 260 : 900, W_BELL, 255};
-        } else if (sec > 3) {
+        } else {
             uint16_t f = (uint16_t)(784 + (10 - sec) * 40);  // rising a little as it closes
             b[k++] = (note_t){f, f, 700, W_BELL, 255};
-        } else {
-            b[k++] = (note_t){1047, 1047, 800, W_BELL, 255};  // (and MED_BLIP_SECOND)
         }
         s_med_blip_len[i] = k;
     }
@@ -358,7 +353,6 @@ static void play_blip(int i)
 {
     if (medieval()) {
         audio_play(SLOT_DIAG, s_med_blip[i], s_med_blip_len[i]);
-        if (BLIP_AT[i] <= 3) AUDIO_PLAY(SLOT_EVENT2, MED_BLIP_SECOND);
         return;
     }
     audio_play(SLOT_DIAG, s_blip[i], s_blip_len[i]);
