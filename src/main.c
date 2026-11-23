@@ -157,6 +157,10 @@ static void admin_sounds_init(void)
 // ---------------------------------------------------------------- the sound set
 // The player-facing sounds come from sounds.c, per the set chosen in the settings.
 static bool medieval(void) { return s_cfg.sound_set == SOUNDS_MEDIEVAL; }
+// The admin sounds are square and triangle waves at full scale, made to match the sci-fi set. The
+// medieval instruments come out 5 to 7 dB quieter (RMS over a call or the fanfare), so there the plain
+// waves are turned down 6 dB, and the beeps no longer stand over the game's sounds.
+#define PLAIN_GAIN_MEDIEVAL 128
 static void play(sound_t s)
 {
     for (int i = 0; i < s.count; i++) audio_play(s.v[i].slot, s.v[i].notes, s.v[i].n);
@@ -281,6 +285,10 @@ static int s_hold_stage;
 static int s_hold_target;  // team the capture will go to (decided at the press, shown during the hold)
 static int s_hold_last_sec;
 static bool s_build_started;
+// A capture's call plays out before the count towards the pause starts: the pause, reset and power-off
+// points of this hold move later by its length (0 for a hold that didn't capture).
+static uint32_t s_hold_shift;
+#define CAPTURE_DARK_MS 200  // at the capture the ring and displays go dark this long: "done", then the new owner
 // This hold started during a game pause: no capture. Held to the pause point it
 // releases the button from the game pause into a regular pause, so BLE is never needed.
 static bool s_hold_gp;
@@ -313,9 +321,10 @@ static rgb_t team_colour(int t)
     return (rgb_t){s_gamma[s_cfg.colour[t][0]], s_gamma[s_cfg.colour[t][1]], s_gamma[s_cfg.colour[t][2]]};
 }
 static uint32_t hold_capture_ms(void) { return s_cfg.hold_ms; }
-static uint32_t hold_pause_ms(void) { return s_cfg.hold_ms + PAUSE_EXTRA_MS; }
-static uint32_t hold_reset_ms(void) { return s_cfg.hold_ms + RESET_EXTRA_MS; }
-static uint32_t hold_off_ms(void) { return s_cfg.hold_ms + OFF_EXTRA_MS; }
+static uint32_t hold_count_ms(void) { return s_cfg.hold_ms + s_hold_shift; }  // the count to the pause starts
+static uint32_t hold_pause_ms(void) { return hold_count_ms() + PAUSE_EXTRA_MS; }
+static uint32_t hold_reset_ms(void) { return hold_count_ms() + RESET_EXTRA_MS; }
+static uint32_t hold_off_ms(void) { return hold_count_ms() + OFF_EXTRA_MS; }
 static uint32_t hold_off_warn_ms(void) { return hold_reset_ms() + OFF_WARN_DELAY; }
 static bool has_clock(int t)
 {
@@ -424,6 +433,7 @@ static void on_face_press(uint32_t now)
     s_hold_stage = HS_BUILD;
     s_hold_last_sec = 0;
     s_build_started = false;
+    s_hold_shift = 0;
     s_hold_gp = s_game_paused;
     s_off_warn_started = false;
 
@@ -493,7 +503,9 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_running = true;
             s_game_paused = false;
             s_fresh = false;
-            play_team(team);
+            sound_t call = sounds_team(s_cfg.sound_set, team);
+            play(call);
+            s_hold_shift = sounds_ms(call);
             ESP_LOGI(TAG, "CAPTURED by team %d", team + 1);
         }
     }
@@ -536,10 +548,13 @@ static void hold_progress(uint32_t now, uint32_t held)
         s_lid_off_request = true;
         ESP_LOGI(TAG, "lid held to power-off");
     }
-    // A sound every second after the capture: dings towards pause, doom towards
-    // reset. After a win: dings all the way to the reset (nothing to lose).
-    int sec = (int)(held / 1000);
-    if (sec != s_hold_last_sec && (uint32_t)sec * 1000 != h1 && (uint32_t)sec * 1000 != h2) {
+    // A sound every second: dings towards pause, doom towards reset. After a capture they count from
+    // the end of its call (silent while it plays). After a win: dings all the way to the reset, from the
+    // press (nothing to lose). None at the capture or the pause, which have their own.
+    uint32_t base = s_hold_shift ? hold_count_ms() : 0;
+    int sec = held >= base ? (int)((held - base) / 1000) : 0;
+    uint32_t at = base + (uint32_t)sec * 1000;
+    if (sec != s_hold_last_sec && sec != 0 && at != h1 && at != hold_pause_ms()) {
         if (won) {
             if (s_hold_stage < HS_RESET) AUDIO_PLAY(SLOT_CLICK, SND_DING);
         } else if (s_hold_stage == HS_CAPTURED) {
@@ -694,6 +709,7 @@ static void apply_config(const config_t *in, uint32_t now)
     if (structural || s_fresh) game_reset(now);
     if (strcmp(old.name, s_cfg.name) != 0) apply_name();
     audio_set_volume(s_cfg.volume);
+    synth_set_plain_gain(medieval() ? PLAIN_GAIN_MEDIEVAL : 256);
     awake_led_set(s_cfg.debug & CFG_DEBUG_AWAKE_LED);
     ble_publish_config(&s_cfg, sizeof s_cfg);
     mesh_publish_config(&s_cfg, sizeof s_cfg);
@@ -745,6 +761,9 @@ static bool s_peek_hold;
 #define OFF_BLE_MAX_MS       (8ULL * 24 * 3600 * 1000)    // off with BLE lasts this long at most
 #define BATT_WARN_EVERY_MS   30000              // low battery while on: the battery shows briefly, with a beep
 #define BATT_WARN_MS         900
+#define BATT_WARN_QUIET_MS   10000              // ... but not within this long of any other sound (a capture,
+                                                // the fanfare): it would read as part of it. It waits, and
+                                                // goes only if the battery is still low by then.
 
 // Battery levels, from the estimate below (the levels don't apply on USB).
 //   normal          everything.
@@ -761,6 +780,7 @@ static const char *const BATT_LEVEL_NAME[] = {"normal", "low", "dead", "overdisc
 #define BATT_LOW_MV        3500
 #define BATT_DEAD_MV       3300
 #define BATT_OVER_MV       3100
+#define BATT_HYST_MV       50    // a level is left upwards only this far above its threshold (see batt_level)
 #define BATT_SAG_OVER_MV   3000  // the 1 min average of the loaded reading this low counts as overdischarge-near: dead
 #define BATT_FALL_UV_PER_MS 50   // the estimate falls at most 3 mV a minute (see batt_loaded)
 #define BATT_TAU_MS        60000
@@ -804,10 +824,27 @@ static bool long_off(void)
     if (s_off_since_check != ((uint32_t)s_off_since_rtc ^ OFF_SINCE_CHECK)) off_since_mark();
     return esp_rtc_get_time_us() - s_off_since_rtc > OFF_BLE_MAX_MS * 1000;
 }
+// Deep-sleep wakes since the last restart (they aren't restarts), and the last one's cause and time: to
+// see what's waking it, on the page once it's back on. WAKE_*: what woke it.
+enum { WAKE_OTHER, WAKE_TIMER, WAKE_LID, WAKE_USB, WAKE_EXT1_NONE };
+static RTC_NOINIT_ATTR uint32_t s_wakes, s_wake_cause, s_wake_check;
+static RTC_NOINIT_ATTR uint64_t s_wake_rtc_us;
+#define WAKE_CHECK 0x3A4E5EEDu
+static void wake_record(bool restart, int cause)
+{
+    if (restart || s_wake_check != (s_wakes ^ s_wake_cause ^ WAKE_CHECK)) s_wakes = s_wake_cause = 0;
+    if (!restart) {
+        s_wakes++;
+        s_wake_cause = (uint32_t)cause;
+        s_wake_rtc_us = esp_rtc_get_time_us();
+    }
+    s_wake_check = s_wakes ^ s_wake_cause ^ WAKE_CHECK;
+}
 static int deep_kind_saved(void) { return s_deep_check == (s_deep_kind ^ DEEP_CHECK) && s_deep_kind <= DEEP_OVER ? (int)s_deep_kind : -1; }
 
 static uint32_t s_next_batt_check, s_next_batt_warn, s_next_flash, s_flash_until;
 static int s_low_readings;
+static uint32_t s_last_sound;  // while on: the last loop pass with a sound playing
 static bool s_dim, s_sparse;
 static esp_pm_lock_handle_t s_usb_lock;
 static bool s_usb_lock_held;
@@ -854,13 +891,27 @@ static void batt_loaded(int mv, uint32_t now)
     s_batt_avg_mv = s_batt_avg_mv ? s_batt_avg_mv + (int)(((int64_t)(mv - s_batt_avg_mv) * (int64_t)(dt > BATT_TAU_MS ? BATT_TAU_MS : dt)) / BATT_TAU_MS) : mv;
 }
 static void batt_forget(void) { s_batt_uv = s_batt_mv = s_batt_avg_mv = 0; }
+static batt_level_t level_at(int mv, int avg)
+{
+    if (mv < BATT_OVER_MV) return BATT_OVER;
+    if (mv < BATT_DEAD_MV || (avg && avg < BATT_SAG_OVER_MV)) return BATT_DEAD;
+    if (mv < BATT_LOW_MV) return BATT_LOW;
+    return BATT_NORMAL;
+}
+// With hysteresis: getting worse is at once, getting better needs BATT_HYST_MV over the threshold. The
+// estimate jumps up on any loaded reading above it and creeps down at 3 mV a minute, so a cell sitting
+// at a threshold crossed it both ways every minute or two (the page's "low" came and went). USB, or no
+// reading yet, starts it again.
+static batt_level_t s_batt_lvl;
 static batt_level_t batt_level(void)
 {
-    if (on_usb() || !s_batt_mv) return BATT_NORMAL;
-    if (s_batt_mv < BATT_OVER_MV) return BATT_OVER;
-    if (s_batt_mv < BATT_DEAD_MV || (s_batt_avg_mv && s_batt_avg_mv < BATT_SAG_OVER_MV)) return BATT_DEAD;
-    if (s_batt_mv < BATT_LOW_MV) return BATT_LOW;
-    return BATT_NORMAL;
+    if (on_usb() || !s_batt_mv) return s_batt_lvl = BATT_NORMAL;
+    batt_level_t l = level_at(s_batt_mv, s_batt_avg_mv);
+    if (l < s_batt_lvl) {
+        batt_level_t up = level_at(s_batt_mv - BATT_HYST_MV, s_batt_avg_mv ? s_batt_avg_mv - BATT_HYST_MV : 0);
+        l = up < s_batt_lvl ? up : s_batt_lvl;
+    }
+    return s_batt_lvl = l;
 }
 // For the battery %: the estimate (on USB, VSYS: the charger).
 static int batt_now_mv(void) { return !on_usb() && s_batt_mv ? s_batt_mv : s_vsys_mv; }
@@ -954,11 +1005,18 @@ static void batt_check_rest(uint32_t now)
 //   dead           the same, the timer hourly; a press only shows "bAtt Lo"
 //   overdischarge  USB appearing only: no timer, no press (the pull-ups are off too)
 // BOOT (IO9) isn't an LP pin, so it can't wake deep sleep.
+static void sleep_now(deep_t kind);
 static void deep_sleep(deep_t kind)
 {
     if (kind == DEEP_OVER) s_running = false;  // nothing keeps time any more
     game_save();
     game_save_flash();
+    sleep_now(kind);
+}
+// The same without saving the game: for a wake that goes straight back, before the game is restored
+// (the saved copy, and its LP-timer time, are still right).
+static void sleep_now(deep_t kind)
+{
     s_deep_kind = kind;
     s_deep_check = kind ^ DEEP_CHECK;
     bool press_wake = kind != DEEP_OVER;
@@ -996,8 +1054,9 @@ static void deep_sleep(deep_t kind)
 static void show_low_and_sleep(deep_t kind)
 {
     periph_power(true);
-    uint8_t a[4] = {display_char('b'), display_char('A'), 0x31, 0x31};  // each t a mirrored 7
-    uint8_t b[4] = {0, 0, 0x38 /*L*/, 0x5C /*o*/};
+    uint8_t a[4], b[4];
+    display_text(a, "bAtt");
+    display_text(b, "  Lo");
     display_set(0, a, 1);
     display_set(1, b, 1);
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -1120,7 +1179,8 @@ static void power_tick_on(uint32_t now)
         power_set(PWR_AUTO, now);
         return;
     }
-    if (batt_level() == BATT_LOW && (int32_t)(now - s_next_batt_warn) >= 0) {
+    if (audio_busy()) s_last_sound = now;
+    if (batt_level() == BATT_LOW && (int32_t)(now - s_next_batt_warn) >= 0 && now - s_last_sound >= BATT_WARN_QUIET_MS) {
         s_next_batt_warn = now + BATT_WARN_EVERY_MS;
         s_batt_until = now + BATT_WARN_MS;
         AUDIO_PLAY(SLOT_EVENT, SND_BATT);
@@ -1279,6 +1339,7 @@ static mesh_hot_t s_hot_last;
 static uint32_t s_hot_last_ms, s_status_next;
 static bool s_hot_sent;
 static int s_status_phones = -1;
+static int s_status_batt = -1;  // the low flag and USB as of the last status
 
 static void net_publish(uint32_t now)
 {
@@ -1316,8 +1377,12 @@ static void net_publish(uint32_t now)
         s_hot_sent = true;
     }
     int phones = phone_links();
-    if (phones != s_status_phones || (int32_t)(now - s_status_next) >= 0) {
+    // The battery's low flag goes in the hot item, its voltage and % in the status: a change to the flag
+    // (or USB) sends a status too, so the page gets all three from the same moment, not up to 30 s apart.
+    int batt = (h.flags2 & 2) | (h.flags & 32);
+    if (phones != s_status_phones || batt != s_status_batt || (int32_t)(now - s_status_next) >= 0) {
         s_status_phones = phones;
+        s_status_batt = batt;
         s_status_next = now + STATUS_EVERY_MS;
         mesh_status_t s = {
             .vsys_mv = (uint16_t)s_vsys_mv,
@@ -1334,7 +1399,14 @@ static void net_publish(uint32_t now)
         sense_vsys_debug(&raw, &pin);
         s.vsys_adc = (uint16_t)(raw > 0 ? raw : 0);
         s.vsys_pin_mv = (uint16_t)(pin > 0 ? pin : 0);
-        mesh_publish_status(&s);
+        // Tail: u16 deep-sleep wakes since the last restart, u8 the last one's WAKE_*, u8 0, u32 seconds since it.
+        uint8_t tail[8] = {0};
+        uint32_t ago = s_wakes ? (uint32_t)((esp_rtc_get_time_us() - s_wake_rtc_us) / 1000000u) : 0;
+        uint16_t w = s_wakes > 65535 ? 65535 : (uint16_t)s_wakes;
+        memcpy(tail, &w, 2);
+        tail[2] = (uint8_t)s_wake_cause;
+        memcpy(tail + 4, &ago, 4);
+        mesh_publish_status(&s, tail, sizeof tail);
     }
 }
 static void factory_reset(uint32_t now)
@@ -1522,6 +1594,7 @@ static int disp_level(int bright)
 }
 
 // ---------------------------------------------------------------- rendering
+static bool capture_dark(void);
 static bool batt_showing(uint32_t now) { return (int32_t)(s_batt_until - now) > 0; }
 static bool identifying(uint32_t now) { return (int32_t)(s_ident_until - now) > 0; }
 
@@ -1567,19 +1640,14 @@ static void render_displays(uint32_t now)
         bool lid_off = s_pwr == PWR_ON && s_face.state && s_hold_stage == HS_RESET &&
                        input_held_ms(&s_face) >= hold_off_warn_ms();
         if (s_boot_off_showing || lid_off) {
-            static const uint8_t HOLD[4] = {0x76 /*H*/, 0x5C /*o*/, 0x38 /*L*/, 0x5E /*d*/};
-            static const uint8_t OFF[4] = {0, 0x5C /*o*/, 0x71 /*F*/, 0x71 /*F*/};
-            memcpy(seg, t == 0 ? HOLD : OFF, sizeof seg);
+            display_text(seg, t == 0 ? "HoLd" : " oFF");
             bright = DISP_FULL;
         } else if (identifying(now)) {
             memset(seg, 0xFF, sizeof seg);
             bright = ((now / 125) & 1) ? DISP_FULL : 0;
         } else if (batt_showing(now)) {
             if (t == 0) {
-                // "bAtt", with each t drawn as a mirrored 7 (segments A, F, E).
-                seg[0] = display_char('b');
-                seg[1] = display_char('A');
-                seg[2] = seg[3] = 0x31;
+                display_text(seg, "bAtt");
             } else {
                 int pct = batt_percent(batt_now_mv());
                 if (pct < -999) pct = -999;
@@ -1641,6 +1709,7 @@ static void render_displays(uint32_t now)
                 }
             }
         }
+        if (capture_dark()) memset(seg, 0, sizeof seg);
         display_set(t, seg, identifying(now) ? bright : disp_level(bright));
     }
 }
@@ -1673,6 +1742,13 @@ static void ring_fill(rgb_t ring[6], rgb_t c, int level, uint32_t done, uint32_t
 static bool capture_building(void)
 {
     return s_face.state && s_pwr == PWR_ON && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
+}
+// The moment of a capture: everything dark for CAPTURE_DARK_MS (then the new owner, as normal, while
+// the call plays; then the count towards the pause).
+static bool capture_dark(void)
+{
+    return s_face.state && s_pwr == PWR_ON && s_hold_stage == HS_CAPTURED && s_hold_shift &&
+           input_held_ms(&s_face) - hold_capture_ms() < CAPTURE_DARK_MS;
 }
 static int capture_level(void)
 {
@@ -1723,7 +1799,8 @@ static void render_leds(uint32_t now)
             int cl = capture_level();  // (dim is absolute: relative to the overall level here)
             ring_fill(ring, c, 255, held, h1, (FILL_DIM_ABS * 255 + cl / 2) / cl);
         } else if (s_hold_stage == HS_CAPTURED) {
-            ring_fill(ring, WHITE, 70, held - h1, h2 - h1, 0);
+            uint32_t c0 = hold_count_ms();  // (until then the call plays over the normal display)
+            if (held >= c0) ring_fill(ring, WHITE, 70, held - c0, h2 - c0, 0);
         } else if (s_hold_stage == HS_PAUSED) {
             ring_fill(ring, RED, 160, held - h2, h3 - h2, 0);
         } else if (held >= hold_off_warn_ms()) {
@@ -1760,6 +1837,7 @@ static void render_leds(uint32_t now)
         for (int i = 1; i < 6; i += 2) frame[RING_CW[i]] = (rgb_t){0};
         for (int i = 1; i < LED_COUNT_EXT; i += 2) frame[LED_IDX_EXT + i] = (rgb_t){0};
     }
+    if (capture_dark()) memset(frame, 0, sizeof frame);
     int level = identifying(now) ? 255 : led_level();
     if (capture_building()) level = capture_level();
     if (level < 255)
@@ -2028,21 +2106,43 @@ void app_main(void)
     if (s_reset_reason == ESP_RST_BROWNOUT) {
         // Don't brown out again on the startup sound: 50 % volume and brightness
         // until changed (not saved, so the stored settings are untouched).
-        if (s_cfg.volume > 128) s_cfg.volume = 128;
+        if (s_cfg.volume > 50) s_cfg.volume = 50;
         if (s_cfg.led_level > 128) s_cfg.led_level = 128;
         ESP_LOGW(TAG, "brown-out reset: volume and brightness capped at 50 %% for now");
     }
     inputs_init();
+    sense_init();
+    s_usb = sense_vbus_present();
+    {
+        // A deep-sleep wake that isn't a lid press or USB (the battery check, or anything unexpected) goes
+        // straight back, before the radio, the speaker or the LEDs are started: about a tenth of the
+        // energy of a full start, no advertising, and no radio calibration to sag a weak cell. (It used to
+        // start BLE first: a fast run of wakes showed as a button that advertised but couldn't be connected
+        // to.) Each wake is counted, with its cause, for the page.
+        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        uint64_t pins = cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
+        bool press = pins & ((1ULL << PIN_FACE1) | (1ULL << PIN_FACE2) | (1ULL << PIN_FACE3));
+        bool usb_pin = pins & (1ULL << PIN_VBUS_SENSE);
+        wake_record(!from_deep, cause == ESP_SLEEP_WAKEUP_TIMER ? WAKE_TIMER : press ? WAKE_LID : usb_pin ? WAKE_USB
+                                : cause == ESP_SLEEP_WAKEUP_EXT1 ? WAKE_EXT1_NONE : WAKE_OTHER);
+        int kind = deep_kind_saved();
+        if (from_deep && kind >= 0 && !press && !usb_pin && !on_usb()) {
+            batt_rest(read_batt_rest(), now_ms());
+            if (batt_level() < BATT_OVER) {
+                ESP_LOGI(TAG, "%s sleep: back to sleep (battery %d mV, wake %lu)", DEEP_NAME[kind], s_batt_mv, (unsigned long)s_wakes);
+                sleep_now((deep_t)kind);
+            }
+        }
+    }
     sounds_init();
     admin_sounds_init();
     gamma_init();
-    sense_init();
     display_init();
     leds_init();
     audio_init();
     audio_set_volume(s_cfg.volume);
+    synth_set_plain_gain(medieval() ? PLAIN_GAIN_MEDIEVAL : 256);
     s_vbus_mv = sense_vbus_mv();
-    s_usb = sense_vbus_present();
     pm_init();
     wake_init();
     ble_set_notify_task(xTaskGetCurrentTaskHandle());  // BLE events wake the game loop

@@ -10,8 +10,10 @@
 void audio_init(void);
 void audio_play(int slot, const note_t *notes, int n);  // replaces whatever the slot was playing
 void audio_stop(int slot);
-void audio_set_volume(int v);  // 0 mute, 1..255 = -40..0 dB
+#define VOLUME_MAX 125
+void audio_set_volume(int v);  // percent: 0 mute, 1..100 = -40..0 dB, up to VOLUME_MAX = +10 dB
 void audio_set_allowed(bool on);  // false while VSYS is off: amp + PDM off, sounds dropped
+bool audio_busy(void);            // anything playing or queued (the synth or the clip)
 void audio_keep_awake(bool on);   // keep amp + PDM running (no wake delay), e.g. the last minute of a countdown
 
 // Raw PCM clip in the "audio" flash partition (speaker / music test).

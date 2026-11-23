@@ -28,6 +28,7 @@ typedef struct {
 } chan_t;
 
 static chan_t s_ch[SLOT_COUNT];
+static volatile int32_t s_plain_gain = 256;  // Q8, on W_SQUARE and W_TRI (see synth_set_plain_gain)
 #define SINE_BITS 10
 static int16_t s_sine[1 << SINE_BITS];  // full scale (32767)
 #define SINE(ph) s_sine[(ph) >> (32 - SINE_BITS)]
@@ -270,7 +271,8 @@ void synth_render(int32_t *acc)
                 if (c->pos < ATTACK) env = (int32_t)(c->pos * 256 / ATTACK);
                 if (rem < RELEASE && (int32_t)(rem * 256 / RELEASE) < env) env = (int32_t)(rem * 256 / RELEASE);
                 int32_t v = wave_sample(c, nt->wave);
-                acc[i] += (v * nt->vol * env) >> 16;
+                int32_t vol = nt->wave <= W_TRI ? (nt->vol * s_plain_gain) >> 8 : nt->vol;
+                acc[i] += (v * vol * env) >> 16;
                 c->phase += c->inc;
             }
             if (++c->pos >= c->len) {
@@ -293,10 +295,13 @@ int16_t synth_out(int32_t acc, int32_t gain_q16)
     // Soft limit above LIM_T: a smooth knee towards full scale instead of a hard clip, so voices
     // that overlap at full volume (the drums under the horn, the bells under the fanfare) thicken
     // rather than buzz. Unchanged below the knee (all of it at the default volume).
+    // (32-bit: LIM_R * d fits for d up to 336000, about 10 x full scale over the knee; anything past
+    // that is at full scale anyway. One hardware divide per limited sample on the C6.)
     int32_t a = v < 0 ? -v : v;
     if (a > LIM_T) {
-        int32_t d = a - LIM_T;
-        a = LIM_T + (int32_t)((int64_t)LIM_R * d / (LIM_R + d));
+        uint32_t d = (uint32_t)(a - LIM_T);
+        if (d > 300000) d = 300000;
+        a = LIM_T + (int32_t)((uint32_t)LIM_R * d / ((uint32_t)LIM_R + d));
         v = v < 0 ? -a : a;
     }
     return (int16_t)v;
@@ -308,3 +313,4 @@ void synth_init(void)
 }
 
 void synth_reset(void) { memset(s_ch, 0, sizeof s_ch); }
+void synth_set_plain_gain(int q8) { s_plain_gain = q8 < 0 ? 0 : q8 > 256 ? 256 : q8; }

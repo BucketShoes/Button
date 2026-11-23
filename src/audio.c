@@ -138,6 +138,8 @@ static bool busy(void)
     return false;
 }
 
+bool audio_busy(void) { return busy(); }
+
 static void amp(bool on)
 {
     if (on == s_amp_on) return;
@@ -268,11 +270,12 @@ void audio_stop(int slot) { audio_play(slot, NULL, 0); }
 
 void audio_set_volume(int v)
 {
-    // 0 = mute, 1..255 = -40 dB .. 0 dB, evenly spaced in dB (loudness, not amplitude).
+    // Percent: 0 = mute, 1..100 = -40 dB .. 0 dB, evenly spaced in dB (loudness, not amplitude), and on
+    // past 100 at the same 0.4 dB a step: 125 = +10 dB, where the loud parts sit in the soft limiter.
     if (v <= 0) {
         s_master = 0;
         return;
     }
-    if (v > 255) v = 255;
-    s_master = (int32_t)(65536.0f * powf(10.0f, (v / 255.0f - 1.0f) * 2.0f));
+    if (v > VOLUME_MAX) v = VOLUME_MAX;
+    s_master = (int32_t)(65536.0f * powf(10.0f, (v / 100.0f - 1.0f) * 2.0f));
 }

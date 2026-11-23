@@ -43,7 +43,7 @@ typedef struct __attribute__((packed)) {
     uint16_t vsys_adc;     // 22 raw ADC average behind vsys_mv (0..4095), to check the divider
     uint16_t vsys_pin_mv;  // 24 calibrated voltage at the ADC pin (vsys_mv is twice this)
     uint16_t awake_pm;     // 26 time awake since the last status, per mille (light sleep the rest)
-} mesh_status_t;           // 28 bytes, then u8 n, n x (u16 node, i8 rssi, u8 phy)
+} mesh_status_t;           // 28 bytes, then u8 n, n x (u16 node, i8 rssi, u8 phy), then the tail (see below)
 _Static_assert(sizeof(mesh_status_t) == 28, "mesh_status_t layout is part of the BLE protocol");
 
 enum { MESH_CMD_OP = 0, MESH_CMD_CONFIG = 1 };
@@ -53,7 +53,9 @@ typedef void (*mesh_cmd_fn)(uint8_t kind, const uint8_t *d, int n, uint32_t now)
 void mesh_init(mesh_cmd_fn on_cmd);
 void mesh_tick(uint32_t now);
 void mesh_publish_hot(const mesh_hot_t *h);
-void mesh_publish_status(const mesh_status_t *s);
+// tail: up to MESH_STATUS_TAIL bytes after the neighbour list (older pages ignore it).
+#define MESH_STATUS_TAIL 8
+void mesh_publish_status(const mesh_status_t *s, const void *tail, int tail_n);
 void mesh_publish_config(const void *cfg, size_t n);
 // Powered off: after a moment (so the others hear it's off) drop links to other buttons and
 // refuse new ones; phones stay connected.

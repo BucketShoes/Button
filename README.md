@@ -183,15 +183,15 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Face press:** any of the three switches counts (an OR). The lid counts as pressed until 50 ms after the last contact.
 - **Hold**, where H is the hold time (default 3 s):
   - **Up to H:** the ring shows the team about to capture. The first LED is lit at once, and the others wait dim, at the lowest brightness setting. Each comes on in turn with a short smooth fade (0.2 s) at the end of its fifth of the hold, so it's a clear step around the ring, and the capture happens as the 6th comes on. While it builds, the lit LEDs are at least 16 % (8 times the dim ones, so they're clearly apart at any setting) and the team LEDs light as bright as the ring; it goes back to the set brightness once captured. The build-up sound is made for the hold time, so it lasts exactly until the capture: a rising whoop (sci-fi), or drums accelerating under a climbing horn, ending in a snare roll (medieval). Letting go early puts it back as it was.
-  - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team.
+  - **At H, capture:** while running it goes to the other team; while paused it resumes with the same team. The ring and displays go dark for 0.2 s, as a "done", then show the new owner as normal while its call plays out. The count towards the pause starts only once the call has finished, at C (H plus the call: about 0.65 s in sci-fi, 1.2 s or 1.5 s in medieval), so the call isn't talked over and the next thing is clearly something else.
   - **Uncaptured:** the team is decided the moment the hold starts and shows straight away: the ring fills in its colour and its display lights. Wrong colour? Let go and press again: every press that doesn't capture flips the team for the next press. The first press uses the "first capture" setting, which is random by default.
-  - **H to H+4 s:** a ding each second, then a **pause** at H+4 s (7 s with the default hold). The clocks go back to where they were before the hold, and the paused owner is:
+  - **C to C+4 s:** the ring fills white with a ding each second, then a **pause** at C+4 s (about 8 s with the default hold). The clocks go back to where they were before the hold, and the paused owner is:
     - **was running:** whoever had it before the hold;
-    - **was uncaptured:** the team just picked, so a 6 s hold pre-sets the owner at 10:00 (for example at a respawn);
-    - **was paused:** the other team, so each further 6 s hold swaps it.
-  - **H+4 to H+9 s:** doom each second, then a **reset** at H+9 s (12 s).
-  - **H+9 to H+14 s:** after a second, the displays say "HoLd" "oFF" with a falling tone and the ring drains; at H+14 s (17 s) it **powers off**. Let go before that and it stays on, just reset.
-  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+4 s the button leaves the game pause into a regular pause, owner and clocks unchanged, and works normally from then on (so the page is never required). H+9 s still resets.
+    - **was uncaptured:** the team just picked, so a hold to the pause pre-sets the owner at 10:00 (for example at a respawn);
+    - **was paused:** the other team, so each further hold to the pause swaps it.
+  - **C+4 to C+9 s:** doom each second, then a **reset** at C+9 s (about 13 s).
+  - **C+9 to C+14 s:** after a second, the displays say "HoLd" "oFF" with a falling tone and the ring drains; at C+14 s (about 18 s) it **powers off**. Let go before that and it stays on, just reset.
+  - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+4 s the button leaves the game pause into a regular pause, owner and clocks unchanged, and works normally from then on (so the page is never required). H+9 s still resets. (Nothing is captured, so there is no call to wait for: C is H here, and after a win.)
   - **After a win**, the fanfare repeats for 20 s. Holding dings every second all the way to the reset (there is no pause to warn about): H silences the fanfare, and H+9 s resets.
 - **Idle cues:**
   - **Not held, the button shows only the true state.** A hold let go early snaps straight back, so nobody runs off thinking they captured it.
@@ -204,7 +204,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - Hold: the displays say "HoLd" "oFF" with a falling tone, and at 3 s it **powers off** (no need to let go).
   - Keep holding to 8 s: restore the default settings (it wakes briefly to play the sound).
   - A press while the music clip plays only stops the clip.
-- **Volume and LEDs** default to 50 %. Full volume browns out on USB-only power. The brightness setting dims the displays too.
+- **Volume** defaults to 80 % and **LEDs** to 50 %. Volume is in even dB steps (0.4 dB a percent, 100 % = full scale) and goes on to 125 % (+10 dB): past 100 the loud parts are squeezed by the soft limiter, louder but a little rougher. Full volume can brown out on USB-only power. The brightness setting dims the displays too. In the medieval set the plain beeps (admin sounds) play 6 dB lower, to sit with the instruments.
 - **Brown-out recovery:**
   - The game carries on. The game state is copied to RTC RAM all the time, and a brown-out reset leaves that RAM and the low-power timer running. After a brown-out, crash or watchdog reset, the button comes back with the same owner, clocks and running/paused state, with the clock advanced by the second or so it spent rebooting. A button that was off comes back off. If the RAM didn't survive (the checksum fails), or the power was really lost, it starts fresh as after a reset. A reboot from the page also starts fresh.
   - Volume and brightness start capped at 50 % (not saved), so the startup sound can't cause another brown-out.
@@ -239,7 +239,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - A countdown running on it brings it back for its last 5 min (at 5:05), and a win brings it back too.
   - After 121 min idle it turns off, unless a countdown is running on it.
 - **Turning it off:**
-  - Hold the lid for 17 s (hold + 14 s), hold BOOT for 3 s, use the page's Power off (the page then lets go of its link to that button), or let auto-off run out.
+  - Hold the lid for about 18 s (hold + 14 s, plus the capture call if the hold captured), hold BOOT for 3 s, use the page's Power off (the page then lets go of its link to that button), or let auto-off run out.
   - Clocks pause; a teams-only owner stays. The game is saved to flash as well.
 - **The power choice:** on, off or shipping, whichever was last chosen, is saved in flash.
   - Any reset (USB, a crash, the cell swapped) comes back to it. A new firmware image comes up on, so a flash shows the startup test.
@@ -259,7 +259,7 @@ Not used yet: the pedals (only logged), storage-charge management on USB, coded 
   - It turns on only on a clear intent, so a bump doesn't wake it: two more presses during the peek, or a press started during the peek and held for 1.5 s (the ring fills white). The press that woke it doesn't count.
   - Otherwise it goes back to off, or shipping.
 - **Battery levels** (not on USB). The battery figure is an estimate close to the unloaded voltage: the highest recent reading, falling at most 3 mV a minute under load, so LED and speaker droop doesn't count. A one-minute average of the loaded reading below 3.0 V also counts as dead.
-  - **Low, below 3.5 V:** on works as usual, with the battery shown for 0.9 s (and a beep) every 30 s, and auto-off after 11 min idle at most. Off has no BLE (deep sleep, a press peeks and can still turn it on; it checks the cell every 6 h).
+  - **Low, below 3.5 V:** on works as usual, with the battery shown for 0.9 s (and a beep) every 30 s, but never within 10 s of any other sound (so it can't land in a capture call or the fanfare; it waits, and goes only if still low), and auto-off after 11 min idle at most. Off has no BLE (deep sleep, a press peeks and can still turn it on; it checks the cell every 6 h).
   - **Dead, below 3.3 V (0 %):** no radio, speaker or LEDs. On or auto-off goes dark at once ("bAtt Lo" for 3 s at the lowest brightness) into deep sleep. The game is kept, clocks running on the LP timer. It checks the cell hourly. A press shows "bAtt Lo" again; it won't turn on. USB brings it back in auto-off (or off, if it was off).
   - **Overdischarge, below 3.1 V:** the cell is unprotected, so this is the cut-out. Deep sleep with only USB appearing as a wake source: no timer, no lid, the clocks stop.
 - **On USB:** USB power (the VBUS rail, read digitally) and USB data (a computer that has enumerated it) are separate. See design/power-lifecycle.md.

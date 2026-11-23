@@ -55,4 +55,7 @@ bool synth_busy(void);  // any channel playing
 void synth_render(int32_t *acc);
 // The master stage: gain (Q16, 65536 = full), then a soft limit to 16 bits.
 int16_t synth_out(int32_t acc, int32_t gain_q16);
+// The plain square and triangle waves' level, Q8 (256 = as written). The medieval set's instruments are
+// quieter than full-scale squares, so the admin beeps (shared by both sets) are turned down to match.
+void synth_set_plain_gain(int q8);
 void synth_init(void);

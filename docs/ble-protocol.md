@@ -75,15 +75,15 @@ This is the `config_t` struct in [src/config.h](../src/config.h). The button sav
 
 | Offset | Type | Field |
 |---|---|---|
-| 0 | u8 | config version (3); writes with a different version are ignored (a saved version 2 is loaded with the idle times at their defaults) |
+| 0 | u8 | config version (4); writes with a different version are ignored (a saved version 3 is loaded with its volume converted to percent; a saved version 2 also with the idle times at their defaults) |
 | 1 | u8 | mode: 0 teams only, 1 one timer, 2 two timers |
 | 2 | u8 | sound set: 0 sci-fi (synth), 1 medieval (drums, horns, bells); the default is 1. It sets the capture build-up, the capture calls, the countdown and the win; admin sounds stay the same (was unused, 0, so older settings read as sci-fi) |
 | 3 | u8 | count up (0/1) |
 | 4 | u8 | show numbers (0/1) |
 | 5 | u8 | owner after reset: 0 uncaptured, 1 team 1, 2 team 2 |
 | 6 | u8 | first capture of an uncaptured button with no taps: 0 random, 1, 2 |
-| 7 | u8 | volume: 0 mute, 1..255 = -40..0 dB (default 128, about -20 dB) |
-| 8 | u16 | hold ms (500..60000); pause at +4 s, reset at +9 s, power off at +14 s |
+| 7 | u8 | volume, percent: 0 mute, 1..100 = -40..0 dB, up to 125 = +10 dB, 0.4 dB a step (default 80, -8 dB; a brown-out reset caps it at 50 until changed). Version 3 was 0..255 for 0..100 % |
+| 8 | u16 | hold ms (500..60000); after a capture, once its call has finished: pause at +4 s, reset at +9 s, power off at +14 s |
 | 10 | u8 | LED brightness 0..255 (default 128) |
 | 11 | u8 | debug options: bit0 awake LED (the red status LED is lit whenever the chip is out of light sleep, so every wake shows as a flash; default off) |
 | 12 | u32 ×2 | durations in ms, per team (one timer uses the first) |
@@ -177,7 +177,7 @@ Everything on characteristic 6 is a frame: centrals write them, the button notif
 | Stream | Payload | Sent |
 |---|---|---|
 | 0 hot | game state (below) | on change, and every 10 s |
-| 1 status | status (below) | every 30 s, and when the button's links or phone count change |
+| 1 status | status (below) | every 30 s, and when the button's links, phone count, low-battery flag or USB change (so the page gets the flag and the voltage together) |
 | 2 config | `config_t` (46 bytes, as characteristic 3) | on change |
 | 3 command | command (below) | from admins only |
 
@@ -194,7 +194,9 @@ the last rest reading), u16 battery mV,
 u8 phone connections, u8 last restart reason, u32 s since the last restart, u32 restarts since power-on (as in the state), u16 raw VSYS ADC average
 (0..4095), u16 VSYS ADC pin mV (VSYS is twice this), u16 time awake since the last status in per mille (light
 sleep the rest), then u8 n and n × (u16 node id,
-i8 RSSI, u8 PHY) for each other button it has a working link to.
+i8 RSSI, u8 PHY) for each other button it has a working link to (6 at most). Then 8 more bytes (from this firmware
+on; older pages ignore them): u16 deep-sleep wakes since the last restart, u8 what woke the last one (0 other, 1 the
+battery-check timer, 2 a lid press, 3 USB, 4 the ext1 wake with no pin flagged), u8 0, u32 s since that wake.
 
 **Command:** u16 the button it entered the network at, u32 expiry (network ms), u16 target node (0xFFFF = all),
 u8 kind (0 = an opcode and its arguments as for characteristic 4, 1 = a 46-byte config write), then the data. A

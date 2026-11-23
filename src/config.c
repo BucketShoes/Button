@@ -17,9 +17,9 @@ void config_defaults(config_t *c)
     c->show_numbers = 1;
     c->initial_owner = 0;
     c->default_capture = 0;  // random
-    // Half volume and LED brightness: full volume browns out on USB-only power
-    // (the 400 mA charger feeds VSYS). Turn them up when running on a cell.
-    c->volume = 128;
+    // 80 % volume (-8 dB) and half LED brightness. A brown-out reset caps both at 50 % until changed
+    // (see app_main): full volume can brown out on USB-only power (the 400 mA charger feeds VSYS).
+    c->volume = 80;
     c->led_level = 128;
     c->hold_ms = 3000;
     c->duration_ms[0] = c->duration_ms[1] = 10 * 60 * 1000;
@@ -42,6 +42,7 @@ void config_sanitise(config_t *c)
     c->version = CONFIG_VERSION;
     if (c->mode > MODE_TWO_TIMERS) c->mode = MODE_TWO_TIMERS;
     if (c->sound_set >= SOUNDS_COUNT) c->sound_set = SOUNDS_SCIFI;
+    if (c->volume > CONFIG_VOLUME_MAX) c->volume = CONFIG_VOLUME_MAX;
     c->count_up = c->count_up ? 1 : 0;
     c->show_numbers = c->show_numbers ? 1 : 0;
     if (c->initial_owner > 2) c->initial_owner = 0;
@@ -79,8 +80,14 @@ void config_load(config_t *c)
         config_sanitise(&tmp);
         *c = tmp;
         ESP_LOGI(TAG, "loaded saved settings");
+    } else if (got == ESP_OK && len == sizeof tmp && tmp.version == 3) {
+        tmp.volume = (uint8_t)((tmp.volume * 100 + 127) / 255);  // 0..255 -> percent, the same loudness
+        config_sanitise(&tmp);
+        *c = tmp;
+        ESP_LOGI(TAG, "loaded saved settings (version 3, volume now in percent)");
     } else if (got == ESP_OK && len == CONFIG_V2_LEN && tmp.version == 2) {
         memcpy(c, &tmp, CONFIG_V2_LEN);  // the idle times keep their defaults
+        c->volume = (uint8_t)((c->volume * 100 + 127) / 255);
         // Version 2 colours were sent to the LEDs as they were; now they are decoded as screen
         // colours first. Encoded here, so the LEDs look the same as before.
         for (int t = 0; t < 2; t++)

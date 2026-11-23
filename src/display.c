@@ -126,32 +126,48 @@ static const uint8_t k_digits[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0
 
 uint8_t display_digit(int d) { return (d >= 0 && d <= 9) ? k_digits[d] : 0; }
 
+// The usual 7-segment letters (segments: 0x01 a top, 0x02 b, 0x04 c, 0x08 d bottom, 0x10 e, 0x20 f, 0x40 g
+// middle). Upper and lower case share a glyph unless both shapes read well (C c, H h, O o, U u, I i).
+// Some can't be told from others: K looks like an H with a top bar, M is an upside-down U, W is three
+// bars, X is H, Z is 2. Anything else is blank.
 uint8_t display_char(char c)
 {
     if (c >= '0' && c <= '9') return k_digits[c - '0'];
     switch (c) {
     case 'A': case 'a': return 0x77;
-    case 'b': case 'B': return 0x7C;
+    case 'B': case 'b': return 0x7C;
     case 'C': return 0x39;
     case 'c': return 0x58;
-    case 'd': case 'D': return 0x5E;
+    case 'D': case 'd': return 0x5E;
     case 'E': case 'e': return 0x79;
     case 'F': case 'f': return 0x71;
+    case 'G': return 0x3D;
+    case 'g': return 0x6F;
     case 'H': return 0x76;
     case 'h': return 0x74;
+    case 'I': return 0x30;
+    case 'i': return 0x10;
+    case 'J': case 'j': return 0x1E;
+    case 'K': case 'k': return 0x75;
     case 'L': case 'l': return 0x38;
-    case 'n': case 'N': return 0x54;
-    case 'o': return 0x5C;
+    case 'M': case 'm': return 0x37;
+    case 'N': case 'n': return 0x54;
     case 'O': return 0x3F;
+    case 'o': return 0x5C;
     case 'P': case 'p': return 0x73;
-    case 'r': case 'R': return 0x50;
+    case 'Q': case 'q': return 0x67;
+    case 'R': case 'r': return 0x50;
     case 'S': case 's': return 0x6D;
-    case 't': case 'T': return 0x78;
-    case 'U': return 0x3E;
-    case 'u': return 0x1C;
-    case 'y': case 'Y': return 0x6E;
+    case 'T': case 't': return 0x78;
+    case 'U': case 'V': return 0x3E;
+    case 'u': case 'v': return 0x1C;
+    case 'W': case 'w': return 0x2A;
+    case 'X': case 'x': return 0x76;
+    case 'Y': case 'y': return 0x6E;
+    case 'Z': case 'z': return 0x5B;
     case '-': return 0x40;
     case '_': return 0x08;
+    case '=': return 0x48;
     default: return 0x00;
     }
 }

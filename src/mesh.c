@@ -661,6 +661,8 @@ static int fresh_neighbours(uint16_t *ids, link_t **links)
     return n;
 }
 
+static uint8_t s_status_tail[MESH_STATUS_TAIL];
+static int s_status_tail_n;
 static void publish_slow(void)
 {
     if (!s_status_ok) return;
@@ -670,7 +672,7 @@ static void publish_slow(void)
     uint16_t ids[MAX_NEIGHBOURS];
     link_t *links[MAX_NEIGHBOURS];
     int n = fresh_neighbours(ids, links);
-    if (sizeof s_status + 1 + n * 4 > sizeof b) n = (sizeof b - sizeof s_status - 1) / 4;
+    if (sizeof s_status + 1 + n * 4 + s_status_tail_n > sizeof b) n = (sizeof b - sizeof s_status - 1 - s_status_tail_n) / 4;
     uint8_t *q = b + sizeof s_status;
     q[0] = (uint8_t)n;
     for (int k = 0; k < n; k++) {
@@ -683,7 +685,8 @@ static void publish_slow(void)
     }
     memcpy(s_nb, ids, n * sizeof ids[0]);
     s_nb_n = n;
-    own_publish(S_SLOW, b, sizeof s_status + 1 + n * 4);
+    memcpy(q + 1 + n * 4, s_status_tail, s_status_tail_n);
+    own_publish(S_SLOW, b, sizeof s_status + 1 + n * 4 + s_status_tail_n);
 }
 
 void mesh_publish_hot(const mesh_hot_t *h)
@@ -693,9 +696,11 @@ void mesh_publish_hot(const mesh_hot_t *h)
     own_publish(S_HOT, &c, sizeof c);
 }
 
-void mesh_publish_status(const mesh_status_t *s)
+void mesh_publish_status(const mesh_status_t *s, const void *tail, int tail_n)
 {
     s_status = *s;
+    s_status_tail_n = tail_n < 0 ? 0 : tail_n > MESH_STATUS_TAIL ? MESH_STATUS_TAIL : tail_n;
+    memcpy(s_status_tail, tail, s_status_tail_n);
     s_status_ok = true;
     publish_slow();
 }

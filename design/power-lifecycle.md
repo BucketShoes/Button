@@ -32,10 +32,14 @@ The estimate (`s_batt_mv`) aims at the open-circuit voltage:
 
 A one-minute average of loaded readings below 3.0 V also counts as dead, because the estimate can lag a fast fall and the brown-out detector watches the loaded rail. On USB nothing is learnt, and the estimate starts again when USB comes or goes.
 
+The levels have 50 mV of hysteresis upwards (BATT_HYST_MV): a worse level applies at once, a better one only 50 mV above its threshold. Without it a cell sitting at 3.5 V crossed "low" both ways every minute or two, because the estimate jumps up on any loaded reading above it and creeps back down at 3 mV a minute.
+
+A deep-sleep wake that isn't a lid press or USB (the battery check, or anything unexpected) reads the cell and goes straight back to sleep before BLE, the speaker or the LEDs are started. Each wake is counted in RTC RAM with its cause (since the last restart) and shown in the page's Advanced, to find what was waking a near-empty button over and over (2026-11-23: it advertised but couldn't be connected to, with the awake LED pulsing about twice a second; the wakes then each started BLE before going back).
+
 | Level | Range | On | Off |
 |---|---|---|---|
 | Normal | ≥ 3.5 V | as usual | BLE (legacy, slow) |
-| Low | < 3.5 V | as usual, battery flash + beep every 30 s, auto-off after 11 min idle at most | no BLE (low sleep) |
+| Low | < 3.5 V | as usual, battery flash + beep every 30 s (not within 10 s of another sound), auto-off after 11 min idle at most | no BLE (low sleep) |
 | Dead | < 3.3 V (0 %) | goes dark at once into the dead sleep; won't turn on | low sleep; a press shows "bAtt Lo" |
 | Overdischarge | < 3.1 V | cut-out: deep sleep, USB only | the same |
 

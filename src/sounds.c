@@ -214,3 +214,14 @@ sound_t sounds_blip(int set, int i)
     if (set == SOUNDS_MEDIEVAL) return one(SLOT_DIAG, s_med_blip[i], s_med_blip_len[i]);
     return one(SLOT_DIAG, s_blip[i], s_blip_len[i]);
 }
+
+uint32_t sounds_ms(sound_t s)
+{
+    uint32_t most = 0;
+    for (int v = 0; v < s.count; v++) {
+        uint32_t ms = 0;
+        for (int i = 0; i < s.v[v].n; i++) ms += s.v[v].notes[i].ms;
+        if (ms > most) most = ms;
+    }
+    return most;
+}
