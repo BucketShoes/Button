@@ -53,7 +53,7 @@ bool synth_busy(void);  // any channel playing
 // Add the next SYNTH_BLOCK samples of every channel into acc (which the caller zeroes, and may already
 // hold other audio, e.g. the PCM clip).
 void synth_render(int32_t *acc);
-// The master stage: gain (Q16, 65536 = full), then a soft limit to 16 bits.
+// The master stage: gain (Q16, 65536 = full), then a hard clip at -2 dBFS.
 int16_t synth_out(int32_t acc, int32_t gain_q16);
 // The plain square and triangle waves' level, Q8 (256 = as written). The medieval set's instruments are
 // quieter than full-scale squares, so the admin beeps (shared by both sets) are turned down to match.

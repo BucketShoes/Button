@@ -9,7 +9,7 @@ main.c (when) ──audio_play(slot, notes)──► queue ──► audio task 
                                                       │ every 10 ms block:
 sounds.c (what: the player sounds per set)            │   PCM clip (flash partition) ─┐
 main.c tables (the admin sounds)                      │   synth_render (synth.c) ─────┤ sum (int32)
-                                                      │   synth_out: master gain, soft limit → int16
+                                                      │   synth_out: master gain, clip at -2 dBFS → int16
                                                       ▼
                                        I2S PDM TX, 48 kHz, IO18 → RC filter → NS4150C amp → FS-1540
 ```
@@ -43,7 +43,7 @@ Each slot plays one note sequence at a time, and starting a new one on a slot re
   - Per sample, everything is integer: 32-bit phase accumulators, a 1024-entry sine table, the FM product left to wrap mod 2³² (which is phase arithmetic), and xorshift noise.
   - The envelopes, index and pitch are floats, updated every 32 samples (0.67 ms).
   - The C6 has no FPU, so those floats are soft float. Per voice that's about 1,500 updates a second, roughly 2–3 % of the CPU per instrument voice.
-- **Master stage:** the gain (Q16, set by the volume in dB steps), then a soft knee above 20000 that runs smoothly towards full scale. So voices that overlap at full volume compress instead of hard-clipping. It does nothing at the default volume, which peaks well below the knee.
+- **Master stage:** the gain (Q16, set by the volume in dB steps), then a hard clip at −2 dBFS (26028), and nothing at all below it. The mix is ours, so only the odd overlapping peak reaches it.
 
 ## Where the sounds are defined
 

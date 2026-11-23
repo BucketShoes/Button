@@ -962,6 +962,7 @@ static batt_level_t level_at(int mv, int avg)
 // at a threshold crossed it both ways every minute or two (the page's "low" came and went). USB, or no
 // reading yet, starts it again.
 static batt_level_t s_batt_lvl;
+static batt_level_t s_cell_lvl;  // the last level read off USB (kept through USB: see charge_hold)
 static batt_level_t batt_level(void)
 {
     if (on_usb() || !s_batt_mv) return s_batt_lvl = BATT_NORMAL;
@@ -970,6 +971,7 @@ static batt_level_t batt_level(void)
         batt_level_t up = level_at(s_batt_mv - BATT_HYST_MV, s_batt_avg_mv ? s_batt_avg_mv - BATT_HYST_MV : 0);
         l = up < s_batt_lvl ? up : s_batt_lvl;
     }
+    s_cell_lvl = l;
     return s_batt_lvl = l;
 }
 // For the battery % and the page: the estimate on battery; on USB the latest VSYS reading (the cell
@@ -1020,12 +1022,11 @@ static void usb_lock_update(uint32_t now)
     else esp_pm_lock_release(s_usb_lock);
 }
 
-// PWR_EN also closes QBAT1, which is the charger's (TP4057 on VSYS) only full path into the cell: with it
-// open the cell charges only through QBAT1's body diode, to a diode drop under the charger. So on USB it's
-// held on in every state but shipping, which keeps the cell wherever it is for storage (the diode still
-// brings an empty one up to about 3.6 V, with nothing for the ESP to do). Deep sleep releases it (pads
-// isolated): on USB the only deep sleep is shipping, since the battery levels don't apply there.
-static bool charge_hold(void) { return on_usb() && s_intent != INTENT_SHIP; }
+// PWR_EN also closes QBAT1, the charger's (TP4057 on VSYS) only full path into the cell: with it open the
+// cell charges only through QBAT1's body diode, to a diode drop under the charger. So with USB's digital
+// level high it's held on, in every state and through deep sleep, if the last level read off USB was low
+// or normal. Dead or overdischarged it stays off: the diode charges the cell regardless.
+static bool charge_hold(void) { return on_usb() && s_cell_lvl < BATT_DEAD; }
 static void pwr_en_apply(void) { gpio_set_level(PIN_PWR_EN, s_periph_on || charge_hold()); }
 
 static void periph_power(bool on)
@@ -1108,11 +1109,21 @@ static void sleep_now(deep_t kind, bool back)
     //   lid switches IO2, IO6, IO7 (to GND, no external pulls): as a wake source, inputs with the LP
     //     pull-up; in overdischarge (USB only) isolated, so a held lid draws no pull-up current
     //   pedals IO0, IO1 (no external pulls, never a wake source), VSYS sense IO3 (divider from the switched
-    //     VSYS), PWR_EN IO5 (its 100k pull-down holds it low): isolated, input, output and pulls all off
+    //     VSYS): isolated
+    //   PWR_EN IO5: driven high and held while charging (charge_hold), else isolated (its 100k pull-down
+    //     holds it low), input, output and pulls all off
     //   VBUS sense IO4: input with no pulls, its 100k/150k divider sets the level
     // (IO8's 10k pull-up is external and it isn't an LP pad.)
-    const gpio_num_t iso[4] = {PIN_PEDAL1, PIN_PEDAL2, PIN_VSYS_SENSE, PIN_PWR_EN};
-    for (int i = 0; i < 4; i++) rtc_gpio_isolate(iso[i]);
+    const gpio_num_t iso[3] = {PIN_PEDAL1, PIN_PEDAL2, PIN_VSYS_SENSE};
+    for (int i = 0; i < 3; i++) rtc_gpio_isolate(iso[i]);
+    if (charge_hold()) {  // charging: PWR_EN held high (USB going wakes it, and then it's let go)
+        rtc_gpio_init(PIN_PWR_EN);
+        rtc_gpio_set_direction(PIN_PWR_EN, RTC_GPIO_MODE_OUTPUT_ONLY);
+        rtc_gpio_set_level(PIN_PWR_EN, 1);
+        rtc_gpio_hold_en(PIN_PWR_EN);
+    } else {
+        rtc_gpio_isolate(PIN_PWR_EN);
+    }
     rtc_gpio_init(PIN_VBUS_SENSE);
     rtc_gpio_set_direction(PIN_VBUS_SENSE, RTC_GPIO_MODE_INPUT_ONLY);
     rtc_gpio_pullup_dis(PIN_VBUS_SENSE);

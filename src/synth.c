@@ -36,8 +36,7 @@ static int16_t s_sine[1 << SINE_BITS];  // full scale (32767)
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-#define LIM_T 20000                      // soft limiter knee (see synth_out)
-#define LIM_R (32767 - LIM_T)
+#define CLIP 26028                       // -2 dBFS: the output clips here (see synth_out)
 
 static bool is_inst(int wave) { return wave >= W_BELL; }
 
@@ -292,19 +291,8 @@ void synth_render(int32_t *acc)
 int16_t synth_out(int32_t acc, int32_t gain_q16)
 {
     int32_t v = (int32_t)(((int64_t)acc * gain_q16) >> 16);
-    // Soft limit above LIM_T: a smooth knee towards full scale instead of a hard clip, so voices
-    // that overlap at full volume (the drums under the horn, the bells under the fanfare) thicken
-    // rather than buzz. Unchanged below the knee (all of it at the default volume).
-    // (32-bit: LIM_R * d fits for d up to 336000, about 10 x full scale over the knee; anything past
-    // that is at full scale anyway. One hardware divide per limited sample on the C6.)
-    int32_t a = v < 0 ? -v : v;
-    if (a > LIM_T) {
-        uint32_t d = (uint32_t)(a - LIM_T);
-        if (d > 300000) d = 300000;
-        a = LIM_T + (int32_t)((uint32_t)LIM_R * d / ((uint32_t)LIM_R + d));
-        v = v < 0 ? -a : a;
-    }
-    return (int16_t)v;
+    // A hard clip at -2 dBFS, nothing below it: the mix is ours, so peaks past it are a few samples.
+    return (int16_t)(v > CLIP ? CLIP : v < -CLIP ? -CLIP : v);
 }
 
 void synth_init(void)
