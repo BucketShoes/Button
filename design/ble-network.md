@@ -314,6 +314,45 @@ the page has one active link and passive ones, and it follows the active link's 
 - **Device lists** (address, RSSI): on request from one admin, routed back to that admin only, never flooded.
 - **Button GPS:** the page stamps a button's location from the phone into config, slow-gossiped, for a field map.
 
+## Ideas: a quieter network (2026-11-23, not built)
+
+**Where the radio time goes now, per button, while on** (ble.c):
+- **Coded scans:** 600 ms windows (passive, continuous RX), every 3 s ±20 % for the first minute after boot (20 %
+  RX duty), then every 15 s ±20 % (4 %). None while there's no free connection (all but the 2 phone slots used),
+  and none while off.
+- **Connecting:** a 100/100 ms scan, continuous, for up to 3 s per attempt (CONNECT_TIMEOUT_MS), only when an
+  advert from an unlinked button has been heard.
+- **Adverts:** legacy every 100–150 ms and Coded every 500–550 ms, about 2.6 % of the radio's time together (see
+  the airtime table). Links to buttons at 225–275 ms, about 0.65 % each when idle.
+- So once settled, the scan is the largest single radio cost: 4 % RX with the chip awake throughout. Taking 25 to
+  30 mA for RX with the CPU up (the C6's figure, not measured here), that's roughly 1 to 1.2 mA averaged. Measure it
+  before building anything: the page's "awake %" in Advanced is per status period, and the scan is most of what a
+  settled, untouched button spends awake.
+
+**1. Network quiet, as a command (the user's proposal).** One button gets "quiet" from the page. It floods like any
+command: every button stops scanning and making outgoing connections, but keeps advertising (Coded, slower: every
+2 s) and keeps accepting connections. Once the command has spread (when every button's status says quiet, or after
+a fixed few seconds), each drops its links to other buttons. Any incoming connection, from a phone or another
+button, turns growth back on at that button: it scans, connects out, and the buttons it connects to turn growth on
+too, so one button that wants a network brings the whole network back, one hop every scan period (early-mode
+scanning: about 3 s a hop).
+- **What's lost while quiet:** the page sees only buttons it connects to directly, and "all" commands (start, pause,
+  copy settings) reach only those. The game itself doesn't need the network: each button runs its own clocks.
+- **Saves:** the scan (about 4 % RX) and the links' events; adverts stay.
+- **Setting or command?** Better as a setting ("network: always on / quiet once settled") kept in config, so it
+  survives a reboot, with the page's "wake the network" being just a connection. A reboot then comes up quiet,
+  which is fine, since any connection brings it back.
+
+**2. Known buttons.** Each button keeps a list in NVS of every button id it has ever linked to or heard items from
+(16 ids is 32 bytes). For the first few minutes after a boot it scans as now, and so does a button whose network is
+missing one of them. Once every known id is fresh in its network (directly or through others, from the items
+every button already holds), it stops scanning, and starts again when any of them goes stale. So adding a button
+needs a boot of either, or a gap in the network. A retired button would keep everyone scanning for ever: it needs
+a "forget" (a page command, or dropping ids not seen for a week).
+- Both together: (2) is the automatic version of (1) for a complete network; (1) also drops the links.
+- With 5 buttons, a working network is a connected graph, not a full mesh, so "complete" is "every known id is in
+  the network's items", not "linked to all of them".
+
 ## Open questions
 
 - Do iPhones and the Android phones in use accept a PHY update to Coded from Chrome? Does Windows Chrome?
