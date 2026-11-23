@@ -37,6 +37,9 @@ typedef struct {
 } ble_ev_t;
 
 void ble_init(const char *name);
+void ble_stop(void);  // host and controller down, before deep sleep
+// The wake log characteristic's value: fn fills buf (up to max) when a central reads it.
+void ble_set_wakes_reader(size_t (*fn)(uint8_t *buf, size_t max));
 void ble_set_name(const char *name);
 bool ble_poll(ble_msg_t *m);                       // non-blocking
 void ble_publish_state(const void *p, size_t n);   // read value + notify subscribers

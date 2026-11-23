@@ -288,7 +288,7 @@ static bool s_build_started;
 // A capture's call plays out before the count towards the pause starts: the pause, reset and power-off
 // points of this hold move later by its length (0 for a hold that didn't capture).
 static uint32_t s_hold_shift;
-#define CAPTURE_DARK_MS 200  // at the capture the ring and displays go dark this long: "done", then the new owner
+#define CAPTURE_DARK_MS 150  // at the capture the ring and displays go dark this long: "done", then the new owner
 // This hold started during a game pause: no capture. Held to the pause point it
 // releases the button from the game pause into a regular pause, so BLE is never needed.
 static bool s_hold_gp;
@@ -840,6 +840,63 @@ static void wake_record(bool restart, int cause)
     }
     s_wake_check = s_wakes ^ s_wake_cause ^ WAKE_CHECK;
 }
+// Every start (a reset of any kind, or a deep-sleep wake), in RTC RAM, for the page (the wake log
+// characteristic): what started it, what it found, what it did. The last WAKE_LOG_N; only a power-on
+// clears it, so a run of wakes or brown-outs that nobody could watch is still there once it's back on.
+#define WAKE_LOG_N 20
+typedef struct {
+    uint32_t ms;        // LP timer at the start (ms)
+    uint8_t reset;      // esp_reset_reason()
+    uint8_t cause;      // esp_sleep_get_wakeup_cause()
+    uint8_t pins;       // the ext1 pins that woke it (bit n = IOn)
+    uint8_t from;       // the deep sleep it was in (deep_t, 0xF = none) | the saved power choice << 4
+    uint8_t went;       // WENT_*, | 0x80 once the radio started
+    uint8_t mv10;       // the last rest reading: (mV - 2500) / 10, 0 = none
+    uint16_t awake_ms;  // since the start (after the boot loader), at the last update
+} wake_log_t;
+enum { WENT_RUNNING = 0, WENT_DEEP = 1, WENT_BACK = 5, WENT_PEEK = 9, WENT_ON, WENT_OFF, WENT_AUTO };  // DEEP, BACK: + deep_t
+static RTC_NOINIT_ATTR wake_log_t s_wlog[WAKE_LOG_N];
+static RTC_NOINIT_ATTR uint32_t s_wlog_head, s_wlog_count, s_wlog_check;
+#define WLOG_CHECK 0x7A6E1060u
+static wake_log_t *s_wlog_cur;
+static void wake_log_start(uint8_t reset, uint8_t cause, uint8_t pins, uint8_t from)
+{
+    if (reset == ESP_RST_POWERON || s_wlog_check != (s_wlog_head ^ s_wlog_count ^ WLOG_CHECK) ||
+        s_wlog_head >= WAKE_LOG_N || s_wlog_count > WAKE_LOG_N)
+        s_wlog_head = s_wlog_count = 0;
+    s_wlog_cur = &s_wlog[s_wlog_head];
+    *s_wlog_cur = (wake_log_t){.ms = (uint32_t)(esp_rtc_get_time_us() / 1000), .reset = reset, .cause = cause, .pins = pins, .from = from};
+    s_wlog_head = (s_wlog_head + 1) % WAKE_LOG_N;
+    if (s_wlog_count < WAKE_LOG_N) s_wlog_count++;
+    s_wlog_check = s_wlog_head ^ s_wlog_count ^ WLOG_CHECK;
+}
+static void wake_log_went(int went)
+{
+    if (!s_wlog_cur) return;
+    s_wlog_cur->went = (uint8_t)((s_wlog_cur->went & 0x80) | went);
+    int64_t ms = esp_timer_get_time() / 1000;
+    s_wlog_cur->awake_ms = ms > 65535 ? 65535 : (uint16_t)ms;
+}
+static void wake_log_batt(int mv)
+{
+    if (s_wlog_cur && mv > 2500) s_wlog_cur->mv10 = mv >= 5050 ? 255 : (uint8_t)((mv - 2500) / 10);
+}
+// The characteristic's value: version 1, count, entry size, 0, the LP timer now (u32 ms), then the
+// entries, oldest first. (Read on the host task; an entry being updated meanwhile is at worst a moment old.)
+static size_t wake_log_read(uint8_t *buf, size_t max)
+{
+    if (max < 8) return 0;
+    uint32_t n = s_wlog_count <= WAKE_LOG_N ? s_wlog_count : 0, now = (uint32_t)(esp_rtc_get_time_us() / 1000);
+    if (8 + n * sizeof(wake_log_t) > max) n = (max - 8) / sizeof(wake_log_t);
+    buf[0] = 1;
+    buf[1] = (uint8_t)n;
+    buf[2] = sizeof(wake_log_t);
+    buf[3] = 0;
+    memcpy(buf + 4, &now, 4);
+    for (uint32_t i = 0; i < n; i++)
+        memcpy(buf + 8 + i * sizeof(wake_log_t), &s_wlog[(s_wlog_head + WAKE_LOG_N - n + i) % WAKE_LOG_N], sizeof(wake_log_t));
+    return 8 + n * sizeof(wake_log_t);
+}
 static int deep_kind_saved(void) { return s_deep_check == (s_deep_kind ^ DEEP_CHECK) && s_deep_kind <= DEEP_OVER ? (int)s_deep_kind : -1; }
 
 static uint32_t s_next_batt_check, s_next_batt_warn, s_next_flash, s_flash_until;
@@ -857,6 +914,7 @@ static void game_flash_clear(void);
 static uint8_t s_last_frame_valid;
 
 static bool s_usb;  // USB power, from the VBUS pin's digital level (updated every loop pass)
+static bool s_radio;  // BLE and the network started (see radio_start)
 static bool on_usb(void) { return s_usb; }
 
 // The battery estimate: as close to the open-circuit voltage as it has seen. A rest reading (nothing
@@ -871,6 +929,7 @@ static int s_batt_avg_mv;  // 1 min average of the loaded readings (0 = none)
 static uint32_t s_batt_at;
 static void batt_rest(int mv, uint32_t now)
 {
+    wake_log_batt(mv);
     s_batt_uv = mv * 1000;
     s_batt_mv = mv;
     s_batt_avg_mv = 0;
@@ -913,7 +972,8 @@ static batt_level_t batt_level(void)
     }
     return s_batt_lvl = l;
 }
-// For the battery %: the estimate (on USB, VSYS: the charger).
+// For the battery % and the page: the estimate on battery; on USB the latest VSYS reading (the cell
+// terminal voltage while charging: no better or worse a guess at its open-circuit voltage than a loaded one).
 static int batt_now_mv(void) { return !on_usb() && s_batt_mv ? s_batt_mv : s_vsys_mv; }
 
 static void activity(uint32_t now) { s_last_activity = now; }
@@ -1005,22 +1065,24 @@ static void batt_check_rest(uint32_t now)
 //   dead           the same, the timer hourly; a press only shows "bAtt Lo"
 //   overdischarge  USB appearing only: no timer, no press (the pull-ups are off too)
 // BOOT (IO9) isn't an LP pin, so it can't wake deep sleep.
-static void sleep_now(deep_t kind);
+static void sleep_now(deep_t kind, bool back);
 static void deep_sleep(deep_t kind)
 {
     if (kind == DEEP_OVER) s_running = false;  // nothing keeps time any more
     game_save();
     game_save_flash();
-    sleep_now(kind);
+    sleep_now(kind, false);
 }
 // The same without saving the game: for a wake that goes straight back, before the game is restored
 // (the saved copy, and its LP-timer time, are still right).
-static void sleep_now(deep_t kind)
+static void sleep_now(deep_t kind, bool back)
 {
     s_deep_kind = kind;
     s_deep_check = kind ^ DEEP_CHECK;
     bool press_wake = kind != DEEP_OVER;
     ESP_LOGW(TAG, "deep sleep: %s (battery %d mV%s)", DEEP_NAME[kind], s_batt_mv, on_usb() ? ", USB" : "");
+    wake_log_went((back ? WENT_BACK : WENT_DEEP) + kind);
+    if (s_radio) ble_stop();  // IDF: host and controller down before sleeping
     periph_power(false);
     for (int i = 0; i < 500 && press_wake && any_face_raw(); i++) vTaskDelay(pdMS_TO_TICKS(10));
     // Clear every wake source first. Auto light sleep arms a timer wake before each nap and leaves
@@ -1033,15 +1095,32 @@ static void sleep_now(deep_t kind)
     // 0.6 x VBUS: wake on a change (ext1 levels are per pin on the C6). Overdischarge: only appearing.
     if (kind != DEEP_OVER || !on_usb())
         esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+    // Every LP pad (IO0..IO7) is set for the sleep and held (app_main releases them at every start):
+    //   lid switches IO2, IO6, IO7 (to GND, no external pulls): as a wake source, inputs with the LP
+    //     pull-up; in overdischarge (USB only) isolated, so a held lid draws no pull-up current
+    //   pedals IO0, IO1 (no external pulls, never a wake source), VSYS sense IO3 (divider from the switched
+    //     VSYS), PWR_EN IO5 (its 100k pull-down holds it low): isolated, input, output and pulls all off
+    //   VBUS sense IO4: input with no pulls, its 100k/150k divider sets the level
+    // (IO8's 10k pull-up is external and it isn't an LP pad.)
+    const gpio_num_t iso[4] = {PIN_PEDAL1, PIN_PEDAL2, PIN_VBAT_SENSE, PIN_PWR_EN};
+    for (int i = 0; i < 4; i++) rtc_gpio_isolate(iso[i]);
+    rtc_gpio_init(PIN_VBUS_SENSE);
+    rtc_gpio_set_direction(PIN_VBUS_SENSE, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_dis(PIN_VBUS_SENSE);
+    rtc_gpio_pulldown_dis(PIN_VBUS_SENSE);
+    rtc_gpio_hold_en(PIN_VBUS_SENSE);
     const gpio_num_t face[3] = {PIN_FACE1, PIN_FACE2, PIN_FACE3};
     uint64_t mask = 0;
     for (int i = 0; i < 3; i++) {
         if (press_wake) {
+            rtc_gpio_init(face[i]);
+            rtc_gpio_set_direction(face[i], RTC_GPIO_MODE_INPUT_ONLY);
             rtc_gpio_pullup_en(face[i]);
             rtc_gpio_pulldown_dis(face[i]);
+            rtc_gpio_hold_en(face[i]);
             mask |= 1ULL << face[i];
         } else {
-            gpio_pullup_dis(face[i]);  // a held lid would draw pull-up current for nothing
+            rtc_gpio_isolate(face[i]);
         }
     }
     if (mask) esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
@@ -1133,6 +1212,7 @@ static void power_set(pwr_t to, uint32_t now)
         }
     }
     s_pwr = to;
+    wake_log_went(to == PWR_ON ? WENT_ON : to == PWR_PEEK ? WENT_PEEK : to == PWR_OFF ? WENT_OFF : WENT_AUTO);
 }
 
 static uint32_t auto_off_ms(void)
@@ -2068,6 +2148,22 @@ static int game_restore(uint32_t now, bool from_deep, bool new_firmware)
     return -1;
 }
 
+// BLE and the network. Not at boot: a start that only peeks or goes back to deep sleep never needs them.
+static void radio_start(void)
+{
+    if (s_radio) return;
+    s_radio = true;
+    if (s_wlog_cur) s_wlog_cur->went |= 0x80;
+    char name[24];
+    if (s_cfg.name[0]) snprintf(name, sizeof name, "%s", s_cfg.name);
+    else default_name(name, sizeof name);
+    ESP_LOGI(TAG, "radio on (%s)", PWR_NAME[s_pwr]);
+    ble_init(name);
+    ble_publish_config(&s_cfg, sizeof s_cfg);
+    mesh_init(on_mesh_cmd);
+    mesh_publish_config(&s_cfg, sizeof s_cfg);
+}
+
 void app_main(void)
 {
     s_reset_reason = (uint8_t)esp_reset_reason();
@@ -2087,13 +2183,11 @@ void app_main(void)
     if (from_deep)
         ESP_LOGW(TAG, "woke from deep sleep: cause %d, ext1 pins 0x%llx", (int)esp_sleep_get_wakeup_cause(),
                  (unsigned long long)esp_sleep_get_ext1_wakeup_status());
-    if (from_deep) {
-        rtc_gpio_deinit(PIN_FACE1);
-        rtc_gpio_deinit(PIN_FACE2);
-        rtc_gpio_deinit(PIN_FACE3);
-        rtc_gpio_deinit(PIN_VBUS_SENSE);
-        const gpio_num_t held[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_VBUS_SENSE};
-        for (int i = 0; i < 4; i++) rtc_gpio_hold_dis(held[i]);  // ext1 holds the pads through sleep
+    // The LP pads held through the last deep sleep (sleep_now), back to the digital pins. At every start:
+    // a hold also lasts through any reset but a power-on.
+    for (int i = 0; i <= 7; i++) {
+        rtc_gpio_hold_dis((gpio_num_t)i);
+        rtc_gpio_deinit((gpio_num_t)i);
     }
     power_pins_init();
     ESP_LOGI(TAG, "capture button firmware, board b43; reset reason %d%s, boot %lu since power-on", s_reset_reason,
@@ -2126,11 +2220,13 @@ void app_main(void)
         wake_record(!from_deep, cause == ESP_SLEEP_WAKEUP_TIMER ? WAKE_TIMER : press ? WAKE_LID : usb_pin ? WAKE_USB
                                 : cause == ESP_SLEEP_WAKEUP_EXT1 ? WAKE_EXT1_NONE : WAKE_OTHER);
         int kind = deep_kind_saved();
-        if (from_deep && kind >= 0 && !press && !usb_pin && !on_usb()) {
+        wake_log_start(s_reset_reason, (uint8_t)cause, (uint8_t)pins, (uint8_t)((from_deep && kind >= 0 ? kind : 0xF) | s_intent << 4));
+        // (The VBUS pin flagged with no USB now is USB going, or a false wake: back to sleep either way.)
+        if (from_deep && kind >= 0 && !press && !on_usb()) {
             batt_rest(read_batt_rest(), now_ms());
             if (batt_level() < BATT_OVER) {
                 ESP_LOGI(TAG, "%s sleep: back to sleep (battery %d mV, wake %lu)", DEEP_NAME[kind], s_batt_mv, (unsigned long)s_wakes);
-                sleep_now((deep_t)kind);
+                sleep_now((deep_t)kind, true);
             }
         }
     }
@@ -2146,17 +2242,8 @@ void app_main(void)
     pm_init();
     wake_init();
     ble_set_notify_task(xTaskGetCurrentTaskHandle());  // BLE events wake the game loop
-
-    char name[24];
-    if (s_cfg.name[0]) {
-        snprintf(name, sizeof name, "%s", s_cfg.name);
-    } else {
-        default_name(name, sizeof name);
-    }
-    ble_init(name);
-    ble_publish_config(&s_cfg, sizeof s_cfg);
-    mesh_init(on_mesh_cmd);
-    mesh_publish_config(&s_cfg, sizeof s_cfg);
+    ble_set_wakes_reader(wake_log_read);
+    // (BLE and the network start in the loop, once it's on, auto-off or off: see radio_start.)
 
     uint32_t last = now_ms();
     game_reset(last);
@@ -2294,8 +2381,14 @@ void app_main(void)
             }
         }
 
-        ble_service(now);
-        mesh_tick(now);
+        // The radio starts once it's on, auto-off or off (off keeps slow legacy adverts for the page), never
+        // for a peek: a wake that peeks and sleeps again (shipping, a low cell) never advertises, and every
+        // decision to deep-sleep at a start is made before the first pass.
+        if (!s_radio && s_pwr != PWR_PEEK) radio_start();
+        if (s_radio) {
+            ble_service(now);
+            mesh_tick(now);
+        }
         if (s_factory_off_at && (int32_t)(now - s_factory_off_at) >= 0) {
             s_factory_off_at = 0;
             if (s_pwr != PWR_OFF) power_set(PWR_OFF, now);  // the off sound, peripherals down
@@ -2303,7 +2396,7 @@ void app_main(void)
             deep_sleep(DEEP_SHIP);
         }
         game_tick(now, dt);
-        net_publish(now);
+        if (s_radio) net_publish(now);
         if (s_pwr == PWR_ON) countdown_blips();
         // Final minute of a countdown: keep the speaker awake so the blips are on time.
         int32_t tw = s_owner >= 0 ? to_win_ms(s_owner) : -1;
@@ -2337,6 +2430,12 @@ void app_main(void)
             if ((int32_t)(now - next_refresh) >= 0) {
                 next_refresh = now + 2000;
                 display_force_refresh();
+            }
+            // The capture's dark starts and ends on the next pass on the displays too, not on their 20 Hz grid.
+            static bool was_dark;
+            if (capture_dark() != was_dark) {
+                was_dark = !was_dark;
+                next_disp = next_led = now;
             }
             if ((int32_t)(now - next_disp) >= 0) {
                 next_disp = now + 50;

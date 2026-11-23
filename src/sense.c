@@ -41,6 +41,12 @@ static void unit_init(void)
     // The channel setup turns the pad's digital input off; VBUS presence is read digitally too
     // (0.6 x VBUS: high above about 4.1 V), so it needs no ADC conversion while off.
     gpio_input_enable(PIN_VBUS_DIGITAL);
+    // No internal pulls on either, ever: each has its own divider (VBUS 100k/150k, VSYS 100k/100k), and a
+    // pull would move the reading. (GPIO4 is MTMS, a JTAG pin: nothing here may assume its reset pulls.)
+    gpio_pullup_dis(PIN_VBUS_DIGITAL);
+    gpio_pulldown_dis(PIN_VBUS_DIGITAL);
+    gpio_pullup_dis(GPIO_NUM_3);
+    gpio_pulldown_dis(GPIO_NUM_3);
 }
 
 void sense_init(void)

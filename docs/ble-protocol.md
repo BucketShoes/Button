@@ -30,8 +30,26 @@ All values are little-endian. UUIDs are `5c0b000N-7a1e-4d2b-9f3a-6b1e2d3c4f50`:
 | 4 | command | write |
 | 5 | link (9 bytes) | read |
 | 6 | network frames | write, write without response, notify |
+| 7 | wake log (up to 248 bytes) | read |
 
-The control page only uses 5 and 6. Characteristics 2–4 still work for talking to one button directly.
+The control page uses 5, 6 and 7. Characteristics 2–4 still work for talking to one button directly.
+
+## Wake log
+
+Every start of the button (a reset of any kind, or a deep-sleep wake) since it was last powered up, the last 20,
+kept in RTC RAM (a brown-out keeps it; only a power-on clears it). Header: u8 version (1), u8 count, u8 entry size
+(12), u8 0, u32 the LP timer now (ms). Then the entries, oldest first:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | LP timer at the start (ms) |
+| 4 | u8 | reset reason (`esp_reset_reason_t`; 8 = deep-sleep wake) |
+| 5 | u8 | wake cause (`esp_sleep_wakeup_cause_t`: 3 = ext1, 4 = timer) |
+| 6 | u8 | ext1 pins that woke it, bit n = IOn |
+| 7 | u8 | low nibble: the deep sleep it was in (0 shipping, 1 low, 2 dead, 3 overdischarge, 15 none); high nibble: the saved power choice (0 on, 1 off, 2 shipping) |
+| 8 | u8 | what it did: 0 nothing yet (still running, or it reset), 1–4 deep sleep (+ the kind) after starting, 5–8 straight back to that sleep, 9 peek, 10 on, 11 off, 12 auto-off; bit 7: the radio had started |
+| 9 | u8 | last rest reading of the battery, (mV − 2500) / 10 (0 = none) |
+| 10 | u16 | ms awake since the start (after the boot loader) at that decision |
 
 ## Link
 

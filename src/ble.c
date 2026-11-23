@@ -24,8 +24,9 @@ static const ble_uuid128_t CONFIG_UUID = BTN_UUID(3);
 static const ble_uuid128_t CMD_UUID = BTN_UUID(4);
 static const ble_uuid128_t LINK_UUID = BTN_UUID(5);
 static const ble_uuid128_t NET_UUID = BTN_UUID(6);
+static const ble_uuid128_t WAKES_UUID = BTN_UUID(7);
 
-enum { CHR_STATE = 1, CHR_CONFIG, CHR_CMD, CHR_LINK, CHR_NET };
+enum { CHR_STATE = 1, CHR_CONFIG, CHR_CMD, CHR_LINK, CHR_NET, CHR_WAKES };
 
 // Two advertising sets: legacy 1M (Chrome can only connect through legacy adverts) and
 // extended connectable on Coded PHY, primary and secondary (range; buttons and apps).
@@ -59,6 +60,7 @@ enum { ADV_LEGACY = 0, ADV_CODED = 1, ADV_SETS };
 #define FRAME_MAX_CODED 120
 
 #define VAL_MAX 64
+#define WAKES_MAX 256  // the wake log's value (a long read past the MTU)
 #define LINK_LEN 9
 #define MAX_CONN CONFIG_BT_NIMBLE_MAX_CONNECTIONS
 
@@ -135,6 +137,13 @@ static const struct ble_gatt_svc_def SVCS[] = {
                     .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY,
                     .val_handle = &s_net_h,
                 },
+                {
+                    // The wake log (main.c wake_log_read): read on demand, filled by the reader.
+                    .uuid = &WAKES_UUID.u,
+                    .access_cb = chr_access,
+                    .arg = (void *)CHR_WAKES,
+                    .flags = BLE_GATT_CHR_F_READ,
+                },
                 {0},
             },
     },
@@ -160,6 +169,8 @@ static conn_t *conn_get(uint16_t h)
 
 static TaskHandle_t s_notify_task;
 void ble_set_notify_task(void *task) { s_notify_task = (TaskHandle_t)task; }
+static size_t (*s_wakes_reader)(uint8_t *buf, size_t max);
+void ble_set_wakes_reader(size_t (*fn)(uint8_t *buf, size_t max)) { s_wakes_reader = fn; }
 
 static void post_ev(uint8_t kind, uint16_t h, bool central, struct os_mbuf *om)
 {
@@ -215,9 +226,11 @@ static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt 
 {
     int which = (int)(intptr_t)arg;
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        uint8_t buf[VAL_MAX];
+        static uint8_t buf[WAKES_MAX];  // host task only
         size_t n = 0;
-        if (which == CHR_LINK) {
+        if (which == CHR_WAKES) {
+            n = s_wakes_reader ? s_wakes_reader(buf, sizeof buf) : 0;
+        } else if (which == CHR_LINK) {
             link_info(conn, buf);
             n = LINK_LEN;
         } else {
@@ -788,6 +801,18 @@ void ble_init(const char *name)
     ble_npl_callout_init(&s_scan_co, nimble_port_get_dflt_eventq(), scan_start, NULL);
     ble_npl_callout_init(&s_param_co, nimble_port_get_dflt_eventq(), param_check, NULL);
     nimble_port_freertos_init(host_task);
+}
+
+// Before deep sleep: the host stopped and the controller disabled and freed, as IDF asks (the radio is
+// powered down in deep sleep either way, but this takes the controller's sleep-clock and wake-source
+// requests down with it). Links just drop. Not from the host task.
+void ble_stop(void)
+{
+    if (!s_mu) return;
+    s_synced = false;
+    int rc = nimble_port_stop();
+    if (rc) ESP_LOGW(TAG, "nimble stop: %d", rc);
+    else nimble_port_deinit();
 }
 
 void ble_set_name(const char *name)
