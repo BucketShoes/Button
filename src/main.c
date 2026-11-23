@@ -1020,6 +1020,14 @@ static void usb_lock_update(uint32_t now)
     else esp_pm_lock_release(s_usb_lock);
 }
 
+// PWR_EN also closes QBAT1, which is the charger's (TP4057 on VSYS) only full path into the cell: with it
+// open the cell charges only through QBAT1's body diode, to a diode drop under the charger. So on USB it's
+// held on in every state but shipping, which keeps the cell wherever it is for storage (the diode still
+// brings an empty one up to about 3.6 V, with nothing for the ESP to do). Deep sleep releases it (pads
+// isolated): on USB the only deep sleep is shipping, since the battery levels don't apply there.
+static bool charge_hold(void) { return on_usb() && s_intent != INTENT_SHIP; }
+static void pwr_en_apply(void) { gpio_set_level(PIN_PWR_EN, s_periph_on || charge_hold()); }
+
 static void periph_power(bool on)
 {
     if (on == s_periph_on) return;
@@ -1039,7 +1047,7 @@ static void periph_power(bool on)
         leds_show(frame, LED_COUNT);  // matters on USB, where VSYS stays up
         vTaskDelay(pdMS_TO_TICKS(5));
         s_periph_on = false;
-        gpio_set_level(PIN_PWR_EN, 0);
+        pwr_en_apply();  // (stays on while charging)
     }
 }
 
@@ -1050,7 +1058,7 @@ static int read_batt_rest(void)
     gpio_set_level(PIN_PWR_EN, 1);
     vTaskDelay(pdMS_TO_TICKS(50));  // divider filter is ~5 ms; the LED caps charge too
     int mv = sense_vsys_mv();
-    gpio_set_level(PIN_PWR_EN, 0);
+    pwr_en_apply();
     return mv;
 }
 static void batt_check_rest(uint32_t now)
@@ -1092,9 +1100,10 @@ static void sleep_now(deep_t kind, bool back)
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     const gpio_num_t light_wake[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_BOOT};
     for (int i = 0; i < 4; i++) gpio_wakeup_disable(light_wake[i]);
-    // 0.6 x VBUS: wake on a change (ext1 levels are per pin on the C6). Overdischarge: only appearing.
-    if (kind != DEEP_OVER || !on_usb())
-        esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+    gpio_wakeup_disable(PIN_VBUS_SENSE);
+    // 0.6 x VBUS, its digital level: wake on a change (ext1 levels are per pin on the C6), in every sleep.
+    // A wake that finds the opposite level again goes back with the opposite armed (see app_main).
+    esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
     // Every LP pad (IO0..IO7) is set for the sleep and held (app_main releases them at every start):
     //   lid switches IO2, IO6, IO7 (to GND, no external pulls): as a wake source, inputs with the LP
     //     pull-up; in overdischarge (USB only) isolated, so a held lid draws no pull-up current
@@ -1102,7 +1111,7 @@ static void sleep_now(deep_t kind, bool back)
     //     VSYS), PWR_EN IO5 (its 100k pull-down holds it low): isolated, input, output and pulls all off
     //   VBUS sense IO4: input with no pulls, its 100k/150k divider sets the level
     // (IO8's 10k pull-up is external and it isn't an LP pad.)
-    const gpio_num_t iso[4] = {PIN_PEDAL1, PIN_PEDAL2, PIN_VBAT_SENSE, PIN_PWR_EN};
+    const gpio_num_t iso[4] = {PIN_PEDAL1, PIN_PEDAL2, PIN_VSYS_SENSE, PIN_PWR_EN};
     for (int i = 0; i < 4; i++) rtc_gpio_isolate(iso[i]);
     rtc_gpio_init(PIN_VBUS_SENSE);
     rtc_gpio_set_direction(PIN_VBUS_SENSE, RTC_GPIO_MODE_INPUT_ONLY);
@@ -1355,6 +1364,9 @@ static void wake_init(void)
         gpio_isr_handler_add(WAKE_PINS[i], face_isr, (void *)(intptr_t)WAKE_PINS[i]);
         gpio_intr_enable(WAKE_PINS[i]);
     }
+    // VBUS sense too, on either edge (armed for the level it isn't at): USB going while off must reach
+    // the loop at once, not at its next hourly pass, or PWR_EN (held for charging) stays on on the cell.
+    gpio_isr_handler_add(PIN_VBUS_SENSE, face_isr, (void *)(intptr_t)PIN_VBUS_SENSE);
     esp_sleep_enable_gpio_wakeup();
 }
 
@@ -1362,6 +1374,8 @@ static void wake_rearm(void)
 {
     for (int i = 0; i < 4; i++)
         if (gpio_get_level(WAKE_PINS[i])) gpio_intr_enable(WAKE_PINS[i]);
+    gpio_wakeup_enable(PIN_VBUS_SENSE, gpio_get_level(PIN_VBUS_SENSE) ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+    gpio_intr_enable(PIN_VBUS_SENSE);
 }
 
 static uint8_t state_flags(uint32_t now)
@@ -2407,6 +2421,7 @@ void app_main(void)
         bool was_usb = s_usb;
         s_usb = sense_vbus_present();
         if (was_usb != s_usb) batt_forget();  // on USB VSYS is the charger; off it, start again from the cell
+        pwr_en_apply();  // charging hold follows USB and the power choice
         if (!s_usb) s_vbus_mv = 0;
         if ((int32_t)(now - next_adc) >= 0) {
             next_adc = now + 250;

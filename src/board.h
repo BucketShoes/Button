@@ -5,7 +5,7 @@
 #define PIN_PEDAL1      GPIO_NUM_0   // JPED1, contact to GND, no ext pull-up
 #define PIN_PEDAL2      GPIO_NUM_1   // JPED2, contact to GND, no ext pull-up
 #define PIN_FACE1       GPIO_NUM_2   // BTN1 west, to GND
-#define PIN_VBAT_SENSE  GPIO_NUM_3   // ADC1_CH3, VSYS/2
+#define PIN_VSYS_SENSE  GPIO_NUM_3   // ADC1_CH3, VSYS/2 (schematic net "VBAT_SENSE": the divider is on VSYS, after QBAT1)
 #define PIN_VBUS_SENSE  GPIO_NUM_4   // ADC1_CH4, 0.6*VBUS
 #define PIN_PWR_EN      GPIO_NUM_5   // high = VSYS + 3V3_SW on
 #define PIN_FACE2       GPIO_NUM_6   // BTN2 south-east, to GND
