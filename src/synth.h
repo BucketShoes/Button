@@ -48,6 +48,7 @@ enum {
 // notes are read in place while they play, so they must stay valid until then.
 void synth_play(int slot, const note_t *notes, int n);
 void synth_stop_all(void);
+void synth_reset(void);  // stop all and clear every channel's state (phases, noise): a fresh start, for repeatable renders
 bool synth_busy(void);  // any channel playing
 // Add the next SYNTH_BLOCK samples of every channel into acc (which the caller zeroes, and may already
 // hold other audio, e.g. the PCM clip).

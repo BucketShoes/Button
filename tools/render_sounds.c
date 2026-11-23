@@ -57,10 +57,10 @@ static void render(const char *dir, const char *name)
         uint32_t e = s_ev[i].at_ms + sound_ms(s_ev[i].s);
         if (e > end) end = e;
     }
-    end += 300;
+    end = (end + 300 + 9) / 10 * 10;  // (whole 10 ms blocks)
     size_t n = (size_t)end / 10 * SYNTH_BLOCK;
     int16_t *pcm = malloc(n * sizeof *pcm);
-    synth_stop_all();
+    synth_reset();  // (each file from a fresh synth, not carrying on from the last one)
     int k = 0;
     for (uint32_t t = 0, i = 0; t < end; t += 10, i += SYNTH_BLOCK) {
         for (; k < s_nev && s_ev[k].at_ms <= t; k++) {

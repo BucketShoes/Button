@@ -306,3 +306,5 @@ void synth_init(void)
 {
     for (int i = 0; i < (1 << SINE_BITS); i++) s_sine[i] = (int16_t)(sinf(i * 2.0f * (float)M_PI / (1 << SINE_BITS)) * 32767.0f);
 }
+
+void synth_reset(void) { memset(s_ch, 0, sizeof s_ch); }
