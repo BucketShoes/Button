@@ -62,11 +62,10 @@
      doesn't move everything below. */
   .linkbar .lk { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; white-space: nowrap; margin-right: 6px; }
   .linkbar .lk .muted { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  .vol { display: flex; align-items: center; gap: 8px; }
-  .vol input { flex: 1; min-width: 0; }
-  .vol output { min-width: 3.6em; font-size: 13px; color: var(--muted); white-space: nowrap; }
-  .vol.boost input { accent-color: var(--warn); }
-  .vol.boost output { color: var(--warn); font-weight: 600; }
+  /* The volume's number sits in its label (the label column is set by longer labels, so it never resizes the slider). */
+  .l-vol output { white-space: nowrap; }
+  .l-vol.boost output { color: var(--warn); font-weight: 600; }
+  input.f-vol.boost { accent-color: var(--warn); }
   .wlog { font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 4px 0 0; color: var(--muted); }
   .card .net { font-size: 13px; margin: 2px 0 6px; }
   .card .row.head { flex-wrap: nowrap; }
@@ -224,7 +223,7 @@
         <label>Team 1 colour</label><input type="color" class="f-col0">
         <label>Team 2 colour</label><input type="color" class="f-col1">
         <label>Sounds</label><select class="f-sounds" title="The capture build-up, captures, countdown and win. Admin sounds (pause, reset, power) stay plain beeps in both."><option value="1">Medieval (drums, horns, bells)</option><option value="0">Sci-fi (synth)</option></select>
-        <label>Volume</label><div class="vol" title="Percent, 0.4 dB a step: -40 dB at 0, 0 dB at 100 (full scale), +10 dB at 125. It sticks at 100. Past 100 is boost: the loud parts are squeezed by the limiter (louder, rougher)."><input type="range" class="f-vol" min="0" max="125" step="1" list="vol-ticks"><output class="f-volv"></output></div>
+        <label class="l-vol">Volume <output class="f-volv"></output></label><input type="range" class="f-vol" min="0" max="125" step="1" list="vol-ticks">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
         <label title="Minutes with no press and no page command. 0 = never.">Idle: half the LEDs (min)</label><input type="number" class="f-idle0" min="0" max="255" step="1">
         <label title="10 % brightness">Idle: dim (min)</label><input type="number" class="f-idle1" min="0" max="255" step="1">
@@ -840,10 +839,10 @@ class Btn {
   }
   // Volume: the number beside it, and boost (past 100) marked. The slider sticks at 100.
   volLabel() {
-    const v = +$(this.el, ".f-vol").value, box = $(this.el, ".vol");
-    $(box, "output").textContent = v > 100 ? `${v} % ⚠` : `${v} %`;
-    box.classList.toggle("boost", v > 100);
-    $(box, "output").title = v > 100 ? "Boost: past full scale, the loud parts are squeezed by the limiter (louder, rougher)" : "";
+    const v = +$(this.el, ".f-vol").value;
+    $(this.el, ".f-volv").textContent = v > 100 ? `${v} % ⚠` : `${v} %`;
+    $(this.el, ".l-vol").classList.toggle("boost", v > 100);
+    $(this.el, ".f-vol").classList.toggle("boost", v > 100);
   }
   settingsVisibility() {
     const e = this.el, mode = +$(e, ".f-mode").value;
