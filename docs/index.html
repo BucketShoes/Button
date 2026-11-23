@@ -58,6 +58,16 @@
   .gamebar select { flex: 1; min-width: 110px; }
   .linkbar { margin-bottom: 8px; line-height: 2; }
   .linkbar button { padding: 2px 8px; font-size: 13px; }
+  /* Each link on one line that can't wrap (an error is cut short, in full on hover), so a retry
+     doesn't move everything below. */
+  .linkbar .lk { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; white-space: nowrap; margin-right: 6px; }
+  .linkbar .lk .muted { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .vol { display: flex; align-items: center; gap: 8px; }
+  .vol input { flex: 1; min-width: 0; }
+  .vol output { min-width: 3.6em; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .vol.boost input { accent-color: var(--warn); }
+  .vol.boost output { color: var(--warn); font-weight: 600; }
+  .wlog { font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 4px 0 0; color: var(--muted); }
   .card .net { font-size: 13px; margin: 2px 0 6px; }
   .card .row.head { flex-wrap: nowrap; }
   .card .head .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -160,6 +170,7 @@
   <a href="https://github.com/BucketShoes/Button">source on GitHub</a>
 </footer>
 
+<datalist id="vol-ticks"><option value="0"></option><option value="50"></option><option value="100"></option><option value="125"></option></datalist>
 <template id="card-tpl">
   <section class="card">
     <div class="row head">
@@ -190,6 +201,8 @@
       <summary>Advanced</summary>
       <div class="net muted"></div>
       <div class="diag muted"></div>
+      <div class="row"><button data-op="wakes" title="Every start of this button (resets and deep-sleep wakes) since it was last powered up, newest first: what started it, what it found, what it did. Read over a direct link.">Wake log</button><span class="wstat note"></span></div>
+      <pre class="wlog" hidden></pre>
       <div class="grid">
         <label>Name</label><input class="f-name" maxlength="15" placeholder="(default)">
         <label>Mode</label>
@@ -211,7 +224,7 @@
         <label>Team 1 colour</label><input type="color" class="f-col0">
         <label>Team 2 colour</label><input type="color" class="f-col1">
         <label>Sounds</label><select class="f-sounds" title="The capture build-up, captures, countdown and win. Admin sounds (pause, reset, power) stay plain beeps in both."><option value="1">Medieval (drums, horns, bells)</option><option value="0">Sci-fi (synth)</option></select>
-        <label>Volume</label><input type="range" class="f-vol" min="0" max="125" step="5" title="Percent, 0.4 dB a step: -40 dB at 0, 0 dB at 100, +10 dB at 125. Past 100 the loud parts are squeezed by the limiter (louder, a little rougher).">
+        <label>Volume</label><div class="vol" title="Percent, 0.4 dB a step: -40 dB at 0, 0 dB at 100 (full scale), +10 dB at 125. It sticks at 100. Past 100 is boost: the loud parts are squeezed by the limiter (louder, rougher)."><input type="range" class="f-vol" min="0" max="125" step="1" list="vol-ticks"><output class="f-volv"></output></div>
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
         <label title="Minutes with no press and no page command. 0 = never.">Idle: half the LEDs (min)</label><input type="number" class="f-idle0" min="0" max="255" step="1">
         <label title="10 % brightness">Idle: dim (min)</label><input type="number" class="f-idle1" min="0" max="255" step="1">
@@ -256,7 +269,7 @@
 "use strict";
 // ---- protocol (see docs/ble-protocol.md) --------------------------------
 const uuid = n => `5c0b000${n}-7a1e-4d2b-9f3a-6b1e2d3c4f50`;
-const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4), CHR_LINK = uuid(5), CHR_NET = uuid(6);
+const SVC = uuid(1), CHR_STATE = uuid(2), CHR_CONFIG = uuid(3), CHR_CMD = uuid(4), CHR_LINK = uuid(5), CHR_NET = uuid(6), CHR_WAKES = uuid(7);
 const PHY = { 1: "1M", 2: "2M", 3: "Coded" };
 const PROTO_VERSION = 3, CONFIG_VERSION = 4, CONFIG_LEN = 46, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
@@ -499,11 +512,20 @@ class Link {
   }
   label() { const b = this.nodeId !== null && buttons.get(this.nodeId); return (b && b.label()) || this.device.name || "Button"; }
 
-  async connect() {
+  // One connect at a time: the chooser picking a button that's reconnecting, and its retry timer, used
+  // to run two. The second found itself already the active link and told the button it was passive,
+  // so the button sent it heartbeats only: commands still went through, but nothing came back and the
+  // card faded.
+  connect() {
+    clearTimeout(this.timer);
+    if (!this.connecting) this.connecting = this.doConnect().finally(() => { this.connecting = null; });
+    return this.connecting;
+  }
+  async doConnect() {
     try {
       this.error = "";
       const server = await this.device.gatt.connect();
-      const svc = await server.getPrimaryService(SVC);
+      const svc = this.svc = await server.getPrimaryService(SVC);
       this.chr = await svc.getCharacteristic(CHR_NET).catch(() => null);
       if (!this.chr) {
         this.error = "firmware too old for this page (no network characteristic): update it";
@@ -521,7 +543,8 @@ class Link {
       this.up = true;
       this.retry = 0;
       this.lastRx = performance.now();
-      if (!net.active || !net.active.up) net.makeActive(this);
+      if (net.active === this) { this.hello(true); net.sendSummary(this); }  // (still the active one: say so again)
+      else if (!net.active || !net.active.up) net.makeActive(this);
       else this.hello(false);
       this.readLink();
     } catch (e) {
@@ -582,6 +605,16 @@ class Link {
     this.queue = p.catch(() => {});
     return p;
   }
+  readWakes() {
+    const p = this.queue.then(async () => {
+      if (!this.up || !this.svc) throw new Error("not connected");
+      const c = await this.svc.getCharacteristic(CHR_WAKES).catch(() => null);
+      if (!c) throw new Error("firmware too old (no wake log)");
+      return c.readValue();
+    });
+    this.queue = p.catch(() => {});
+    return p;
+  }
   readLink() {
     if (!this.chrLink || !this.up) return;
     this.queue = this.queue.then(() => this.chrLink.readValue()).then(dv => {
@@ -590,6 +623,7 @@ class Link {
                     timeout: dv.getUint16(6, true) * 10, rssi: dv.getInt8(8) };
     }).catch(e => console.warn(e));
   }
+  shortText() { return this.up ? this.linkText() : this.error ? "not connected" : "reconnecting…"; }
   linkText() {
     const l = this.info;
     if (!this.up) return this.error ? `not connected (${this.error})` : "reconnecting…";
@@ -737,10 +771,27 @@ class Btn {
           return;
         case "disconnect": if (this.link()) this.link().close(); return;
         case "reconnect": return reconnect(this);
+        case "wakes": return this.showWakes();
       }
     });
     $(e, ".f-mode").addEventListener("change", () => this.settingsVisibility());
     $(e, ".f-dir").addEventListener("change", () => this.settingsVisibility());
+    $(e, ".f-vol").addEventListener("input", ev => {
+      const v = +ev.target.value;
+      if (v !== 100 && Math.abs(v - 100) <= 5) ev.target.value = 100;
+      this.volLabel();
+    });
+  }
+
+  async showWakes() {
+    const st = $(this.el, ".wstat"), pre = $(this.el, ".wlog"), l = this.link();
+    if (!l || !l.up) { st.textContent = "needs a direct link to this button"; return; }
+    st.textContent = "reading…";
+    try {
+      pre.textContent = wakeLogText(await l.readWakes());
+      pre.hidden = false;
+      st.textContent = "";
+    } catch (err) { st.textContent = err.message; }
   }
 
   buildClocks() {
@@ -779,12 +830,20 @@ class Btn {
     $(e, ".f-hold").value = c.holdMs / 1000;
     for (const t of [0, 1]) setColour($(e, ".f-col" + t), c.colour[t]);
     $(e, ".f-vol").value = c.volume;
+    this.volLabel();
     $(e, ".f-sounds").value = c.soundSet;
     $(e, ".f-led").value = Math.round(c.ledLevel / 2.55);
     $(e, ".f-awake").checked = !!(c.debug & DEBUG_AWAKE_LED);
     c.idle.forEach((m, i) => $(e, ".f-idle" + i).value = m);
     $(e, ".name").textContent = this.label();
     this.settingsVisibility();
+  }
+  // Volume: the number beside it, and boost (past 100) marked. The slider sticks at 100.
+  volLabel() {
+    const v = +$(this.el, ".f-vol").value, box = $(this.el, ".vol");
+    $(box, "output").textContent = v > 100 ? `${v} % ⚠` : `${v} %`;
+    box.classList.toggle("boost", v > 100);
+    $(box, "output").title = v > 100 ? "Boost: past full scale, the loud parts are squeezed by the limiter (louder, rougher)" : "";
   }
   settingsVisibility() {
     const e = this.el, mode = +$(e, ".f-mode").value;
@@ -884,9 +943,15 @@ class Btn {
     const nb = this.slow ? this.slow.neighbours.length : 0;
     $(e, ".batt").textContent = [(s.usb ? "⚡" : "") + (known ? `${battIcon(s)}${s.batt}%` : ""),
       this.link() ? "direct" : "indirect", `${nb} link${nb === 1 ? "" : "s"}`].filter(x => x).join(" · ");
-    // Voltages and sleep, in Advanced (always the same fields, so the line doesn't jump about). Battery: the
-    // long average of VSYS while on (VSYS itself is the charger on USB), the last rest reading while off.
-    $(e, ".diag").textContent = `Battery ${(s.battMv / 1000).toFixed(2)} V${s.usb ? " (on USB: the charger's voltage)" : ""} · USB ${(s.vbus / 1000).toFixed(2)} V · awake ${(s.awakePm / 10).toFixed(1)} % (since the last status)`;
+    // Voltages and sleep, in Advanced (always the same fields, so the line doesn't jump about). Batt: on
+    // battery, the estimate the levels and % use (a rest reading as it is; a loaded one above it raises it
+    // at once, below it lowers it 3 mV a minute at most); "read" is the latest VSYS reading, loaded while
+    // on. On USB both are the latest reading: the cell while charging.
+    const V = mv => (mv / 1000).toFixed(2);
+    const d = $(e, ".diag");
+    d.textContent = `Batt ${V(s.battMv)} V${s.usb ? "" : ` est. (read ${V(s.vsys)} V)`} · USB ${V(s.vbus)} V · awake ${(s.awakePm / 10).toFixed(1)} %`;
+    d.title = s.usb ? "Batt: the latest VSYS reading, the cell while charging. Awake: the share of the time out of light sleep since the last status."
+      : "Batt est.: the estimate the battery levels and % use (a rest reading as it is; a loaded reading above it raises it at once, below it lowers it 3 mV a minute at most). Read: the latest VSYS reading (under load while on). Awake: the share of the time out of light sleep since the last status.";
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
@@ -916,6 +981,33 @@ class Btn {
     $(e, ".t1").style.borderColor = c.colour[0];
     $(e, ".t2").style.borderColor = c.colour[1];
   }
+}
+
+// The wake log (firmware main.c wake_log_t), newest first. Each line: how long ago it started, what
+// started it, the sleep it was in (and the saved power choice), what it did, the battery, how long it
+// was awake before that.
+function wakeLogText(dv) {
+  if (dv.byteLength < 8 || dv.getUint8(0) !== 1) return "(unknown format)";
+  const n = dv.getUint8(1), sz = dv.getUint8(2), now = dv.getUint32(4, true), lines = [];
+  const DEEP = ["shipping", "low battery", "dead battery", "overdischarge"], CHOICE = ["on", "off", "shipping"];
+  const CAUSE = { 0: "", 2: "ext0", 3: "ext1", 4: "timer", 7: "GPIO", 13: "BLE" };
+  const WENT = ["no decision yet (still running, or reset)"];
+  for (let k = 0; k < 4; k++) { WENT[1 + k] = `deep sleep: ${DEEP[k]}`; WENT[5 + k] = `straight back: ${DEEP[k]}`; }
+  Object.assign(WENT, { 9: "peek", 10: "on", 11: "off", 12: "auto-off" });
+  const ago = ms => ms < 120000 ? `${(ms / 1000).toFixed(1)} s` : ms < 7200000 ? `${Math.round(ms / 60000)} min` : `${(ms / 3600000).toFixed(1)} h`;
+  for (let i = n - 1; i >= 0; i--) {
+    const o = 8 + i * sz;
+    if (o + 12 > dv.byteLength) break;
+    const t = dv.getUint32(o, true), reset = dv.getUint8(o + 4), cause = dv.getUint8(o + 5), pins = dv.getUint8(o + 6);
+    const from = dv.getUint8(o + 7), went = dv.getUint8(o + 8), mv10 = dv.getUint8(o + 9), awake = dv.getUint16(o + 10, true);
+    const pinList = [...Array(8).keys()].filter(b => pins >> b & 1).map(b => `IO${b}`).join("+");
+    const what = reset === 8 ? `wake: ${CAUSE[cause] !== undefined ? CAUSE[cause] : "cause " + cause}${pinList ? " " + pinList : ""}`
+      : `reset: ${RESET_REASON[reset] || reset}`;
+    const was = (from & 15) < 4 ? `in ${DEEP[from & 15]}` : "not asleep";
+    lines.push(`${(ago((now - t) >>> 0) + " ago").padStart(11)}  ${what} · ${was}, choice ${CHOICE[from >> 4] || from >> 4} → ` +
+      `${WENT[went & 127] || went & 127}${went & 128 ? " · radio" : ""} · ${mv10 ? ((2500 + mv10 * 10) / 1000).toFixed(2) + " V" : "no reading"} · ${awake} ms awake`);
+  }
+  return lines.length ? lines.join("\n") : "(empty)";
 }
 
 // ---- page -----------------------------------------------------------------
@@ -982,12 +1074,13 @@ document.getElementById("game").addEventListener("click", ev => {
 function renderLinks() {
   const ls = [...net.links], el = document.getElementById("links");
   const key = ls.map(l => `${l.label()}|${l.up}|${l === net.active}|${l.linkText()}`).join(";");
+  const esc = t => t.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
   if (el.dataset.key === key) return;
   el.dataset.key = key;
   el.innerHTML = !ls.length ? "" : "Connected directly: " + ls.map((l, i) =>
-    `<button data-link="${i}" class="${l === net.active ? "primary" : ""}" ${l.up ? "" : "disabled"}
-      title="${l === net.active ? "Active: the network's state comes in through this one" : "Passive: tap to make it the active one"}">${l.label()}</button>
-      <span class="muted">${l.linkText()}</span>`).join(" ");
+    `<span class="lk"><button data-link="${i}" class="${l === net.active ? "primary" : ""}" ${l.up ? "" : "disabled"}
+      title="${l === net.active ? "Active: the network's state comes in through this one" : "Passive: tap to make it the active one"}">${esc(l.label())}</button>
+      <span class="muted" title="${esc(l.linkText())}">${esc(l.shortText())}</span></span>`).join("");
 }
 
 function tick() {
