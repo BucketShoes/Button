@@ -943,15 +943,12 @@ class Btn {
     const nb = this.slow ? this.slow.neighbours.length : 0;
     $(e, ".batt").textContent = [(s.usb ? "⚡" : "") + (known ? `${battIcon(s)}${s.batt}%` : ""),
       this.link() ? "direct" : "indirect", `${nb} link${nb === 1 ? "" : "s"}`].filter(x => x).join(" · ");
-    // Voltages and sleep, in Advanced (always the same fields, so the line doesn't jump about). Batt: on
-    // battery, the estimate the levels and % use (a rest reading as it is; a loaded one above it raises it
-    // at once, below it lowers it 3 mV a minute at most); "read" is the latest VSYS reading, loaded while
-    // on. On USB both are the latest reading: the cell while charging.
+    // Voltages and sleep, in Advanced (always the same fields, so the line doesn't jump about): the battery
+    // estimate and the latest VSYS reading (the cell's terminal, charging or not), USB, time awake.
     const V = mv => (mv / 1000).toFixed(2) + "v";
     const d = $(e, ".diag");
-    d.textContent = `Batt ${s.usb ? `${V(s.battMv)} read` : `${V(s.battMv)} ocv/${V(s.vsys)} read`} · USB ${V(s.vbus)} · awake ${(s.awakePm / 10).toFixed(1)}%`;
-    d.title = s.usb ? "Batt: the latest VSYS reading, the cell while charging. Awake: the share of the time out of light sleep since the last status."
-      : "Batt est.: the estimate the battery levels and % use (a rest reading as it is; a loaded reading above it raises it at once, below it lowers it 3 mV a minute at most). Read: the latest VSYS reading (under load while on). Awake: the share of the time out of light sleep since the last status.";
+    d.textContent = `Batt ${V(s.battMv)} ocv/${V(s.vsys)} read · USB ${V(s.vbus)} · awake ${(s.awakePm / 10).toFixed(1)}%`;
+    d.title = "ocv: the estimate the levels and % use (a rest reading as it is; a loaded reading above it raises it at once, below it lowers it 3 mV a minute at most; charging counts as loaded). read: the latest VSYS reading. Awake: the share of the time out of light sleep since the last status.";
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
