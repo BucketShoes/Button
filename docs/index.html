@@ -61,13 +61,14 @@
   /* Each link on one line that can't wrap (an error is cut short, in full on hover), so a retry
      doesn't move everything below. */
   .linkbar .lk { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; white-space: nowrap; margin-right: 6px; }
-  .linkbar .lk .muted { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .linkbar .lk .muted { overflow: hidden; text-overflow: ellipsis; min-width: 0; cursor: pointer; }
   /* The volume's number sits in its label (the label column is set by longer labels, so it never resizes the slider). */
   .l-vol output { white-space: nowrap; }
   .l-vol.boost output { color: var(--warn); font-weight: 600; }
   input.f-vol.boost { accent-color: var(--warn); }
   .wlog { font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 4px 0 0; color: var(--muted); }
   .card .net { font-size: 13px; margin: 2px 0 6px; }
+  .card .diag { font-size: 13px; }
   .card .row.head { flex-wrap: nowrap; }
   .card .head .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card .head .batt { white-space: nowrap; font-size: 14px; }
@@ -946,9 +947,9 @@ class Btn {
     // battery, the estimate the levels and % use (a rest reading as it is; a loaded one above it raises it
     // at once, below it lowers it 3 mV a minute at most); "read" is the latest VSYS reading, loaded while
     // on. On USB both are the latest reading: the cell while charging.
-    const V = mv => (mv / 1000).toFixed(2);
+    const V = mv => (mv / 1000).toFixed(2) + "v";
     const d = $(e, ".diag");
-    d.textContent = `Batt ${V(s.battMv)} V${s.usb ? "" : ` est. (read ${V(s.vsys)} V)`} · USB ${V(s.vbus)} V · awake ${(s.awakePm / 10).toFixed(1)} %`;
+    d.textContent = `Batt ${s.usb ? `${V(s.battMv)} read` : `${V(s.battMv)} ocv/${V(s.vsys)} read`} · USB ${V(s.vbus)} · awake ${(s.awakePm / 10).toFixed(1)}%`;
     d.title = s.usb ? "Batt: the latest VSYS reading, the cell while charging. Awake: the share of the time out of light sleep since the last status."
       : "Batt est.: the estimate the battery levels and % use (a rest reading as it is; a loaded reading above it raises it at once, below it lowers it 3 mV a minute at most). Read: the latest VSYS reading (under load while on). Awake: the share of the time out of light sleep since the last status.";
     const o = $(e, ".owner");
@@ -1041,6 +1042,14 @@ async function connectDirect(name) {
 }
 document.getElementById("add").addEventListener("click", () => connectDirect());
 document.getElementById("links").addEventListener("click", ev => {
+  // Tapping a link's status opens its button's Advanced, where the same text is in full.
+  const f = ev.target.closest("[data-full]");
+  const fl = f && [...net.links][+f.dataset.full], fb = fl && fl.nodeId !== null && buttons.get(fl.nodeId);
+  if (fb) {
+    $(fb.el, "details").open = true;
+    $(fb.el, ".net").scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   const b = ev.target.closest("button[data-link]");
   const l = b && [...net.links][+b.dataset.link];
   if (l) net.makeActive(l);
@@ -1079,7 +1088,7 @@ function renderLinks() {
   el.innerHTML = !ls.length ? "" : "Connected directly: " + ls.map((l, i) =>
     `<span class="lk"><button data-link="${i}" class="${l === net.active ? "primary" : ""}" ${l.up ? "" : "disabled"}
       title="${l === net.active ? "Active: the network's state comes in through this one" : "Passive: tap to make it the active one"}">${esc(l.label())}</button>
-      <span class="muted" title="${esc(l.linkText())}">${esc(l.shortText())}</span></span>`).join("");
+      <span class="muted" data-full="${i}" title="${esc(l.linkText())}">${esc(l.shortText())}</span></span>`).join("");
 }
 
 function tick() {
