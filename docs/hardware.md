@@ -78,8 +78,8 @@ USB-C VBUS ── TP4057 (CHRG1) BAT pin = CHG_OUT ── net tie (REF**) ──
   - **Status pins:** CHRG drives the white CHRG_LED1 from VBUS. STDBY is unconnected. Neither reaches the ESP.
   - **No disable line:** the ESP has no way to switch the charger off.
 - **VBAT_SENSE reads VSYS, not the cell:**
-  - It shows the cell (less QBAT1's drop) only while PWR_EN is high and USB is absent.
-  - With USB present, it shows the charger output.
+  - While PWR_EN is high it shows the cell's terminal voltage (less QBAT1's drop), on battery or charging.
+  - With USB present and PWR_EN low, it shows the charger output.
   - With PWR_EN low and no USB, VSYS is unpowered.
 - **VBUS_SENSE:** about 3.0 V at 5 V VBUS.
 - **Overdischarge:** there is no protection IC on the board; the DW01A was dropped. It's a single cell, so the worst case is one fully discharged cell, not reverse-charging a series pack.

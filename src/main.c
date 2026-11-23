@@ -367,8 +367,8 @@ static int capture_target(void)
 
 // Rough Li-ion state of charge from voltage: 3.3 V = 0 %, 4.2 V = 100 %, with
 // the steep middle (most of the energy) around 3.6..3.8 V. Extrapolates past
-// both ends, so it can read below 0 % or above 100 %. Under load, or on USB
-// (VSYS = charger output), this is only an estimate.
+// both ends, so it can read below 0 % or above 100 %. Under load or while
+// charging the terminal voltage is off the open-circuit one, so this is only an estimate.
 static int batt_percent(int mv)
 {
     static const int16_t T[][2] = {
@@ -765,7 +765,8 @@ static bool s_peek_hold;
                                                 // the fanfare): it would read as part of it. It waits, and
                                                 // goes only if the battery is still low by then.
 
-// Battery levels, from the estimate below (the levels don't apply on USB).
+// Battery levels, from the estimate below. On USB they're still worked out (charge_hold uses them), but
+// nothing acts on them: no warnings, no going dark, no battery deep sleep.
 //   normal          everything.
 //   low      < 3.5  on works as usual, with warnings, and auto-off after 11 min idle at most. Off: no
 //                   BLE (deep sleep); a press peeks and can turn it on.
@@ -922,7 +923,10 @@ static bool on_usb(void) { return s_usb; }
 // it down by at most 3 mV a minute, so the LEDs', speaker's and radio's droop doesn't count but a real
 // discharge does. A one-minute average of the loaded readings backs it up near the bottom, where the
 // estimate could lag a fast fall (and the brown-out detector watches the loaded 3.3 V rail).
-// On USB VSYS is the charger: nothing is learnt, and it starts again when USB goes.
+// VSYS is the cell's terminal whenever QBAT1 is on (PWR_EN high), on USB too: then it's the cell charging,
+// a little above its open-circuit voltage, and counts like any loaded reading. (Only with QBAT1 off and USB
+// present is VSYS the charger's output, and nothing reads it then: a rest reading turns PWR_EN on first.)
+// USB appearing or going starts the estimate again, from the next reading.
 static int s_batt_uv;  // the estimate in uV (0 = none yet)
 static int s_batt_mv;  // the same in mV
 static int s_batt_avg_mv;  // 1 min average of the loaded readings (0 = none)
@@ -959,24 +963,23 @@ static batt_level_t level_at(int mv, int avg)
 }
 // With hysteresis: getting worse is at once, getting better needs BATT_HYST_MV over the threshold. The
 // estimate jumps up on any loaded reading above it and creeps down at 3 mV a minute, so a cell sitting
-// at a threshold crossed it both ways every minute or two (the page's "low" came and went). USB, or no
-// reading yet, starts it again.
-static batt_level_t s_batt_lvl;
-static batt_level_t s_cell_lvl;  // the last level read off USB (kept through USB: see charge_hold)
+// at a threshold crossed it both ways every minute or two (the page's "low" came and went). With no
+// reading yet (after a start, or USB appearing or going) it stays where it was.
+static batt_level_t s_cell_lvl;  // the cell's level, on USB too (charge_hold)
 static batt_level_t batt_level(void)
 {
-    if (on_usb() || !s_batt_mv) return s_batt_lvl = BATT_NORMAL;
-    batt_level_t l = level_at(s_batt_mv, s_batt_avg_mv);
-    if (l < s_batt_lvl) {
-        batt_level_t up = level_at(s_batt_mv - BATT_HYST_MV, s_batt_avg_mv ? s_batt_avg_mv - BATT_HYST_MV : 0);
-        l = up < s_batt_lvl ? up : s_batt_lvl;
+    if (s_batt_mv) {
+        batt_level_t l = level_at(s_batt_mv, s_batt_avg_mv);
+        if (l < s_cell_lvl) {
+            batt_level_t up = level_at(s_batt_mv - BATT_HYST_MV, s_batt_avg_mv ? s_batt_avg_mv - BATT_HYST_MV : 0);
+            l = up < s_cell_lvl ? up : s_cell_lvl;
+        }
+        s_cell_lvl = l;
     }
-    s_cell_lvl = l;
-    return s_batt_lvl = l;
+    return on_usb() ? BATT_NORMAL : s_cell_lvl;  // (on USB nothing acts on the level)
 }
-// For the battery % and the page: the estimate on battery; on USB the latest VSYS reading (the cell
-// terminal voltage while charging: no better or worse a guess at its open-circuit voltage than a loaded one).
-static int batt_now_mv(void) { return !on_usb() && s_batt_mv ? s_batt_mv : s_vsys_mv; }
+// For the battery % and the page: the estimate (the latest reading until there is one).
+static int batt_now_mv(void) { return s_batt_mv ? s_batt_mv : s_vsys_mv; }
 
 static void activity(uint32_t now) { s_last_activity = now; }
 static uint32_t idle_ms(uint32_t now)
@@ -1026,7 +1029,7 @@ static void usb_lock_update(uint32_t now)
 // cell charges only through QBAT1's body diode, to a diode drop under the charger. So with USB's digital
 // level high it's held on, in every state and through deep sleep, if the last level read off USB was low
 // or normal. Dead or overdischarged it stays off: the diode charges the cell regardless.
-static bool charge_hold(void) { return on_usb() && s_cell_lvl < BATT_DEAD; }
+static bool charge_hold(void) { batt_level(); return on_usb() && s_cell_lvl < BATT_DEAD; }
 static void pwr_en_apply(void) { gpio_set_level(PIN_PWR_EN, s_periph_on || charge_hold()); }
 
 static void periph_power(bool on)
@@ -1064,7 +1067,6 @@ static int read_batt_rest(void)
 }
 static void batt_check_rest(uint32_t now)
 {
-    if (on_usb()) return;
     batt_rest(read_batt_rest(), now);
 }
 
@@ -1245,7 +1247,7 @@ static uint32_t auto_off_ms(void)
 // Called every loop pass while on or peeking (after the ADC is read).
 static void power_tick_on(uint32_t now)
 {
-    if (s_periph_on && !on_usb()) batt_loaded(s_vsys_mv, now);
+    if (s_periph_on) batt_loaded(s_vsys_mv, now);
     if (s_pwr == PWR_PEEK) {
         // Hold to turn on (a second press also does, in the main loop);
         // otherwise drop back once the battery display ends.
@@ -1312,13 +1314,11 @@ static void power_tick_auto(uint32_t now)
         audio_set_allowed(false);
         s_flash_until = now + 30 + AUTO_FLASH_MS;  // (30 ms of that is the rails starting)
         if (!s_flash_until) s_flash_until = 1;
-        if (!on_usb()) {
-            batt_loaded(sense_vsys_mv(), now);
-            int d = batt_deep(false);
-            if (d >= 0) {
-                ESP_LOGW(TAG, "auto-off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
-                show_low_and_sleep((deep_t)d);
-            }
+        batt_loaded(sense_vsys_mv(), now);
+        int d = batt_deep(false);  // (none on USB)
+        if (d >= 0) {
+            ESP_LOGW(TAG, "auto-off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
+            show_low_and_sleep((deep_t)d);
         }
     }
     uint32_t so = s_cfg.switch_off_min * 60000u;
@@ -1332,10 +1332,6 @@ static void power_tick_auto(uint32_t now)
 static void power_tick_off(uint32_t now)
 {
     if ((int32_t)(now - s_next_batt_check) < 0) return;
-    if (on_usb()) {  // VSYS is the charger: nothing to measure; look again later
-        s_next_batt_check = now + OFF_BATT_CHECK_MS;
-        return;
-    }
     batt_check_rest(now);
     int d = batt_deep(true);
     ESP_LOGI(TAG, "off: battery %d mV (%s)", s_batt_mv, BATT_LEVEL_NAME[batt_level()]);
@@ -1424,7 +1420,7 @@ static void publish_state(uint32_t now)
         .boots = s_boot_count,
         .power = (uint8_t)s_pwr,
         .flags2 = state_flags2(),
-        .batt_mv = (uint16_t)batt_now_mv(),  // (on USB: VSYS, the charger)
+        .batt_mv = (uint16_t)batt_now_mv(),
         .vsys_mv = (uint16_t)s_vsys_mv,
         .vbus_mv = (uint16_t)s_vbus_mv,
         .batt_pct = (int16_t)batt_percent(batt_now_mv()),
@@ -1493,7 +1489,7 @@ static void net_publish(uint32_t now)
             .vsys_mv = (uint16_t)s_vsys_mv,
             .vbus_mv = (uint16_t)s_vbus_mv,
             .batt_pct = (int16_t)batt_percent(batt_now_mv()),
-            .batt_mv = (uint16_t)batt_now_mv(),  // (on USB: VSYS, the charger)
+            .batt_mv = (uint16_t)batt_now_mv(),
             .phones = (uint8_t)phones,
             .reset_reason = (uint8_t)s_restart_reason,
             .uptime_s = since_restart_s(),
@@ -2273,7 +2269,7 @@ void app_main(void)
     uint32_t last = now_ms();
     game_reset(last);
     int restored = game_restore(last, from_deep, new_firmware);
-    if (!on_usb()) batt_rest(read_batt_rest(), last);
+    batt_rest(read_batt_rest(), last);
 
     // Where to come up. Nothing here turns it on except the saved choice being on (or a new
     // firmware image, so a flash shows the startup test). Out of deep sleep, see deep_sleep().
@@ -2431,7 +2427,7 @@ void app_main(void)
         // VBUS while off only when USB is there: off on battery, nothing is converted.
         bool was_usb = s_usb;
         s_usb = sense_vbus_present();
-        if (was_usb != s_usb) batt_forget();  // on USB VSYS is the charger; off it, start again from the cell
+        if (was_usb != s_usb) batt_forget();  // charging lifts the terminal voltage, and it falls when USB goes: start again
         pwr_en_apply();  // charging hold follows USB and the power choice
         if (!s_usb) s_vbus_mv = 0;
         if ((int32_t)(now - next_adc) >= 0) {
