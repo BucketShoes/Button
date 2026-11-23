@@ -324,8 +324,8 @@ the page has one active link and passive ones, and it follows the active link's 
   advert from an unlinked button has been heard.
 - **Adverts:** legacy every 100–150 ms and Coded every 500–550 ms, about 2.6 % of the radio's time together (see
   the airtime table). Links to buttons at 225–275 ms, about 0.65 % each when idle.
-- So once settled, the scan is the largest single radio cost: 4 % RX with the chip awake throughout. Taking 25 to
-  30 mA for RX with the CPU up (the C6's figure, not measured here), that's roughly 1 to 1.2 mA averaged. Measure it
+- So once settled, the scan is the largest single radio cost: 4 % RX with the chip awake throughout. At the C6
+  datasheet's RX current of about 71–74 mA (not measured here), that's roughly 3 mA averaged. Measure it
   before building anything: the page's "awake %" in Advanced is per status period, and the scan is most of what a
   settled, untouched button spends awake.
 
