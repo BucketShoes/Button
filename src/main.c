@@ -1462,7 +1462,6 @@ static mesh_hot_t s_hot_last;
 static uint32_t s_hot_last_ms, s_status_next;
 static bool s_hot_sent;
 static int s_status_phones = -1;
-static int s_status_batt = -1;  // the low flag and USB as of the last status
 
 static void net_publish(uint32_t now)
 {
@@ -1500,12 +1499,8 @@ static void net_publish(uint32_t now)
         s_hot_sent = true;
     }
     int phones = phone_links();
-    // The battery's low flag goes in the hot item, its voltage and % in the status: a change to the flag
-    // (or USB) sends a status too, so the page gets all three from the same moment, not up to 30 s apart.
-    int batt = (h.flags2 & 2) | (h.flags & 32);
-    if (phones != s_status_phones || batt != s_status_batt || (int32_t)(now - s_status_next) >= 0) {
+    if (phones != s_status_phones || (int32_t)(now - s_status_next) >= 0) {
         s_status_phones = phones;
-        s_status_batt = batt;
         s_status_next = now + STATUS_EVERY_MS;
         mesh_status_t s = {
             .vsys_mv = (uint16_t)s_vsys_mv,
