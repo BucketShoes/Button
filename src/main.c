@@ -386,7 +386,7 @@ enum { LINE_TUG = 0, LINE_FORGE = 1 };
 #define FORM_WINDOW_MS     1000   // holds that started this close together form a line at the reset
 #define FORM_WAIT_MS       1500   // after this button's reset, for the others' to be heard
 static line_t s_line;
-static uint32_t s_owned_since;  // network ms the owner last changed (in the hot item)
+static uint32_t s_owned_since;  // network ms the owner last changed (in the hot item; 0 = unknown: no lockout)
 static int s_owned_last = -2;
 static uint32_t s_line_show_until, s_need_until, s_denied_flash_until;
 static int s_need;              // the node to take first, after a denied press (-1: none)
@@ -474,7 +474,7 @@ static line_rule_t line_rule(int team, uint32_t net)
         } else {
             line_node_t nd = line_node(idx);
             if (nd.found && nd.owner != team) continue;
-            if (nd.found && nd.since_known) w = (int32_t)(nd.since + s_line.advance_s * 1000u - net);
+            if (nd.found && nd.since_known && nd.since) w = (int32_t)(nd.since + s_line.advance_s * 1000u - net);
         }
         r.enabled = true;
         if (w < wait) wait = w;
@@ -484,7 +484,7 @@ static line_rule_t line_rule(int team, uint32_t net)
         else if (line_end_team(1) == team) r.need = s_line.index + 1;
         return r;
     }
-    if (s_owner >= 0) {
+    if (s_owner >= 0 && s_owned_since) {
         int32_t w = (int32_t)(s_owned_since + s_line.retake_s * 1000u - net);
         if (w > wait) wait = w;
     }
@@ -2499,6 +2499,7 @@ typedef struct {
     bool running, fresh, game_paused, game_was_running;
     int8_t owner, winner, next_pick;
     int32_t val[2];
+    uint32_t owned_since;  // network ms (a line's retake and advance times; 0 unknown)
     uint64_t rtc_us;  // LP timer when saved
     uint32_t crc;     // over everything above
 } saved_game_t;
@@ -2512,7 +2513,7 @@ static void game_save(void)
         .magic = SAVED_MAGIC, .mode = s_cfg.mode, .count_up = s_cfg.count_up, .pwr = (uint8_t)s_pwr,
         .running = s_running, .fresh = s_fresh, .game_paused = s_game_paused, .game_was_running = s_game_was_running,
         .owner = (int8_t)s_owner, .winner = (int8_t)s_winner, .next_pick = (int8_t)s_next_pick,
-        .val = {s_val[0], s_val[1]}, .rtc_us = esp_rtc_get_time_us(),
+        .val = {s_val[0], s_val[1]}, .owned_since = s_owned_since, .rtc_us = esp_rtc_get_time_us(),
     };
     s_saved.crc = game_crc(&s_saved);
 }
@@ -2542,6 +2543,8 @@ static void game_apply(const saved_game_t *g)
     s_next_pick = g->next_pick;
     s_val[0] = g->val[0];
     s_val[1] = g->val[1];
+    s_owned_since = g->owned_since;  // (network time is carried across the same resets as the RTC copy)
+    s_owned_last = s_owner;
 }
 
 // After game_reset at boot. Returns the power state it was in (on or auto-off; off for the rest)
@@ -2568,6 +2571,7 @@ static int game_restore(uint32_t now, bool from_deep, bool new_firmware)
     if (config_blob_load("game", &g, sizeof g) && game_fits(&g)) {
         game_apply(&g);
         if (s_cfg.mode != MODE_TEAMS) s_running = false;  // how long it was away is unknown
+        s_owned_since = 0;  // after a power-on network time started again: unknown
         ESP_LOGI(TAG, "game state restored from flash (%s, owner %d, %ld/%ld ms), clocks paused", state_name(),
                  s_owner + 1, (long)s_val[0], (long)s_val[1]);
     }
@@ -2706,6 +2710,10 @@ void app_main(void)
     uint32_t last = now_ms();
     game_reset(last);
     int restored = game_restore(last, from_deep, new_firmware);
+    if (s_owned_last == -2) {  // nothing restored: when its owner last changed isn't known
+        s_owned_last = s_owner;
+        s_owned_since = 0;
+    }
     batt_rest(read_batt_rest(), last);
 
     // Where to come up. Nothing here turns it on except the saved choice being on (or a new
@@ -2862,7 +2870,7 @@ void app_main(void)
         if (s_ident_len && (int32_t)(now - s_ident_at) >= 0) identify_start(s_ident_at, s_ident_len);
         if (s_owner != s_owned_last) {
             s_owned_last = s_owner;
-            s_owned_since = net_now();
+            s_owned_since = net_now() | 1;  // (never 0: that's "unknown")
         }
         if (s_radio) holders_watch(now);
         if (s_form_at && (int32_t)(now - s_form_at) >= 0) {
