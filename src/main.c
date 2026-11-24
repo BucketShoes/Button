@@ -793,7 +793,7 @@ static const char *const BATT_LEVEL_NAME[] = {"normal", "low", "dead", "overdisc
 #define BATT_OVER_MV       3100
 #define BATT_HYST_MV       50    // a level is left upwards only this far above its threshold (see batt_level)
 #define BATT_SAG_OVER_MV   3000  // the 1 min average of the loaded reading this low counts as overdischarge-near: dead
-#define BATT_FALL_NV_PER_MS 50   // the OCV estimate falls at most 3 mV a minute (see batt_loaded)...
+#define BATT_FALL_NV_PER_MS 500  // the OCV estimate falls at most 30 mV a minute (see batt_loaded)...
 #define BATT_FAST_GAP_MV   150   // ...unless the 1 min loaded average is more than this far below it,
 #define BATT_FAST_NV_PER_MS 1667 // then at up to 100 mV a minute, but only down to that distance above the average
 #define BATT_TAU_MS        60000
@@ -934,9 +934,10 @@ static bool on_usb(void) { return s_usb; }
 // (While charging the terminal sits above the OCV, so then it reads high; discharging, it's the nearest
 // thing to the OCV there is.) A rest reading (nothing powered) is taken as it is. A loaded reading above
 // the estimate pushes it up at once: the moment the load lets go (between a sound's notes, say) is the
-// one nearest the OCV. Below, it pulls it down by at most 3 mV a minute, so the LEDs', speaker's and
-// radio's droop doesn't count. A small cell can fall far faster than that (a 200 mAh cell at 200 mA: about
-// 20 mV a minute on average, 100 or more at the knee below 3.6 V), so when the one-minute loaded average
+// one nearest the OCV. Below, it pulls it down by at most 30 mV a minute: within that of the highest
+// reading of the last minute or so, which a moment with the LEDs, speaker and radio all quiet keeps near
+// the OCV, while a real fall (a dying or cooling cell) shows within minutes. A small cell can fall faster
+// still (a 200 mAh cell at 200 mA: 100 mV a minute or more at the knee below 3.6 V), so when the one-minute loaded average
 // is more than BATT_FAST_GAP_MV below the estimate it falls at up to 100 mV a minute, but never to less
 // than BATT_FAST_GAP_MV above the average. The average sits below the OCV by the load's droop, so as long
 // as that droop (a loud sound included) is under BATT_FAST_GAP_MV, the fast fall can't take the estimate
@@ -947,7 +948,7 @@ static bool on_usb(void) { return s_usb; }
 // a little above its open-circuit voltage, and counts like any loaded reading. (Only with QBAT1 off and USB
 // present is VSYS the charger's output, and nothing reads it then: a rest reading turns PWR_EN on first.)
 // USB appearing or going starts the estimate again, from the next reading.
-static int64_t s_batt_nv;  // the OCV estimate in nV (0 = none yet; 3 mV a minute is 50 nV a ms)
+static int64_t s_batt_nv;  // the OCV estimate in nV (0 = none yet; 30 mV a minute is 500 nV a ms)
 static int s_batt_mv;  // the same in mV
 static int s_batt_avg_uv;  // 1 min average of the loaded readings, in uV (it moves a few uV a loop pass)
 static int s_batt_avg_mv;  // the same in mV (0 = none)
@@ -992,7 +993,7 @@ static batt_level_t level_at(int mv, int avg)
     return BATT_NORMAL;
 }
 // With hysteresis: getting worse is at once, getting better needs BATT_HYST_MV over the threshold. The
-// estimate jumps up on any loaded reading above it and creeps down at 3 mV a minute, so a cell sitting
+// estimate jumps up on any loaded reading above it and falls back (at 3 V a minute, as it was by mistake), so a cell sitting
 // at a threshold crossed it both ways every minute or two (the page's "low" came and went). With no
 // reading yet (after a start, or USB appearing or going) it stays where it was.
 static batt_level_t s_cell_lvl;  // the cell's level, on USB too (charge_hold)
