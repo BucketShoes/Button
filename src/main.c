@@ -2279,6 +2279,7 @@ void app_main(void)
         rtc_gpio_deinit((gpio_num_t)i);
     }
     power_pins_init();
+    mesh_time_init(s_reset_reason != ESP_RST_POWERON);
     ESP_LOGI(TAG, "capture button firmware, board b43; reset reason %d%s, boot %lu since power-on", s_reset_reason,
              s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from deep sleep)" : "",
              (unsigned long)s_boot_count);

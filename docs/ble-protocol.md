@@ -223,8 +223,11 @@ command past its expiry is still passed on but not acted on.
 ### Network time
 
 Each button keeps `network ms = its own ms + an offset`, and moves the offset forward whenever a button's frame
-shows a later time, so all buttons settle on the furthest-ahead clock. Phones take it from the button they're
-connected to and use it to set command expiry (now + 10 s) and to tell how old an item is.
+shows a later time, so all buttons settle on the furthest-ahead clock. Inside a button it's 64-bit; frames and
+items carry the low 32 bits. A button carries it across deep sleep and every reset but a power-on (with the LP
+timer, so it adds the time away), so it keeps counting while a button sleeps, and only starts from 0 after a
+power-on, until it hears a button that's further ahead. Phones take it from the button they're connected to
+and use it to set command expiry (now + 10 s) and to tell how old an item is.
 
 ### Relaying
 

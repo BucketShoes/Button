@@ -1,8 +1,12 @@
 #include "mesh.h"
+#include <stddef.h>
 #include <string.h>
 #include "ble.h"
 #include "esp_log.h"
 #include "esp_rom_crc.h"
+#include "esp_attr.h"
+#include "esp_rtc_time.h"
+#include "esp_timer.h"
 #include "host/ble_hs.h"  // error codes from ble_send_frame
 #include "nvs.h"
 
@@ -86,7 +90,22 @@ static mesh_cmd_fn s_on_cmd;
 static uint16_t s_me;
 static uint8_t s_epoch;
 static uint32_t s_seq;
-static int32_t s_net_off;  // network ms = local ms + this
+// Network time: 64-bit ms, forward-only (everyone moves to the furthest-ahead clock it hears). Local ms
+// (esp_timer, from the crystal while awake) + s_net_off. It's carried across deep sleep and every reset
+// but a power-on by the LP timer: s_nt keeps the offset and the LP timer's reading at local ms 0, so a
+// start adds the time away. (The LP timer runs on the RC oscillator in deep sleep: about a percent.)
+static int64_t s_net_off;
+static RTC_NOINIT_ATTR struct {
+    int64_t off;      // s_net_off
+    int64_t rtc0_us;  // LP timer when esp_timer was 0, that start
+    uint32_t check;
+} s_nt;
+static uint32_t nt_check(void) { return esp_rom_crc32_le(0x6E74u, (const uint8_t *)&s_nt, offsetof(typeof(s_nt), check)); }
+static void nt_save(void)
+{
+    s_nt.off = s_net_off;
+    s_nt.check = nt_check();
+}
 static uint32_t s_now;
 static mesh_status_t s_status;
 static bool s_status_ok;
@@ -112,7 +131,18 @@ static inline uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] <
 static inline void wr16(uint8_t *p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
 static inline void wr32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
 
-uint32_t mesh_net_ms(void) { return s_now + (uint32_t)s_net_off; }
+uint32_t mesh_net_ms(void) { return (uint32_t)((int64_t)s_now + s_net_off); }
+int64_t mesh_net_ms64(void) { return esp_timer_get_time() / 1000 + s_net_off; }
+
+void mesh_time_init(bool keep)
+{
+    int64_t rtc0 = esp_rtc_get_time_us() - esp_timer_get_time();
+    if (keep && s_nt.check == nt_check() && rtc0 >= s_nt.rtc0_us) s_net_off = s_nt.off + (rtc0 - s_nt.rtc0_us) / 1000;
+    else s_net_off = 0;
+    s_nt.rtc0_us = rtc0;
+    nt_save();
+    ESP_LOGI(TAG, "network time %lld ms (%s)", (long long)mesh_net_ms64(), keep ? "carried" : "from 0");
+}
 
 // ---- origins and links ------------------------------------------------------------
 
@@ -605,6 +635,7 @@ static void on_frame(link_t *l, const uint8_t *p, size_t n)
         int32_t d = (int32_t)(their_net - mesh_net_ms());
         if (d > 0) {
             s_net_off += d;  // network time only moves forward: everyone ends up on the furthest-ahead clock
+            nt_save();
             if (d > 1000) ESP_LOGI(TAG, "network clock +%ld ms (from %04X)", (long)d, l->peer);
         }
     }

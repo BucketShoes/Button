@@ -60,5 +60,8 @@ void mesh_publish_config(const void *cfg, size_t n);
 // Powered off: after a moment (so the others hear it's off) drop links to other buttons and
 // refuse new ones; phones stay connected.
 void mesh_set_off(bool off);
-uint32_t mesh_net_ms(void);
+uint32_t mesh_net_ms(void);  // the low 32 bits, as on air (as of the last mesh_tick)
+int64_t mesh_net_ms64(void);  // the whole thing, now
+// At every start, before anything else uses network time. keep: carry it on (not after a power-on).
+void mesh_time_init(bool keep);
 int mesh_button_links(void);
