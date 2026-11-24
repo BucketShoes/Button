@@ -283,7 +283,7 @@ the page has one active link and passive ones, and it follows the active link's 
    - two advertising sets (legacy + Coded connectable);
    - PHY update request and connection-parameter request on connect;
    - show the PHY and interval per connection on the page;
-   - range-test two buttons; check which phones end up on Coded.
+   - range-test two buttons; check which phones end up on Coded (Android Chrome does, with the requested interval).
 2. **Button links:**
    - central role;
    - occasional Coded scans on every button;
@@ -355,7 +355,8 @@ a "forget" (a page command, or dropping ids not seen for a week).
 
 ## Open questions
 
-- Do iPhones and the Android phones in use accept a PHY update to Coded from Chrome? Does Windows Chrome?
+- Coded from Chrome: Android Chrome accepts the PHY update to Coded and the requested connection interval (known
+  from earlier projects). Still unknown: iPhones, and Windows Chrome.
 - Coding for admin links: S=8 (range) or S=2 (about half the airtime)? Is it worth choosing per link by RSSI?
 - Is the real busy rate 5 changes/s, or much lower? Measure it once stage 3 logs item counts.
 - Does a shortest-path relay tree ever earn its complexity over the simple suppression rule?
