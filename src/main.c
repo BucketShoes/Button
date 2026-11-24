@@ -694,7 +694,8 @@ static void on_face_press(uint32_t now)
     s_denied = false;
     if (in_line() && powered_on() && !s_hold_gp && s_winner < 0) {
         line_rule_t r = line_rule(s_hold_target, s_my_hold_start);
-        if (!r.enabled || r.wait_ms > 0) {
+        // (a paused button's press goes to its own owner: that's a resume, not a capture, and always allowed)
+        if (s_hold_target != s_owner && (!r.enabled || r.wait_ms > 0)) {
             s_denied = true;
             s_denied_flash_until = now + DENIED_FLASH_MS;
             if (!r.enabled) {
