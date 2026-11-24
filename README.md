@@ -176,7 +176,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 
 - **Modes:**
   - **Teams only:** the ring shows who owns the button. There are no clocks: the owner's display shows dashes ("--:--") with the same colon, highlight and hold cues as a clock, and the other display is blank.
-  - **One timer:** one shared clock, which runs whichever team owns the button. Whoever owns it when the clock runs out wins. It shows only on the owner's display, and the other display is blank, so it reads as one clock that belongs to them. While uncaptured it shows on both, neither lit.
+  - **One timer:** one shared clock, which runs whichever team owns the button. Whoever owns it when the clock runs out wins. It shows only on the owner's display, and the other display is blank, so it reads as one clock that belongs to them. While uncaptured it shows on one display only, neither lit: the team the next press goes for (the first display when that's random).
   - **Two timers:** a reverse chess clock; the owner's clock runs.
   - **"Own" and "hold":** a team *owns* the button (it's in their control); a player *holds* the lid (pressing it).
 - **Clocks:** count down (win at 0:00) or up (win at the duration; a duration of 0 means no limit). Default: two timers counting down from 10:00.
@@ -188,7 +188,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **C to C+4 s:** the ring fills white with a ding each second, then a **pause** at C+4 s (about 8 s with the default hold). The clocks go back to where they were before the hold, and the paused owner is:
     - **was running:** whoever had it before the hold;
     - **was uncaptured:** the team just picked, so a hold to the pause pre-sets the owner at 10:00 (for example at a respawn);
-    - **was paused:** the other team, so each further hold to the pause swaps it.
+    - **was paused:** the same team: the hold is undone.
   - **C+4 to C+9 s:** doom each second, then a **reset** at C+9 s (about 13 s).
   - **C+9 to C+14 s:** after a second, the displays say "HoLd" "oFF" with a falling tone and the ring drains; at C+14 s (about 18 s) it **powers off**. Let go before that and it stays on, just reset.
   - **During a game pause** (from the page): a press plays the pause sound and nothing is captured, so a player who hasn't noticed can't change anything. The ring fills slowly white; at H+4 s the button leaves the game pause into a regular pause, owner and clocks unchanged, and works normally from then on (so the page is never required). H+9 s still resets. (Nothing is captured, so there is no call to wait for: C is H here, and after a win.)

@@ -517,15 +517,13 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_running = false;
             ESP_LOGI(TAG, "game pause released by a hold, owner team %d", s_owner + 1);
         } else if (!won) {
-            // Undo this hold's clock changes, then pause (the next hold resumes
-            // with that owner). Who owns it while paused:
-            //   was running     -> whoever had it before this hold
-            //   was uncaptured  -> the team just picked (pre-set the owner at 10:00)
-            //   was paused      -> the other team (each 6 s hold swaps it)
+            // Undo this hold, then pause (the next hold resumes with that owner). Who owns it while paused:
+            //   was running or paused -> whoever had it before this hold
+            //   was uncaptured        -> the team just picked (pre-set the owner at 10:00)
             s_val[0] = s_snap.val[0];
             s_val[1] = s_snap.val[1];
             s_fresh = s_snap.fresh;
-            if (s_snap.owner >= 0) s_owner = s_snap.running ? s_snap.owner : 1 - s_snap.owner;
+            if (s_snap.owner >= 0) s_owner = s_snap.owner;
             s_running = false;
             ESP_LOGI(TAG, "PAUSED, owner team %d", s_owner + 1);
         }
@@ -1771,6 +1769,13 @@ static bool auto_won_ring_on(uint32_t now)
     return ((in / AUTO_WON_BLINK_MS) & 1) == 0;
 }
 
+// One timer, uncaptured: the clock on one display only (the team the next press goes for, else the
+// first), so it reads as one clock from the start, not two.
+static int one_timer_side(void)
+{
+    int c = capture_target();
+    return c >= 0 ? c : 0;
+}
 static void render_displays(uint32_t now)
 {
     for (int t = 0; t < 2; t++) {
@@ -1803,14 +1808,16 @@ static void render_displays(uint32_t now)
             // Two timers: both clocks, always. One timer (the shared clock) and teams only
             // (dashes, as a place for the colon and highlight): only on the owner's display,
             // the other stays blank, so it reads as one thing that belongs to the owner.
-            // Uncaptured, it's on both and nobody is lit; a hold towards a capture also
+            // Uncaptured, it's on both and nobody is lit (one timer: on one_timer_side's only); a hold towards a capture also
             // lights the team it goes to.
             const int src = t;
             // Held towards a capture: the old state is gone at once. The new team is
             // lit; the old owner's clock keeps ticking (dim) until the capture.
             bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
             bool shown = s_cfg.mode == MODE_TWO_TIMERS ||
-                         (s_winner >= 0 ? src == s_winner : s_owner < 0 || src == s_owner || (holding && src == s_hold_target));
+                         (s_winner >= 0 ? src == s_winner
+                                        : (s_owner < 0 && (s_cfg.mode != MODE_ONE_TIMER || src == one_timer_side())) ||
+                                              src == s_owner || (holding && src == s_hold_target));
             if (shown) {
                 if (s_cfg.mode == MODE_TEAMS) {
                     for (int i = 0; i < 4; i++) seg[i] = display_char('-');
