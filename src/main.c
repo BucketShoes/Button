@@ -793,7 +793,7 @@ static const char *const BATT_LEVEL_NAME[] = {"normal", "low", "dead", "overdisc
 #define BATT_OVER_MV       3100
 #define BATT_HYST_MV       50    // a level is left upwards only this far above its threshold (see batt_level)
 #define BATT_SAG_OVER_MV   3000  // the 1 min average of the loaded reading this low counts as overdischarge-near: dead
-#define BATT_FALL_UV_PER_MS 50   // the estimate falls at most 3 mV a minute (see batt_loaded)
+#define BATT_FALL_NV_PER_MS 50   // the estimate falls at most 3 mV a minute (see batt_loaded)
 #define BATT_TAU_MS        60000
 
 static pwr_t s_pwr = PWR_ON;
@@ -937,14 +937,14 @@ static bool on_usb(void) { return s_usb; }
 // a little above its open-circuit voltage, and counts like any loaded reading. (Only with QBAT1 off and USB
 // present is VSYS the charger's output, and nothing reads it then: a rest reading turns PWR_EN on first.)
 // USB appearing or going starts the estimate again, from the next reading.
-static int s_batt_uv;  // the estimate in uV (0 = none yet)
+static int64_t s_batt_nv;  // the estimate in nV (0 = none yet; 3 mV a minute is 50 nV a ms)
 static int s_batt_mv;  // the same in mV
 static int s_batt_avg_mv;  // 1 min average of the loaded readings (0 = none)
 static uint32_t s_batt_at;
 static void batt_rest(int mv, uint32_t now)
 {
     wake_log_batt(mv);
-    s_batt_uv = mv * 1000;
+    s_batt_nv = mv * 1000000LL;
     s_batt_mv = mv;
     s_batt_avg_mv = 0;
     s_batt_at = now;
@@ -953,17 +953,18 @@ static void batt_loaded(int mv, uint32_t now)
 {
     uint32_t dt = now - s_batt_at;
     s_batt_at = now;
-    if (!s_batt_uv || mv * 1000 >= s_batt_uv) {
-        s_batt_uv = mv * 1000;
+    int64_t nv = mv * 1000000LL;
+    if (!s_batt_nv || nv >= s_batt_nv) {
+        s_batt_nv = nv;
     } else {
-        int fall = dt > 60000 ? 60000 * BATT_FALL_UV_PER_MS : (int)dt * BATT_FALL_UV_PER_MS;
-        int gap = s_batt_uv - mv * 1000;
-        s_batt_uv -= fall < gap ? fall : gap;
+        int64_t fall = (int64_t)(dt > 60000 ? 60000 : dt) * BATT_FALL_NV_PER_MS;
+        int64_t gap = s_batt_nv - nv;
+        s_batt_nv -= fall < gap ? fall : gap;
     }
-    s_batt_mv = s_batt_uv / 1000;
+    s_batt_mv = (int)(s_batt_nv / 1000000);
     s_batt_avg_mv = s_batt_avg_mv ? s_batt_avg_mv + (int)(((int64_t)(mv - s_batt_avg_mv) * (int64_t)(dt > BATT_TAU_MS ? BATT_TAU_MS : dt)) / BATT_TAU_MS) : mv;
 }
-static void batt_forget(void) { s_batt_uv = s_batt_mv = s_batt_avg_mv = 0; }
+static void batt_forget(void) { s_batt_nv = 0; s_batt_mv = s_batt_avg_mv = 0; }
 static batt_level_t level_at(int mv, int avg)
 {
     if (mv < BATT_OVER_MV) return BATT_OVER;
