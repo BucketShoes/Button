@@ -85,7 +85,7 @@ Each read describes the reading central's own connection.
 | 28 | u32 | restarts since power-on, counting the first (more than 1 means it has rebooted); kept in RTC RAM, so only a power-on (the cell and USB both gone) clears it |
 | 32 | u8 | power: 0 on, 1 peek (woken, showing battery), 2 off, 3 auto-off (dark after an idle time, still in the game and the network; a tap or any command is back on) |
 | 33 | u8 | bit0 dimmed (idle, config byte 43), bit1 battery low (below 3.5 V), bit2 sparse LEDs (idle, config byte 42) |
-| 34 | u16 | battery mV: the estimate (the highest recent reading, falling at most 3 mV a minute under load; an unloaded reading is taken as it is); 0 = unknown or on USB |
+| 34 | u16 | battery mV: the open-circuit voltage estimate (the highest recent reading, falling at most 3 mV a minute under load, faster when the loaded average is far below it; an unloaded reading is taken as it is); 0 = unknown or on USB |
 
 ## Config
 

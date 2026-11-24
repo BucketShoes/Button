@@ -793,7 +793,9 @@ static const char *const BATT_LEVEL_NAME[] = {"normal", "low", "dead", "overdisc
 #define BATT_OVER_MV       3100
 #define BATT_HYST_MV       50    // a level is left upwards only this far above its threshold (see batt_level)
 #define BATT_SAG_OVER_MV   3000  // the 1 min average of the loaded reading this low counts as overdischarge-near: dead
-#define BATT_FALL_NV_PER_MS 50   // the estimate falls at most 3 mV a minute (see batt_loaded)
+#define BATT_FALL_NV_PER_MS 50   // the OCV estimate falls at most 3 mV a minute (see batt_loaded)...
+#define BATT_FAST_GAP_MV   150   // ...unless the 1 min loaded average is more than this far below it,
+#define BATT_FAST_NV_PER_MS 1667 // then at up to 100 mV a minute, but only down to that distance above the average
 #define BATT_TAU_MS        60000
 
 static pwr_t s_pwr = PWR_ON;
@@ -928,16 +930,24 @@ static bool s_usb;  // USB power, from the VBUS pin's digital level (updated eve
 static bool s_radio;  // BLE and the network started (see radio_start)
 static bool on_usb(void) { return s_usb; }
 
-// The battery estimate: as close to the open-circuit voltage as it has seen. A rest reading (nothing
-// powered) is taken as it is. A loaded reading above the estimate pushes it up at once; below, it pulls
-// it down by at most 3 mV a minute, or by as much as the one-minute loaded average fell, whichever is more,
-// so the LEDs', speaker's and radio's droop doesn't count but a real discharge does, even a small cell's. A one-minute average of the loaded readings backs it up near the bottom, where the
-// estimate could lag a fast fall (and the brown-out detector watches the loaded 3.3 V rail).
+// The battery estimate: an estimate of the cell's open-circuit voltage, held as a peak of the readings.
+// (While charging the terminal sits above the OCV, so then it reads high; discharging, it's the nearest
+// thing to the OCV there is.) A rest reading (nothing powered) is taken as it is. A loaded reading above
+// the estimate pushes it up at once: the moment the load lets go (between a sound's notes, say) is the
+// one nearest the OCV. Below, it pulls it down by at most 3 mV a minute, so the LEDs', speaker's and
+// radio's droop doesn't count. A small cell can fall far faster than that (a 200 mAh cell at 200 mA: about
+// 20 mV a minute on average, 100 or more at the knee below 3.6 V), so when the one-minute loaded average
+// is more than BATT_FAST_GAP_MV below the estimate it falls at up to 100 mV a minute, but never to less
+// than BATT_FAST_GAP_MV above the average. The average sits below the OCV by the load's droop, so as long
+// as that droop (a loud sound included) is under BATT_FAST_GAP_MV, the fast fall can't take the estimate
+// below the OCV: a fanfare can start it, but it stops at the OCV, and the next recovered reading holds it.
+// The average also backs it up near the bottom (below BATT_SAG_OVER_MV counts as dead), and the
+// brown-out detector watches the loaded 3.3 V rail.
 // VSYS is the cell's terminal whenever QBAT1 is on (PWR_EN high), on USB too: then it's the cell charging,
 // a little above its open-circuit voltage, and counts like any loaded reading. (Only with QBAT1 off and USB
 // present is VSYS the charger's output, and nothing reads it then: a rest reading turns PWR_EN on first.)
 // USB appearing or going starts the estimate again, from the next reading.
-static int64_t s_batt_nv;  // the estimate in nV (0 = none yet; 3 mV a minute is 50 nV a ms)
+static int64_t s_batt_nv;  // the OCV estimate in nV (0 = none yet; 3 mV a minute is 50 nV a ms)
 static int s_batt_mv;  // the same in mV
 static int s_batt_avg_uv;  // 1 min average of the loaded readings, in uV (it moves a few uV a loop pass)
 static int s_batt_avg_mv;  // the same in mV (0 = none)
@@ -954,19 +964,20 @@ static void batt_loaded(int mv, uint32_t now)
 {
     uint32_t dt = now - s_batt_at;
     s_batt_at = now;
-    int avg_was = s_batt_avg_uv;
     s_batt_avg_uv = s_batt_avg_uv ? s_batt_avg_uv + (int)(((int64_t)(mv * 1000 - s_batt_avg_uv) * (int64_t)(dt > BATT_TAU_MS ? BATT_TAU_MS : dt)) / BATT_TAU_MS) : mv * 1000;
     s_batt_avg_mv = s_batt_avg_uv / 1000;
     int64_t nv = mv * 1000000LL;
     if (!s_batt_nv || nv >= s_batt_nv) {
         s_batt_nv = nv;
     } else {
-        // At most 3 mV a minute, or as far as the loaded average fell since the last reading, whichever is
-        // more: under a steady load the average falls with the cell (a small cell's 20-30 mV a minute), while
-        // a short load (a capture's LEDs and sound) barely moves a 1-minute average.
-        int64_t fall = (int64_t)(dt > 60000 ? 60000 : dt) * BATT_FALL_NV_PER_MS;
-        int64_t avg_fall = avg_was > s_batt_avg_uv ? (int64_t)(avg_was - s_batt_avg_uv) * 1000 : 0;
-        if (avg_fall > fall) fall = avg_fall;
+        int64_t t = dt > 60000 ? 60000 : dt;
+        int64_t fall = t * BATT_FALL_NV_PER_MS;
+        int64_t floor_nv = ((int64_t)s_batt_avg_uv + BATT_FAST_GAP_MV * 1000) * 1000;  // the fast fall's floor
+        if (s_batt_avg_uv && s_batt_nv > floor_nv) {
+            int64_t fast = t * BATT_FAST_NV_PER_MS;
+            if (fast > s_batt_nv - floor_nv) fast = s_batt_nv - floor_nv;
+            if (fast > fall) fall = fast;
+        }
         int64_t gap = s_batt_nv - nv;
         s_batt_nv -= fall < gap ? fall : gap;
     }
