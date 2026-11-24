@@ -36,7 +36,7 @@ Agreed design, 2026-11-25. Stages 1 and 2 built. The map is out of scope for now
   for the forming flash, "LinE", and the page) is the id mod a palette of 8–16 hues, picked to avoid the team
   colours. Team colours stay as each button has them ("team 1 is team 1").
 - **Per line:** type (tug-of-war or forge-a-path); each end's team (1, 2 or none: none at an end means a finished
-  line can't be taken back from that side); retake time and advance time (both default 1 min).
+  line can't be taken back from that side); retake time and advance time (both default 30 s).
 - **Rule:** team T can capture node i if T owns a neighbour (an end's team counts as a virtual neighbour beyond it)
   and T doesn't own node i. Forge-a-path: a node once owned isn't captured again (as an infinite retake time).
 - **Lockout:** a node just captured can't be taken back for the retake time; a node that just became the next one
