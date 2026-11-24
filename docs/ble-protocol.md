@@ -140,6 +140,7 @@ The first byte is the opcode.
 | 17 | | game resume: undo a game pause (runs again only if it was running before) |
 | 18 | | shipping mode (was "factory off"): deep sleep with BLE off after about 1.5 s (so the network passes the command on), on battery or USB. Saved: any reset comes back to it. A lid press or USB appearing peeks, then it goes back to shipping unless the peek turned it on; USB going just sleeps again |
 | 19 | | (removed: was the awake LED switch, now config byte 11) |
+| 20 | u16 id, u8 index, u8 n, u8 type, u8 ends, u16 retake s, u16 advance s, i8 owner | put the button in a line (id 0: out of its line, back to its own mode). type 0 tug-of-war, 1 forge-a-path; ends: low nibble the team beyond #1, high nibble beyond #n (0 none, 1, 2). Joining sets teams-only mode; owner ≥ 0 also sets the owner and the after-reset team, −1 leaves them |
 
 Sound ids:
 
@@ -195,17 +196,25 @@ Everything on characteristic 6 is a frame: centrals write them, the button notif
 | Stream | Payload | Sent |
 |---|---|---|
 | 0 hot | game state (below) | on change, and every 10 s |
-| 1 status | status (below) | every 30 s, and when the button's links, phone count, low-battery flag or USB change (so the page gets the flag and the voltage together) |
-| 2 config | `config_t` (46 bytes, as characteristic 3) | on change |
+| 1 status | status (below) | every 30 s, and when the button's links or phone count change |
+| 2 config | `config_t` (46 bytes, as characteristic 3), then its line (12 bytes, below) | on change |
 | 3 command | command (below) | from admins only |
 
 For streams 0–2 the highest version wins; versions start with the button's boot count in the top byte, so a
 rebooted button's items are newer. Commands are numbered per admin and taken strictly in order, each once: a later
 one waits up to 10 s for a missing earlier one.
 
-**Hot** (21 bytes): u32 network ms when generated, u8 flags (as the state characteristic), i8 owner, i8 winner,
-i8 target, u8 hold stage, u16 held ms, i32 ×2 clocks, u8 power, u8 flags2. The clocks and held time are as of
-the timestamp; receivers extrapolate while running or held.
+**Hot** (25 bytes): u32 network ms when generated, u8 flags (as the state characteristic), i8 owner, i8 winner,
+i8 target, u8 hold stage, u16 held ms, i32 ×2 clocks, u8 power, u8 flags2, u32 network ms the owner last changed
+(a line's retake and advance times count from it). The clocks and held time are as of the timestamp; receivers
+extrapolate while running or held.
+
+**Line** (after the config): u16 id (0 = not in a line; random, shared by the line's buttons; its number 1–8 and
+colour are id mod 8), u8 index (1..n), u8 n, u8 type (0 tug-of-war, 1 forge-a-path), u8 ends (low nibble: the team
+beyond #1, high nibble: beyond #n; 0 none, 1, 2), u16 retake s, u16 advance s, u8 the mode it had before joining,
+u8 0. A team can take a button in a line when it owns a neighbour (or the end beyond it), the button isn't already
+theirs (and, forge-a-path, isn't owned at all), the retake time has passed since the button's own capture, and the
+advance time since that neighbour's. A neighbour never heard from doesn't block.
 
 **Status** (28 bytes, then the links): u32 network ms, u16 VSYS mV (not read while off), u16 VBUS mV (0 without USB), i16 battery % (while off, from
 the last rest reading), u16 battery mV,

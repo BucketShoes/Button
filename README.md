@@ -198,6 +198,13 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
   - **Uncaptured:** a faint white pulse on the ring (0–10 %, 0.5 Hz), no team colour, and neither display highlighted. The team the next press goes for has one colon dot missing: subtle, for admins.
   - **Paused with an owner:** the ring blinks faintly in their colour, and their display shows a single slow-blinking dot instead of the colon.
 - **After reset:** uncaptured, or owned by the team set in "after reset". In teams-only mode that team is simply live. With clocks it waits, paused, for Start or a hold.
+- **Lines** (tug-of-war, forge-a-path; set up in the page's "Lines", or by holding several buttons to the reset at once):
+  - A team can take a button only next to one it owns, or at its end of the line (each end's team, or none, is a setting). Forge-a-path: a button once taken stays taken.
+  - Retake (a button just taken can't be taken back) and advance (a button just opened by its neighbour's capture can't be taken yet) are both 1 minute by default, counted on the network clock.
+  - **Displays:** nobody can take it: "--:--" on both, dim. A team can: the time until it can (0:00 once it can) on that team's display, the other blank.
+  - **A press that isn't allowed:** a short low "no" and a red flash, and nothing builds up or captures. Not next to theirs: "nEEd" and the number of the button to take first, for 2 s. Holding on still pauses and resets as usual.
+  - **Forming without the page:** hold several buttons at once (a stack, pressed together) until the reset. From the pause on they flash one shared colour together; at the reset they become a line, numbered in node-id order, the first half team 1, the rest team 2 (a middle one either), and show "LinE" and their place ("4  3": line 4, 3rd) for 20 s, with a sweep down the line in its colour. A button held to the reset alone leaves its line. In a line a button is in teams-only mode; leaving puts its own mode back.
+  - **Four taps:** "LinE" and its place again for 5 s ("--" when not in a line).
 - **Triple tap:** battery ("bAtt" plus a percent for 6 s, with a green gauge on the ring). It works in every mode and with the numbers hidden.
 - **Power:** see "Power" below.
 - **BOOT:**
@@ -220,7 +227,7 @@ The protocol is in [docs/ble-protocol.md](docs/ble-protocol.md).
 - **Music clip** (optional, see "Building the firmware"): plays only when started from the page. A face press or BOOT stops it.
 - **Serial:** a status line every second plus an event log.
 
-Not used yet: the pedals (only logged), storage-charge management on USB, coded PHY or a mesh between buttons, and the event log/timeline. See [docs/plans.md](docs/plans.md).
+Not used yet: the pedals (only logged), storage-charge management on USB, and the event log/timeline. See [docs/plans.md](docs/plans.md).
 
 ## Power
 

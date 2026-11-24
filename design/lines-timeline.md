@@ -1,12 +1,14 @@
 # Lines (tug-of-war, forge-a-path) and the timeline
 
-Agreed design, 2026-11-25. Not built yet except stage 1. The map is out of scope for now.
+Agreed design, 2026-11-25. Stages 1 and 2 built. The map is out of scope for now.
 
 ## Stages
 
 1. **Time base and synced identify** (built): 64-bit network time carried across deep sleep by the LP timer;
    "identify all" starts at network time + 1 s, so how together they flash shows how well the clocks agree.
-2. **Lines.**
+2. **Lines** (built, not yet tested on buttons): as below. Line id: a CRC of the forming buttons' ids (the same
+   on every one of them, and different for different sets), or random from the page. The demo shows lines in the
+   page but its holds don't follow the rule.
 3. **Timeline.**
 
 ## Time
