@@ -124,7 +124,7 @@ The first byte is the opcode.
 | 1 | | start (clocks run) |
 | 2 | | pause |
 | 3 | | reset |
-| 4 | [u16 ms] | identify (default 3000, max 10000) |
+| 4 | [u16 ms] [u32 start] | identify (default 3000, max 10000). With a start (network ms, up to 5 s ahead) it begins then, so "identify all" flashes every button together; one that hears it too late starts at once |
 | 5 | u8 team, i32 ms | set clock value |
 | 6 | u8 team, i32 ms | add to clock value (negative to subtract); undoes a win if the winner is no longer at the line |
 | 7 | i8 owner | set owner (-1 uncaptured) |

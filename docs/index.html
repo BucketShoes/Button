@@ -340,7 +340,7 @@ function encodeConfig(c) {
 function cmd(op, ...parts) {  // parts: [type, value]
   const bytes = [op];
   for (const [t, v] of parts) {
-    const n = { u8: 1, i8: 1, u16: 2, i32: 4 }[t];
+    const n = { u8: 1, i8: 1, u16: 2, i32: 4, u32: 4 }[t];
     for (let i = 0; i < n; i++) bytes.push((v >> (8 * i)) & 0xff);
   }
   return new Uint8Array(bytes);
@@ -1066,7 +1066,8 @@ document.getElementById("game").addEventListener("click", ev => {
   switch (b.dataset.all) {
     case "gpause": data = cmd(OP.GAME_PAUSE); break;
     case "gresume": data = cmd(OP.GAME_RESUME); break;
-    case "identify": data = cmd(OP.IDENTIFY, ["u16", 3000]); break;
+    // A second from now on the network clock, so they all flash together (or show how far apart the clocks are).
+    case "identify": data = cmd(OP.IDENTIFY, ["u16", 3000], ["u32", (net.now() + 1000) >>> 0]); break;
     case "play": data = cmd(OP.PLAY_SOUND, ["u8", +allSound.value]); break;
     case "stopsound": data = cmd(OP.STOP_SOUND); break;
     case "on": data = cmd(OP.POWER_ON); break;

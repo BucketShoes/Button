@@ -298,6 +298,8 @@ static bool s_lid_off_request;  // held to the power-off point; the main loop tu
 static int s_taps;
 static uint32_t s_last_tap_ms;
 static uint32_t s_batt_until, s_ident_until;
+static uint32_t s_ident_from;  // local ms the identify started (its flashes count from here)
+static uint32_t s_ident_at, s_ident_len;  // a start waiting for its network time (s_ident_len 0: none)
 static uint32_t s_win_alarm_until, s_win_next_sound;
 static uint32_t s_boot_factory_done, s_boot_off_done;
 static bool s_boot_off_showing;  // BOOT held towards power-off: displays say "HoLd" "oFF"
@@ -621,7 +623,7 @@ enum {
     OP_START = 1,
     OP_PAUSE = 2,
     OP_RESET = 3,
-    OP_IDENTIFY = 4,     // [u16 ms] (0 = default)
+    OP_IDENTIFY = 4,     // [u16 ms] (0 = default) [u32 network ms to start at (identify all: in sync)]
     OP_SET_TIME = 5,     // u8 team, i32 ms (value as shown)
     OP_ADD_TIME = 6,     // u8 team, i32 ms (+/- on the value as shown)
     OP_SET_OWNER = 7,    // i8 owner (-1 uncaptured, 0, 1)
@@ -1239,7 +1241,7 @@ static void power_set(pwr_t to, uint32_t now)
             vTaskDelay(pdMS_TO_TICKS(550));
         }
         periph_power(false);
-        s_batt_until = s_ident_until = 0;
+        s_batt_until = s_ident_until = s_ident_len = 0;
         s_next_batt_check = now + 10000;  // off: first check soon, then hourly (auto-off reads it at each flash)
         s_low_readings = 0;
         if (to == PWR_AUTO) {
@@ -1558,6 +1560,16 @@ static void factory_reset(uint32_t now)
 
 static int32_t rd_i32(const uint8_t *p) { return (int32_t)(p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24); }
 
+static uint32_t rd_u32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static void identify_start(uint32_t now, uint32_t ms)
+{
+    s_ident_len = 0;
+    s_ident_from = now;
+    s_ident_until = now + ms;
+    int notes = (int)(ms / 250) * 2;
+    if (notes > IDENT_NOTES) notes = IDENT_NOTES;
+    audio_play(SLOT_EVENT, s_ident, notes);
+}
 static void handle_command(const uint8_t *d, int n, uint32_t now)
 {
     if (n < 1) return;
@@ -1593,10 +1605,15 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         uint32_t ms = n >= 3 ? (uint32_t)(d[1] | d[2] << 8) : 0;
         if (!ms) ms = IDENT_MS;
         if (ms > 10000) ms = 10000;
-        s_ident_until = now + ms;
-        int notes = (int)(ms / 250) * 2;
-        if (notes > IDENT_NOTES) notes = IDENT_NOTES;
-        audio_play(SLOT_EVENT, s_ident, notes);
+        // With a start time (identify all): at that network time, so every button flashes together, and
+        // how together shows how well the network clocks agree. Late (it arrived after it): at once.
+        int32_t wait = n >= 7 ? (int32_t)(rd_u32(d + 3) - mesh_net_ms()) : 0;
+        if (wait > 0 && wait <= 5000) {
+            s_ident_at = now + (uint32_t)wait;
+            s_ident_len = ms;
+        } else {
+            identify_start(now, ms);
+        }
         break;
     }
     case OP_SET_TIME:
@@ -1734,6 +1751,15 @@ static int disp_level(int bright)
 static bool capture_dark(void);
 static bool batt_showing(uint32_t now) { return (int32_t)(s_batt_until - now) > 0; }
 static bool identifying(uint32_t now) { return (int32_t)(s_ident_until - now) > 0; }
+// Identify's flash: lit for 125 ms, dark for 125 ms, counted from its start.
+static bool ident_lit(uint32_t now) { return !(((now - s_ident_from) / 125) & 1); }
+// ms to the next flash edge (or the waiting start), for the loop's wait; -1 if none.
+static int32_t ident_next_ms(uint32_t now)
+{
+    if (s_ident_len) return (int32_t)(s_ident_at - now);
+    if (!identifying(now)) return -1;
+    return 125 - (int32_t)((now - s_ident_from) % 125);
+}
 
 static void render_clock(uint8_t seg[4], int32_t ms, bool round_up)
 {
@@ -1788,7 +1814,7 @@ static void render_displays(uint32_t now)
             bright = DISP_FULL;
         } else if (identifying(now)) {
             memset(seg, 0xFF, sizeof seg);
-            bright = ((now / 125) & 1) ? DISP_FULL : 0;
+            bright = ident_lit(now) ? DISP_FULL : 0;
         } else if (batt_showing(now)) {
             if (t == 0) {
                 display_text(seg, "bAtt");
@@ -1970,7 +1996,7 @@ static void render_leds(uint32_t now)
         ring_fill(ring, WHITE, 160, input_held_ms(&s_face), POWER_ON_HOLD_MS, 0);
     }
     if (identifying(now)) {
-        for (int i = 0; i < 6; i++) ring[i] = ((now / 125) & 1) ? WHITE : (rgb_t){0};
+        for (int i = 0; i < 6; i++) ring[i] = ident_lit(now) ? WHITE : (rgb_t){0};
     }
 
     for (int i = 0; i < 6; i++) frame[RING_CW[i]] = ring[i];
@@ -2411,6 +2437,8 @@ void app_main(void)
             int32_t until = (int32_t)(s_next_batt_check - t);
             period = until < 1000 ? 1000 : until > (int32_t)OFF_BATT_CHECK_MS ? OFF_BATT_CHECK_MS : (uint32_t)until;
         }
+        int32_t edge = ident_next_ms(t);  // identify: wake on its start and each flash edge
+        if (edge >= 0 && (uint32_t)edge < period) period = edge < 1 ? 1 : (uint32_t)edge;
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(period));
         uint32_t now = now_ms();
         uint32_t dt = now - last;
@@ -2496,6 +2524,7 @@ void app_main(void)
             intent_set(INTENT_SHIP);  // kept through every wake but a press or command that turns it on
             deep_sleep(DEEP_SHIP);
         }
+        if (s_ident_len && (int32_t)(now - s_ident_at) >= 0) identify_start(s_ident_at, s_ident_len);
         game_tick(now, dt);
         if (s_radio) net_publish(now);
         if (s_pwr == PWR_ON) countdown_blips();
@@ -2543,6 +2572,13 @@ void app_main(void)
             static bool was_dark;
             if (capture_dark() != was_dark) {
                 was_dark = !was_dark;
+                next_disp = next_led = now;
+            }
+            // Identify's flashes: on their edges too (identify all is a check of the network clocks).
+            static int ident_was;
+            int ident_now = identifying(now) ? 1 + ident_lit(now) : 0;
+            if (ident_now != ident_was) {
+                ident_was = ident_now;
                 next_disp = next_led = now;
             }
             if ((int32_t)(now - next_disp) >= 0) {
