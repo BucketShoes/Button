@@ -758,6 +758,15 @@ static bool s_peek_hold;
 #define OFF_RECHECK_MS       60000              // off: a low reading is confirmed once before acting
 #define DEAD_CHECK_US        (60ULL * 60 * 1000000)       // dead (deep sleep): watching for overdischarge
 #define LOW_DEEP_CHECK_US    (6ULL * 60 * 60 * 1000000)   // low (deep sleep): the same, less often
+#define DEAD_USB_CHECK_US    (60ULL * 1000000)            // dead on USB: a reading a minute (charging out, or not)
+#define DEAD_FIRST_US        (15ULL * 1000000)            // just out of overdischarge: dead's first reading, the
+                                                          // body diode charging meanwhile (PWR_EN still off)
+// Overdischarge never turns PWR_EN on, so its only reading is VSYS with PWR_EN off: with USB that's the
+// charger's output, a body diode (about 0.6-0.7 V) above the cell while it charges.
+#define OVER_EXIT_MV         3900   // at least this: the cell is about 3.2 V or more: on to dead
+#define OVER_SOON_MV         3700   // at least this: charging, not there yet: look again in OVER_SOON_US
+#define OVER_SOON_US         (60ULL * 1000000)
+#define OVER_RETRY_US        (15ULL * 60 * 1000000)       // otherwise, or a USB that came and went: the only wake
 #define OFF_BLE_MAX_MS       (8ULL * 24 * 3600 * 1000)    // off with BLE lasts this long at most
 #define BATT_WARN_EVERY_MS   30000              // low battery while on: the battery shows briefly, with a beep
 #define BATT_WARN_MS         900
@@ -765,8 +774,9 @@ static bool s_peek_hold;
                                                 // the fanfare): it would read as part of it. It waits, and
                                                 // goes only if the battery is still low by then.
 
-// Battery levels, from the estimate below. On USB they're still worked out (charge_hold uses them), but
-// nothing acts on them: no warnings, no going dark, no battery deep sleep.
+// Battery levels, from the estimate below, on USB as on battery: a USB pin reading high isn't proof of
+// charging (a weak supply can read high and charge nothing). Overdischarge is a state, not a reading: once
+// in it, nothing turns PWR_EN on, so nothing reads the cell; only over_wake's rule leaves it.
 //   normal          everything.
 //   low      < 3.5  on works as usual, with warnings, and auto-off after 11 min idle at most. Off: no
 //                   BLE (deep sleep); a press peeks and can turn it on.
@@ -976,7 +986,7 @@ static batt_level_t batt_level(void)
         }
         s_cell_lvl = l;
     }
-    return on_usb() ? BATT_NORMAL : s_cell_lvl;  // (on USB nothing acts on the level)
+    return s_cell_lvl;
 }
 // For the battery % and the page: the estimate (the latest reading until there is one).
 static int batt_now_mv(void) { return s_batt_mv ? s_batt_mv : s_vsys_mv; }
@@ -1027,9 +1037,10 @@ static void usb_lock_update(uint32_t now)
 
 // PWR_EN also closes QBAT1, the charger's (TP4057 on VSYS) only full path into the cell: with it open the
 // cell charges only through QBAT1's body diode, to a diode drop under the charger. So with USB's digital
-// level high it's held on, in every state and through deep sleep, if the last level read off USB was low
-// or normal. Dead or overdischarged it stays off: the diode charges the cell regardless.
-static bool charge_hold(void) { batt_level(); return on_usb() && s_cell_lvl < BATT_DEAD; }
+// level high it's held on, in every state and through deep sleep, except in overdischarge (never PWR_EN
+// there: the diode charges the cell regardless).
+static bool s_dead_first;  // this start came out of overdischarge: the first dead sleep keeps PWR_EN off
+static bool charge_hold(void) { batt_level(); return on_usb() && s_cell_lvl != BATT_OVER && !s_dead_first; }
 static void pwr_en_apply(void) { gpio_set_level(PIN_PWR_EN, s_periph_on || charge_hold()); }
 
 static void periph_power(bool on)
@@ -1041,7 +1052,7 @@ static void periph_power(bool on)
         display_init();
         s_last_frame_valid = 0;
         s_periph_on = true;
-        audio_set_allowed(true);
+        audio_set_allowed(batt_level() < BATT_DEAD);
     } else {
         audio_set_allowed(false);
         uint8_t blank[4] = {0};
@@ -1086,8 +1097,10 @@ static void deep_sleep(deep_t kind)
 }
 // The same without saving the game: for a wake that goes straight back, before the game is restored
 // (the saved copy, and its LP-timer time, are still right).
+static uint64_t s_over_timer_us;  // the next overdischarge sleep's only wake (0: by rule, see sleep_now)
 static void sleep_now(deep_t kind, bool back)
 {
+    if (kind == DEEP_OVER) s_cell_lvl = BATT_OVER;  // (before anything below looks at charge_hold)
     s_deep_kind = kind;
     s_deep_check = kind ^ DEEP_CHECK;
     bool press_wake = kind != DEEP_OVER;
@@ -1104,9 +1117,8 @@ static void sleep_now(deep_t kind, bool back)
     const gpio_num_t light_wake[4] = {PIN_FACE1, PIN_FACE2, PIN_FACE3, PIN_BOOT};
     for (int i = 0; i < 4; i++) gpio_wakeup_disable(light_wake[i]);
     gpio_wakeup_disable(PIN_VBUS_SENSE);
-    // 0.6 x VBUS, its digital level: wake on a change (ext1 levels are per pin on the C6), in every sleep.
-    // A wake that finds the opposite level again goes back with the opposite armed (see app_main).
-    esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+    // 0.6 x VBUS, its digital level: wake on a change (ext1 levels are per pin on the C6). A wake that finds
+    // the opposite level again goes back with the opposite armed (see app_main). Overdischarge: see below.
     // Every LP pad (IO0..IO7) is set for the sleep and held (app_main releases them at every start):
     //   lid switches IO2, IO6, IO7 (to GND, no external pulls): as a wake source, inputs with the LP
     //     pull-up; in overdischarge (USB only) isolated, so a held lid draws no pull-up current
@@ -1146,8 +1158,18 @@ static void sleep_now(deep_t kind, bool back)
         }
     }
     if (mask) esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
-    if (!on_usb() && kind == DEEP_DEAD) esp_sleep_enable_timer_wakeup(DEAD_CHECK_US);
-    if (!on_usb() && kind == DEEP_LOW) esp_sleep_enable_timer_wakeup(LOW_DEEP_CHECK_US);
+    if (kind == DEEP_OVER) {
+        // One wake only. With USB: the timer (a supply that reads high but can't charge can't keep waking
+        // it). Without: USB appearing, or the timer after a USB that came and went (a flickering supply).
+        uint64_t t = s_over_timer_us ? s_over_timer_us : on_usb() ? OVER_RETRY_US : 0;
+        if (t) esp_sleep_enable_timer_wakeup(t);
+        else esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, ESP_EXT1_WAKEUP_ANY_HIGH);
+    } else {
+        esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+        if (kind == DEEP_DEAD)
+            esp_sleep_enable_timer_wakeup(s_dead_first ? DEAD_FIRST_US : on_usb() ? DEAD_USB_CHECK_US : DEAD_CHECK_US);
+        if (kind == DEEP_LOW) esp_sleep_enable_timer_wakeup(LOW_DEEP_CHECK_US);
+    }
     esp_deep_sleep_start();
 }
 
@@ -1164,13 +1186,13 @@ static void show_low_and_sleep(deep_t kind)
     deep_sleep(kind);
 }
 
-// The deep sleep for the battery as it is now, if it wants one (on USB, none). Off: from low down.
+// The deep sleep for the battery as it is now, if it wants one (on USB too). Off: from low down.
 // On or auto-off: from dead down.
 static int batt_deep(bool off)
 {
     batt_level_t l = batt_level();
     if (l == BATT_OVER) return DEEP_OVER;
-    if (l == BATT_DEAD) return off ? DEEP_LOW : DEEP_DEAD;
+    if (l == BATT_DEAD) return DEEP_DEAD;  // (a press there shows "bAtt Lo", never a peek)
     if (off && (l == BATT_LOW || (!on_usb() && long_off()))) return DEEP_LOW;
     return -1;
 }
@@ -1215,7 +1237,7 @@ static void power_set(pwr_t to, uint32_t now)
         }
     } else {
         periph_power(true);
-        audio_set_allowed(true);  // (already powered mid auto-off flash, with the speaker held off)
+        audio_set_allowed(batt_level() < BATT_DEAD);  // (already powered mid auto-off flash, with the speaker held off)
         s_flash_until = 0;
         ble_set_slow(false);
         mesh_set_off(false);
@@ -2185,6 +2207,29 @@ static void radio_start(void)
     mesh_publish_config(&s_cfg, sizeof s_cfg);
 }
 
+// A wake from overdischarge (app_main, before anything starts). PWR_EN stays off and nothing else is
+// powered: the only reading is VSYS, which with USB is the charger's output. Every path ends in a sleep:
+// overdischarge again (at least OVER_SOON_US, or until USB appears), or dead for DEAD_FIRST_US.
+static void over_wake(bool by_usb)
+{
+    s_cell_lvl = BATT_OVER;
+    if (!on_usb()) {
+        // Timer, USB gone: wait for USB to appear. USB appeared and went already: the timer only.
+        s_over_timer_us = by_usb ? OVER_RETRY_US : 0;
+        sleep_now(DEEP_OVER, true);
+    }
+    int mv = sense_vsys_mv();
+    wake_log_batt(mv);
+    ESP_LOGW(TAG, "overdischarge, USB: VSYS %d mV with PWR_EN off", mv);
+    if (mv >= OVER_EXIT_MV) {
+        s_cell_lvl = BATT_DEAD;
+        s_dead_first = true;
+        sleep_now(DEEP_DEAD, true);
+    }
+    s_over_timer_us = mv >= OVER_SOON_MV ? OVER_SOON_US : OVER_RETRY_US;
+    sleep_now(DEEP_OVER, true);
+}
+
 void app_main(void)
 {
     s_reset_reason = (uint8_t)esp_reset_reason();
@@ -2242,13 +2287,20 @@ void app_main(void)
                                 : cause == ESP_SLEEP_WAKEUP_EXT1 ? WAKE_EXT1_NONE : WAKE_OTHER);
         int kind = deep_kind_saved();
         wake_log_start(s_reset_reason, (uint8_t)cause, (uint8_t)pins, (uint8_t)((from_deep && kind >= 0 ? kind : 0xF) | s_intent << 4));
-        // (The VBUS pin flagged with no USB now is USB going, or a false wake: back to sleep either way.)
-        if (from_deep && kind >= 0 && !press && !on_usb()) {
+        if (from_deep && kind == DEEP_OVER) over_wake(usb_pin);  // (never returns)
+        if (from_deep && kind >= 0) {
+            // The level it slept at, so the hysteresis carries on (shipping: unknown). Then a reading (PWR_EN
+            // is allowed in every level but overdischarge) and the level decides; only a press, or USB
+            // appearing, goes on to start anything.
+            if (kind == DEEP_DEAD) s_cell_lvl = BATT_DEAD;
+            else if (kind == DEEP_LOW) s_cell_lvl = BATT_LOW;
             batt_rest(read_batt_rest(), now_ms());
-            if (batt_level() < BATT_OVER) {
-                ESP_LOGI(TAG, "%s sleep: back to sleep (battery %d mV, wake %lu)", DEEP_NAME[kind], s_batt_mv, (unsigned long)s_wakes);
-                sleep_now((deep_t)kind, true);
-            }
+            batt_level_t l = batt_level();
+            bool appeared = usb_pin && on_usb();
+            ESP_LOGI(TAG, "%s sleep: battery %d mV (%s), wake %lu", DEEP_NAME[kind], s_batt_mv, BATT_LEVEL_NAME[l], (unsigned long)s_wakes);
+            if (l == BATT_OVER) sleep_now(DEEP_OVER, true);
+            if (l == BATT_DEAD && !press) sleep_now(DEEP_DEAD, true);  // (dead with a press: "bAtt Lo", below)
+            if (!press && !appeared) sleep_now(kind == DEEP_DEAD ? DEEP_LOW : (deep_t)kind, true);
         }
     }
     sounds_init();
@@ -2287,6 +2339,10 @@ void app_main(void)
         bool plugged = on_usb() && ((pins & (1ULL << PIN_VBUS_SENSE)) || kind != DEEP_SHIP);
         ESP_LOGI(TAG, "%s sleep, woken by %s", DEEP_NAME[kind],
                  press ? "a press" : plugged ? "USB" : cause == ESP_SLEEP_WAKEUP_TIMER ? "the battery check" : "USB going (or nothing)");
+        if (batt_level() >= BATT_DEAD) {  // dead (on USB too): no peek, no sound; a press shows "bAtt Lo"
+            if (press) show_low_and_sleep(DEEP_DEAD);
+            deep_sleep(DEEP_DEAD);
+        }
         if (plugged && kind != DEEP_SHIP && s_intent == INTENT_ON) power_set(PWR_AUTO, last);
         else if (plugged) power_set(PWR_PEEK, last);
         else if (press && kind != DEEP_DEAD && batt_level() < BATT_DEAD) power_set(PWR_PEEK, last);
@@ -2405,7 +2461,7 @@ void app_main(void)
         // The radio starts once it's on, auto-off or off (off keeps slow legacy adverts for the page), never
         // for a peek: a wake that peeks and sleeps again (shipping, a low cell) never advertises, and every
         // decision to deep-sleep at a start is made before the first pass.
-        if (!s_radio && s_pwr != PWR_PEEK) radio_start();
+        if (!s_radio && s_pwr != PWR_PEEK && batt_level() < BATT_DEAD) radio_start();
         if (s_radio) {
             ble_service(now);
             mesh_tick(now);
@@ -2428,7 +2484,13 @@ void app_main(void)
         bool was_usb = s_usb;
         s_usb = sense_vbus_present();
         if (was_usb != s_usb) batt_forget();  // charging lifts the terminal voltage, and it falls when USB goes: start again
-        pwr_en_apply();  // charging hold follows USB and the power choice
+        pwr_en_apply();  // charging hold follows USB and the battery level
+        // No sound at all in dead or overdischarge: the speaker is the largest load, on a cell that can't take it.
+        static bool muted;
+        if ((batt_level() >= BATT_DEAD) != muted) {
+            muted = !muted;
+            if (muted) audio_set_allowed(false);
+        }
         if (!s_usb) s_vbus_mv = 0;
         if ((int32_t)(now - next_adc) >= 0) {
             next_adc = now + 250;

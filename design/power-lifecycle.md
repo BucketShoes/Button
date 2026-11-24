@@ -16,9 +16,9 @@ Notes on how the button moves between power states, what each state keeps runnin
 | Peek | powered (battery shown 6 s) | as on | as it was | 2 more presses or a 1.5 s hold → on; otherwise back to off / shipping / low sleep |
 | Off | dark | legacy adverts every 2–2.5 s, phones only | clocks paused (teams owner stays) | lid → peek; page → on; low battery or 8 days → low sleep |
 | Shipping (deep) | off | none | saved | lid or USB appearing → peek → shipping again; USB going → sleeps again |
-| Low (deep) | off | none | saved | lid → peek (can turn on); USB → peek → off; timer every 6 h (overdischarge watch) |
-| Dead (deep) | off | none | saved, clocks run on the LP timer | lid → "bAtt Lo" → sleeps again; USB → auto-off (or peek → off); timer hourly |
-| Overdischarge (deep) | off | none | saved, clocks stop | USB appearing only |
+| Low (deep) | off | none | saved | lid → peek (can turn on); USB → peek → off; timer every 6 h; PWR_EN held while on USB |
+| Dead (deep) | off | none | saved, clocks run on the LP timer | lid → "bAtt Lo" (no sound) → sleeps again; never peeks or turns on; a reading at every wake: hourly, every minute on USB; up to low → low sleep, down → overdischarge; PWR_EN held while on USB |
+| Overdischarge (deep) | off | none | saved, clocks stop | PWR_EN never on, no reading of the cell. No USB: USB appearing only. USB: a timer only (1 or 15 min), then VSYS with PWR_EN off (the charger's output): ≥ 3.9 V → dead, first reading 15 s later; ≥ 3.7 V → again in 1 min; else 15 min. USB gone after a USB wake → 15 min timer only |
 
 Every deep sleep writes the game to RTC RAM and to flash. RTC RAM and the LP timer survive deep sleep and every reset but a power-on, so the clocks advance by the time away. After a power-on (the cell swapped) the flash copy comes back with the clocks paused. The flash copy is cleared whenever it's on or auto-off again, so a later power-on never brings back a stale game.
 
@@ -30,7 +30,7 @@ The estimate (`s_batt_mv`) aims at the open-circuit voltage:
 - A loaded reading above the estimate pushes it up at once.
 - A loaded reading below pulls it down by at most 3 mV a minute.
 
-A one-minute average of loaded readings below 3.0 V also counts as dead, because the estimate can lag a fast fall and the brown-out detector watches the loaded rail. On USB nothing is learnt, and the estimate starts again when USB comes or goes.
+A one-minute average of loaded readings below 3.0 V also counts as dead, because the estimate can lag a fast fall and the brown-out detector watches the loaded rail. Readings on USB count too (with PWR_EN on VSYS is the cell, a little high while charging), and the levels apply on USB as on battery: a USB pin reading high isn't proof of charging. The estimate starts again when USB comes or goes. Dead and overdischarge never start BLE or play a sound.
 
 The levels have 50 mV of hysteresis upwards (BATT_HYST_MV): a worse level applies at once, a better one only 50 mV above its threshold. Without it a cell sitting at 3.5 V crossed "low" both ways every minute or two, because the estimate jumps up on any loaded reading above it and creeps back down at 3 mV a minute.
 
