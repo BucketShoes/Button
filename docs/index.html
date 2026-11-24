@@ -200,7 +200,7 @@
       <summary>Advanced</summary>
       <div class="net muted"></div>
       <div class="diag muted"></div>
-      <div class="row"><button data-op="wakes" title="Every start of this button (resets and deep-sleep wakes) since it was last powered up, newest first: what started it, what it found, what it did. Read over a direct link.">Wake log</button><span class="wstat note"></span></div>
+      <div class="row"><button data-op="wakes" title="Every start of this button (resets and deep-sleep wakes) since it was last powered up, newest first: what started it, what it found, what it did. Read over a direct link.">Wake log</button><button data-op="wakeshide" class="wlog-hide" hidden>Hide</button><span class="wstat note"></span></div>
       <pre class="wlog" hidden></pre>
       <div class="grid">
         <label>Name</label><input class="f-name" maxlength="15" placeholder="(default)">
@@ -771,6 +771,7 @@ class Btn {
         case "disconnect": if (this.link()) this.link().close(); return;
         case "reconnect": return reconnect(this);
         case "wakes": return this.showWakes();
+        case "wakeshide": $(e, ".wlog").hidden = $(e, ".wlog-hide").hidden = true; return;
       }
     });
     $(e, ".f-mode").addEventListener("change", () => this.settingsVisibility());
@@ -789,6 +790,7 @@ class Btn {
     try {
       pre.textContent = wakeLogText(await l.readWakes());
       pre.hidden = false;
+      $(this.el, ".wlog-hide").hidden = false;
       st.textContent = "";
     } catch (err) { st.textContent = err.message; }
   }
