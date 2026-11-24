@@ -359,4 +359,6 @@ a "forget" (a page command, or dropping ids not seen for a week).
 - Coding for admin links: S=8 (range) or S=2 (about half the airtime)? Is it worth choosing per link by RSSI?
 - Is the real busy rate 5 changes/s, or much lower? Measure it once stage 3 logs item counts.
 - Does a shortest-path relay tree ever earn its complexity over the simple suppression rule?
-- Command expiry defaults per operation (identify and sounds short; config and owner long?).
+- Command expiry per operation (identify and sounds short; config and owner long?). Built: every command carries an
+  expiry, set by the page to now + 10 s for all of them (`CMD_TTL`); a button passes on an expired command but
+  doesn't act on it. Not built: different expiries per operation.
