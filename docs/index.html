@@ -728,7 +728,8 @@ class Btn {
     else if (this.slow) parts.push("no links to other buttons");
     const age = this.heardAgo();
     if (this.hot && age >= STALE_MS) parts.push(`last heard ${Math.round(age / 1000)} s ago`);
-    if (s && s.conns > 1) parts.push(`${s.conns} phones`);
+    // Phones and browsers connected to it (this page's own direct link counts): someone unexpected shows here.
+    if (s && s.conns) parts.push(`phones/browsers: ${s.conns}`);
     // Restarts since power-on (deep-sleep wakes don't count), the last one's reason and how long ago.
     const since = u => u < 120 ? `${u} s` : u < 7200 ? `${Math.round(u / 60)} min` : u < 172800 ? `${Math.round(u / 3600)} h` : `${Math.round(u / 86400)} days`;
     if (s && s.boots > 1) parts.push(`${s.boots - 1} reboot${s.boots > 2 ? "s" : ""} (last: ${RESET_REASON[s.resetReason] || s.resetReason}, ${since(s.uptime)} ago)`);
