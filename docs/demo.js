@@ -36,6 +36,16 @@
       holdFor: 0, time: d.time.slice(), batt: d.batt, power: 0, wonAt: 0, start: performance.now(),
     };
     const sim = { id: d.id, d, cfg, s, ver: [0, 0, 0], data: [null, null, null], shape: "", hotAt: -1e9, slowAt: -1e9 };
+    // Its line (after the settings in the config item). The demo shows it; its holds don't follow the line's rule.
+    const line = { id: 0, index: 0, n: 0, type: 0, ends: 0x21, retake: 60, advance: 60, prevMode: cfg.mode };
+    const cfgBytes = () => {
+      const c = new Uint8Array(encodeConfig(cfg)), b = new Uint8Array(c.length + LINE_LEN), v = new DataView(b.buffer);
+      b.set(c);
+      v.setUint16(c.length, line.id, true); v.setUint8(c.length + 2, line.index); v.setUint8(c.length + 3, line.n);
+      v.setUint8(c.length + 4, line.type); v.setUint8(c.length + 5, line.ends);
+      v.setUint16(c.length + 6, line.retake, true); v.setUint16(c.length + 8, line.advance, true);
+      return b;
+    };
     const timed = () => cfg.mode !== MODE_TEAMS;
     const share = t => { if (cfg.mode === MODE_ONE) s.time[1 - t] = s.time[t]; };  // one timer: one shared clock
     let seq = 0;
@@ -70,7 +80,7 @@
       const shape = [s.running, s.won, s.gamePaused, s.held, now < s.identifyUntil, s.owner, s.winner, s.target, s.power].join();
       if (force || shape !== sim.shape || now - sim.hotAt > HOT_EVERY) { sim.shape = shape; sim.hotAt = now; bump(0, h); }
       if (now - sim.slowAt > SLOW_EVERY) { sim.slowAt = now; bump(1, encodeSlow()); }
-      if (!sim.data[2]) bump(2, new Uint8Array(encodeConfig(cfg)));
+      if (!sim.data[2]) bump(2, cfgBytes());
     };
 
     function reset() {
@@ -80,7 +90,7 @@
     }
     sim.apply = (kind, v) => {
       if (sim.asleep) return;
-      if (kind === CMD_KIND_CONFIG) { Object.assign(cfg, parseConfig(v)); bump(2, new Uint8Array(encodeConfig(cfg))); return; }
+      if (kind === CMD_KIND_CONFIG) { Object.assign(cfg, parseConfig(v)); bump(2, cfgBytes()); return; }
       switch (v.getUint8(0)) {
         case OP.START: s.running = true; s.gamePaused = false; break;
         case OP.PAUSE: s.running = false; break;
@@ -95,6 +105,19 @@
         case OP.POWER_ON: s.power = 0; break;
         case OP.FACTORY_OFF: setTimeout(() => { sim.asleep = true; }, 1500); break;  // deep sleep: goes silent
         case OP.FACTORY_RESET: break;
+        case OP.SET_LINE: {
+          const id = v.getUint16(1, true), owner = v.getInt8(11);
+          if (!id) { if (line.id) cfg.mode = line.prevMode; line.id = 0; }
+          else {
+            if (!line.id) line.prevMode = cfg.mode;
+            Object.assign(line, { id, index: v.getUint8(3), n: v.getUint8(4), type: v.getUint8(5), ends: v.getUint8(6),
+              retake: v.getUint16(7, true), advance: v.getUint16(9, true) });
+            cfg.mode = MODE_TEAMS;
+            if (owner >= 0) { s.owner = owner; s.running = true; }
+          }
+          bump(2, cfgBytes());
+          break;
+        }
       }
       sim.publish(true);
     };

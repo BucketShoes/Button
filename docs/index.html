@@ -42,6 +42,12 @@
   .card h2 { font-size: 17px; margin: 0; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
   .dot.ok { background: var(--ok); }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; vertical-align: -1px; border: 1px solid #0006; }
+  .lines .ln { margin: 8px 0; }
+  .lines ol { margin: 4px 0 4px 1.4em; padding: 0; }
+  .lines li { margin: 3px 0; }
+  .lines .warn { color: var(--bad); }
+  .lines input[type=number] { width: 4.5em; }
   .owner { border-radius: 10px; padding: 12px; font-weight: 700; font-size: 18px; text-align: center;
            border: 2px solid var(--line); margin: 8px 0; }
   .clocks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -154,6 +160,14 @@
         out of the game pause into a regular pause. Commands go out once and the buttons pass them on to each other, so they
         reach buttons you aren't connected to as well. To copy settings, use "Copy to all" in a button's settings.</p>
     </details>
+    <details id="lines-d">
+      <summary>Lines <span id="lines-count" class="note"></span></summary>
+      <div id="lines" class="lines"></div>
+      <p class="note">A line is tug-of-war (or forge-a-path, where a button once taken stays taken): a team can take a button
+        only next to one it owns, or at its end of the line. Without the page: hold several buttons at once to the reset
+        (about 13 s) and they become a line, numbered in the order shown here; a button held to the reset alone leaves its
+        line. Four taps on a button shows its line and place.</p>
+    </details>
   </section>
   <h3 class="sect" id="det-title" hidden>Each button</h3>
   <div id="cards"></div>
@@ -175,6 +189,7 @@
     <div class="row head">
       <span class="dot"></span>
       <h2 class="name grow">Button</h2>
+      <span class="lineb muted"></span>
       <span class="batt muted"></span>
     </div>
     <div class="owner">Waiting for its state…</div>
@@ -273,7 +288,7 @@ const PHY = { 1: "1M", 2: "2M", 3: "Coded" };
 const PROTO_VERSION = 3, CONFIG_VERSION = 4, CONFIG_LEN = 46, STATE_LEN = 36;
 const OP = { START: 1, PAUSE: 2, RESET: 3, IDENTIFY: 4, SET_TIME: 5, ADD_TIME: 6, SET_OWNER: 7,
              PLAY_SOUND: 8, STOP_SOUND: 9, SHOW_BATTERY: 11, FACTORY_RESET: 12, POWER_OFF: 13, POWER_ON: 14, REBOOT: 15, FACTORY_OFF: 18,
-             GAME_PAUSE: 16, GAME_RESUME: 17 };
+             GAME_PAUSE: 16, GAME_RESUME: 17, SET_LINE: 20 };
 const POWER = ["on", "peek", "off", "auto-off"];  // state byte: 3 = auto-off (dark, still in the game and the network)
 const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash", 5: "watchdog", 6: "watchdog", 7: "watchdog",
                        8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
@@ -312,6 +327,137 @@ function setColour(input, hex) {
   input.dl.replaceChildren(...[hex, "#ff00ba", "#ffba00", "#ff0000", "#00c000", "#0060ff", "#ffffff"]
     .filter((v, i, a) => a.indexOf(v) === i).map(v => Object.assign(document.createElement("option"), { value: v })));
 }
+// ---- lines (tug-of-war, forge-a-path) -------------------------------------------
+// Each button's config item carries its line after the settings: u16 id (0 = none), u8 index, u8 n, u8 type,
+// u8 ends (low nibble: the team beyond #1, high: beyond #n; 0 none), u16 retake s, u16 advance s, u8, u8.
+const LINE_LEN = 12, LINE_TUG = 0, LINE_FORGE = 1;
+const LINE_COLOURS = ["#ff0000", "#ff5a00", "#78ff00", "#00ff3c", "#00ffff", "#003cff", "#ffffff", "#ff3ca0"];
+const lineNo = id => id % 8 + 1, lineCol = id => LINE_COLOURS[id % 8];
+function parseLine(dv, o) {
+  return { id: dv.getUint16(o, true), index: dv.getUint8(o + 2), n: dv.getUint8(o + 3), type: dv.getUint8(o + 4),
+           ends: dv.getUint8(o + 5), retake: dv.getUint16(o + 6, true), advance: dv.getUint16(o + 8, true) };
+}
+const lines = {
+  key: "",
+  edit: null,  // while editing one: { id, type, ends, retake, advance, members: [button ids], fresh: Set of ids added }
+  groups() {
+    const m = new Map();
+    for (const b of buttons.values()) {
+      if (!b.line || !b.line.id) continue;
+      if (!m.has(b.line.id)) m.set(b.line.id, []);
+      m.get(b.line.id).push(b);
+    }
+    for (const g of m.values()) g.sort((a, b) => a.line.index - b.line.index || a.id - b.id);
+    return m;
+  },
+  changed() {
+    const a = document.activeElement;  // (not while a setting is being typed in: later)
+    if (a && a.tagName === "INPUT" && document.getElementById("lines").contains(a)) return;
+    const k = [...buttons.values()].map(b => [b.id, b.label(), b.line ? Object.values(b.line).join() : "",
+      b.hot ? b.hot.owner : ""].join()).join("|");
+    if (k !== this.key) { this.key = k; this.render(); }
+  },
+  send(b, l, owner = -1) {
+    return b.send(OP.SET_LINE, ["u16", l.id], ["u8", l.index || 0], ["u8", l.n || 0], ["u8", l.type || 0], ["u8", l.ends ?? 0x21],
+      ["u16", l.retake ?? 60], ["u16", l.advance ?? 60], ["i8", owner]);
+  },
+  ownerText(b) {
+    const o = b.hot ? b.hot.owner : -2;
+    return o >= 0 ? teamName(o) : o === -1 ? "uncaptured" : "?";
+  },
+  endSelect(cls, v) {
+    return `<select class="${cls}">${["none", teamName(0), teamName(1)].map((t, i) => `<option value="${i}"${i === v ? " selected" : ""}>${t}</option>`).join("")}</select>`;
+  },
+  settingsHtml(l) {
+    return `<div class="row"><select class="l-type"><option value="0"${l.type === LINE_TUG ? " selected" : ""}>Tug-of-war</option>` +
+      `<option value="1"${l.type === LINE_FORGE ? " selected" : ""}>Forge a path</option></select>` +
+      ` <label>beyond #1 ${this.endSelect("l-e1", l.ends & 15)}</label> <label>beyond the last ${this.endSelect("l-e2", l.ends >> 4)}</label></div>` +
+      `<div class="row"><label>Retake after <input type="number" class="l-retake" min="0" max="3600" value="${l.retake}"> s</label>` +
+      ` <label>Next one opens after <input type="number" class="l-advance" min="0" max="3600" value="${l.advance}"> s</label></div>`;
+  },
+  readSettings(el) {
+    return { type: +$(el, ".l-type").value, ends: +$(el, ".l-e1").value | +$(el, ".l-e2").value << 4,
+             retake: Math.max(0, Math.min(3600, +$(el, ".l-retake").value || 0)),
+             advance: Math.max(0, Math.min(3600, +$(el, ".l-advance").value || 0)) };
+  },
+  render() {
+    const box = document.getElementById("lines");
+    if (!box) return;
+    const groups = this.groups();
+    document.getElementById("lines-count").textContent = groups.size ? `(${groups.size})` : "";
+    if (this.edit) return this.renderEdit(box);
+    box.replaceChildren();
+    for (const [id, g] of groups) {
+      const l = g[0].line, el = document.createElement("div");
+      el.className = "ln";
+      const warn = [];
+      g.forEach((b, i) => {
+        if (b.line.n !== g.length) warn.push(`${b.label()} thinks the line has ${b.line.n}`);
+        if (b.line.index !== i + 1) warn.push(`no #${i + 1}` + (b.line.index === g[i - 1]?.line.index ? `, two at #${b.line.index}` : ""));
+      });
+      el.innerHTML = `<div class="row"><span class="swatch" style="background:${lineCol(id)}"></span> <b>Line ${lineNo(id)}</b>` +
+        ` <span class="note">${g.length} button${g.length === 1 ? "" : "s"}</span> <span class="grow"></span><button class="l-edit">Edit</button></div>` +
+        this.settingsHtml(l) +
+        `<ol>${g.map(b => `<li>#${b.line.index} ${b.label()} · ${this.ownerText(b)}</li>`).join("")}</ol>` +
+        (warn.length ? `<div class="note warn">${[...new Set(warn)].join("; ")}: Edit, then Done, to renumber</div>` : "");
+      el.addEventListener("change", () => {
+        const p = this.readSettings(el);
+        for (const b of g) this.send(b, { ...b.line, ...p });
+      });
+      $(el, ".l-edit").onclick = () => {
+        this.edit = { id, ...l, members: g.map(b => b.id), fresh: new Set() };
+        this.render();
+      };
+      box.append(el);
+    }
+    const nb = document.createElement("button");
+    nb.textContent = "New line";
+    nb.onclick = () => {
+      this.edit = { id: 1 + Math.floor(Math.random() * 65535), type: LINE_TUG, ends: 0x21, retake: 60, advance: 60, members: [], fresh: new Set() };
+      this.render();
+    };
+    box.append(nb);
+  },
+  renderEdit(box) {
+    const e = this.edit, el = document.createElement("div");
+    el.className = "ln";
+    const others = [...buttons.values()].filter(b => !e.members.includes(b.id)).sort((a, b) => a.label().localeCompare(b.label()));
+    el.innerHTML = `<div class="row"><span class="swatch" style="background:${lineCol(e.id)}"></span> <b>Line ${lineNo(e.id)}</b>` +
+      ` <span class="note">editing</span></div>` + this.settingsHtml(e) +
+      `<ol>${e.members.map((id, i) => { const b = buttons.get(id); return `<li data-i="${i}">${b ? b.label() : hex4(id)}` +
+        ` <button class="l-up"${i ? "" : " disabled"}>↑</button> <button class="l-down"${i < e.members.length - 1 ? "" : " disabled"}>↓</button>` +
+        ` <button class="l-rm">Remove</button></li>`; }).join("")}</ol>` +
+      `<div class="row"><select class="l-add grow">${others.map(b => `<option value="${b.id}">${b.label()}${b.line && b.line.id ? ` (line ${lineNo(b.line.id)})` : ""}</option>`).join("")}</select>` +
+      ` <button class="l-addb"${others.length ? "" : " disabled"}>Add</button></div>` +
+      `<div class="row"><button class="primary l-done">Done</button> <button class="l-cancel">Cancel</button></div>`;
+    const keep = () => Object.assign(e, this.readSettings(el));
+    el.addEventListener("click", ev => {
+      const t = ev.target, li = t.closest("li"), i = li ? +li.dataset.i : -1;
+      if (t.classList.contains("l-up")) { keep(); [e.members[i - 1], e.members[i]] = [e.members[i], e.members[i - 1]]; this.render(); }
+      else if (t.classList.contains("l-down")) { keep(); [e.members[i + 1], e.members[i]] = [e.members[i], e.members[i + 1]]; this.render(); }
+      else if (t.classList.contains("l-rm")) { keep(); e.fresh.delete(e.members[i]); e.members.splice(i, 1); this.render(); }
+      else if (t.classList.contains("l-addb")) { keep(); const id = +$(el, ".l-add").value; e.members.push(id); e.fresh.add(id); this.render(); }
+      else if (t.classList.contains("l-cancel")) { this.edit = null; this.render(); }
+      else if (t.classList.contains("l-done")) { keep(); this.apply(); }
+    });
+    box.replaceChildren(el);
+  },
+  // Each member gets its place; ones added here start half team 1, half team 2 (the middle one either);
+  // ones taken out leave the line.
+  apply() {
+    const e = this.edit, n = e.members.length;
+    e.members.forEach((id, i) => {
+      const b = buttons.get(id), index = i + 1;
+      if (!b) return;
+      const owner = !e.fresh.has(id) ? -1 : index <= n / 2 ? 0 : index > (n + 1) / 2 ? 1 : Math.round(Math.random());
+      this.send(b, { id: e.id, index, n, type: e.type, ends: e.ends, retake: e.retake, advance: e.advance }, owner);
+    });
+    for (const b of buttons.values())
+      if (b.line && b.line.id === e.id && !e.members.includes(b.id)) this.send(b, { id: 0 });
+    this.edit = null;
+    this.render();
+  },
+};
 function parseConfig(dv) {
   const name = [];
   for (let i = 26; i < 42; i++) { const c = dv.getUint8(i); if (!c) break; name.push(c); }
@@ -699,6 +845,8 @@ class Btn {
       }
       // Config items can arrive again unchanged (resyncs); refilling then would undo edits in progress
       // and reset an open colour picker.
+      this.line = dv.byteLength >= CONFIG_LEN + LINE_LEN ? parseLine(dv, CONFIG_LEN) : null;
+      lines.changed();
       const key = new Uint8Array(dv.buffer, dv.byteOffset, CONFIG_LEN).join();
       if (key !== this.cfgKey) {
         this.cfgKey = key;
@@ -939,6 +1087,8 @@ class Btn {
     $(e, '[data-op="reconnect"]').disabled = !!(l && l.up);
     if (!s || !c) return;
     $(e, ".name").textContent = this.label();
+    const lb = $(e, ".lineb"), ln = this.line && this.line.id ? this.line : null;
+    lb.innerHTML = ln ? `<span class="swatch" style="background:${lineCol(ln.id)}"></span> Line ${lineNo(ln.id)} #${ln.index}` : "";
     // Beside the name, one line that never wraps: USB, the battery (the icon is red-crossed when low),
     // how the page reaches it, and how many other buttons it links to.
     const known = s.power !== 2 || s.battMv;  // off: the % is from the last rest reading
@@ -950,7 +1100,7 @@ class Btn {
     const V = mv => (mv / 1000).toFixed(2) + "v";
     const d = $(e, ".diag");
     d.textContent = `Batt ${V(s.battMv)} ocv/${V(s.vsys)} read · USB ${V(s.vbus)} · awake ${(s.awakePm / 10).toFixed(1)}%`;
-    d.title = "ocv: the estimate the levels and % use (a rest reading as it is; a loaded reading above it raises it at once, below it lowers it 3 mV a minute at most; charging counts as loaded). read: the latest VSYS reading. Awake: the share of the time out of light sleep since the last status.";
+    d.title = "ocv: the estimate the levels and % use (a rest reading as it is; a loaded reading above it raises it at once, below it lowers it 30 mV a minute at most (faster when the loaded average is far below it); charging counts as loaded). read: the latest VSYS reading. Awake: the share of the time out of light sleep since the last status.";
     const o = $(e, ".owner");
     let text, col = null;
     if (s.won) { text = `${teamName(s.winner)} WON`; col = c.colour[s.winner]; }
