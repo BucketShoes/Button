@@ -91,6 +91,7 @@ static uint32_t s_synced_at;
 static conn_t s_conn[MAX_CONN];
 static struct ble_npl_event s_restart_ev;
 static struct ble_npl_callout s_scan_co;
+static struct ble_npl_callout s_adv_co;  // advertising retry, after a failure to configure or start
 static struct ble_npl_callout s_param_co;
 
 static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -350,11 +351,18 @@ static void adv_configure(void)
 }
 
 // Starts whichever sets aren't running (a set stops when a central connects through it).
+static void adv_retry_fn(struct ble_npl_event *ev);
+static void adv_retry(void) { ble_npl_callout_reset(&s_adv_co, ble_npl_time_ms_to_ticks32(1000)); }
 static void advertise(void)
 {
     if (!s_synced) return;
     if (!s_adv_ready) adv_configure();
-    if (!s_adv_ready) return;
+    if (!s_adv_ready) {
+        // A failed configure used to leave the button silent until something else restarted the adverts.
+        ESP_LOGW(TAG, "adverts not configured: trying again in 1 s");
+        adv_retry();
+        return;
+    }
     if (s_conns >= MAX_CONN) {
         ESP_LOGI(TAG, "not advertising: %d connected (the most it takes)", s_conns);
         return;
@@ -363,9 +371,13 @@ static void advertise(void)
         if (ble_gap_ext_adv_active(i)) continue;
         if (i == ADV_CODED && s_slow) continue;  // off: phones only (legacy), no button links
         int rc = ble_gap_ext_adv_start(i, 0, 0);
-        if (rc && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "adv %s start: %d", i == ADV_CODED ? "coded" : "legacy", rc);
+        if (rc && rc != BLE_HS_EALREADY) {
+            ESP_LOGW(TAG, "adv %s start: %d (trying again in 1 s)", i == ADV_CODED ? "coded" : "legacy", rc);
+            adv_retry();
+        }
     }
 }
+static void adv_retry_fn(struct ble_npl_event *ev) { advertise(); }
 
 // Name or speed changed: stop both sets, reconfigure, start again. Runs on the host task
 // (queued from the game loop) so it can't race the GAP callbacks.
@@ -799,6 +811,7 @@ void ble_init(const char *name)
 
     ble_npl_event_init(&s_restart_ev, restart_ev_fn, NULL);
     ble_npl_callout_init(&s_scan_co, nimble_port_get_dflt_eventq(), scan_start, NULL);
+    ble_npl_callout_init(&s_adv_co, nimble_port_get_dflt_eventq(), adv_retry_fn, NULL);
     ble_npl_callout_init(&s_param_co, nimble_port_get_dflt_eventq(), param_check, NULL);
     nimble_port_freertos_init(host_task);
 }
