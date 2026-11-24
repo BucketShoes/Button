@@ -288,7 +288,7 @@ static bool s_build_started;
 // A capture's call plays out before the count towards the pause starts: the pause, reset and power-off
 // points of this hold move later by its length (0 for a hold that didn't capture).
 static uint32_t s_hold_shift;
-#define CAPTURE_DARK_MS 150  // at the capture the ring and displays go dark this long: "done", then the new owner
+#define CAPTURE_DARK_MS 100  // at the capture the ring and displays go dark this long: "done", then the new owner
 // This hold started during a game pause: no capture. Held to the pause point it
 // releases the button from the game pause into a regular pause, so BLE is never needed.
 static bool s_hold_gp;
