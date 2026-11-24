@@ -738,6 +738,18 @@ void mesh_publish_status(const mesh_status_t *s, const void *tail, int tail_n)
 
 void mesh_publish_config(const void *cfg, size_t n) { own_publish(S_CFG, cfg, n); }
 
+bool mesh_peer(int i, mesh_peer_t *p)
+{
+    if (i < 1 || i >= MAX_ORIGINS || s_o[i].kind != K_BUTTON) return false;
+    p->id = s_o[i].id;
+    for (int s = 0; s < S_LATEST; s++) {
+        p->d[s] = s_o[i].data[s];
+        p->len[s] = s_o[i].len[s];
+    }
+    return true;
+}
+uint16_t mesh_id(void) { return s_me; }
+
 int mesh_button_links(void)
 {
     uint16_t ids[MAX_NEIGHBOURS];

@@ -135,6 +135,7 @@ static const note_t SND_FACTORY[] = {
 };
 static const note_t SND_OFF_WARN[] = {{1200, 300, 3000, W_SQUARE, 150}};  // BOOT held: falling to power-off
 static const note_t SND_OFF[] = {{1200, 200, 500, W_SQUARE, 220}};
+static const note_t SND_DENIED[] = {{180, 160, 90, W_SQUARE, 200}, {0, 0, 40, W_SQUARE, 0}, {160, 140, 90, W_SQUARE, 200}};  // a line's rule says no
 static const note_t SND_HORN[] = {{220, 220, 900, W_SQUARE, 255}, {0, 0, 120, W_SQUARE, 0}, {220, 220, 900, W_SQUARE, 255}};
 #define WHISTLE_NOTES 32
 static note_t s_whistle[WHISTLE_NOTES];  // pea-whistle trill, built in sounds_init
@@ -360,9 +361,253 @@ static const char *state_name(void)
 // -1 = not decided yet (use the first-capture setting).
 static int s_next_pick = -1;
 // Who the next capture goes to (-1 = random, decided at the press).
+// ---------------------------------------------------------------- lines (tug-of-war, forge-a-path)
+// See design/lines-timeline.md. A button in a line has the line's id (shared by its buttons) and its place in
+// it. Whether a team may capture it depends on its neighbours' owners, from their hot items, and on when
+// they changed (the retake and advance times). Lenient: a neighbour never heard from doesn't block.
+typedef struct __attribute__((packed)) {
+    uint16_t id;         // 0 = not in a line
+    uint8_t index;       // 1..n
+    uint8_t n;
+    uint8_t type;        // LINE_TUG, LINE_FORGE
+    uint8_t ends;        // low nibble: the team beyond index 1 (0 none, 1, 2); high nibble: beyond index n
+    uint16_t retake_s;   // a node just captured can't be taken back for this long
+    uint16_t advance_s;  // a node can't be taken for this long after the neighbour that opens it was captured
+    uint8_t prev_mode;   // this button's mode before it joined, to go back to
+    uint8_t spare;
+} line_t;
+_Static_assert(sizeof(line_t) == 12, "line_t layout is part of the BLE protocol (after config_t in the config item)");
+enum { LINE_TUG = 0, LINE_FORGE = 1 };
+#define LINE_DEFAULT_S     60
+#define LINE_JOIN_SHOW_MS  20000  // "LinE" on joining, with the sweep down the line
+#define LINE_TAP_SHOW_MS   5000   // the same on a quadruple tap
+#define NEED_SHOW_MS       2000   // "nEEd" after a denied press
+#define DENIED_FLASH_MS    150
+#define FORM_WINDOW_MS     1000   // holds that started this close together form a line at the reset
+#define FORM_WAIT_MS       1500   // after this button's reset, for the others' to be heard
+static line_t s_line;
+static uint32_t s_owned_since;  // network ms the owner last changed (in the hot item)
+static int s_owned_last = -2;
+static uint32_t s_line_show_until, s_need_until, s_denied_flash_until;
+static int s_need;              // the node to take first, after a denied press (-1: none)
+static bool s_denied;           // this press can't capture (a line's rule)
+static uint32_t net_now(void) { return (uint32_t)mesh_net_ms64(); }
+static bool in_line(void) { return s_line.id && s_line.n && s_line.index >= 1 && s_line.index <= s_line.n; }
+static bool line_showing(uint32_t now) { return (int32_t)(s_line_show_until - now) > 0; }
+static bool need_showing(uint32_t now) { return (int32_t)(s_need_until - now) > 0; }
+
+// A line's identity colour and number (1-8) both come from its id, so they're the same on every button.
+static const rgb_t LINE_COLOURS[8] = {{255, 0, 0}, {255, 90, 0}, {120, 255, 0}, {0, 255, 60},
+                                      {0, 255, 255}, {0, 60, 255}, {255, 255, 255}, {255, 60, 160}};
+static int line_number(uint16_t id) { return id % 8 + 1; }
+static rgb_t line_colour(uint16_t id)
+{
+    rgb_t c = LINE_COLOURS[id % 8];
+    return (rgb_t){s_gamma[c.r], s_gamma[c.g], s_gamma[c.b]};
+}
+static uint16_t line_id_of(const uint16_t *ids, int n)
+{
+    uint16_t id = (uint16_t)esp_rom_crc32_le(0x4C696E65u, (const uint8_t *)ids, (uint32_t)(n * sizeof ids[0]));
+    return id ? id : 1;
+}
+
+// The config item carries the line after config_t.
+static void publish_config_items(void)
+{
+    uint8_t b[sizeof(config_t) + sizeof(line_t)];
+    memcpy(b, &s_cfg, sizeof s_cfg);
+    memcpy(b + sizeof s_cfg, &s_line, sizeof s_line);
+    mesh_publish_config(b, sizeof b);
+}
+static bool peer_line(const mesh_peer_t *p, line_t *l)
+{
+    if (p->len[2] < sizeof(config_t) + sizeof(line_t) || p->d[2][0] != CONFIG_VERSION) return false;
+    memcpy(l, p->d[2] + sizeof(config_t), sizeof *l);
+    return true;
+}
+typedef struct {
+    bool found, since_known;
+    int owner;
+    uint32_t since;
+} line_node_t;
+static line_node_t line_node(int idx)
+{
+    line_node_t r = {0};
+    if (idx == s_line.index) return (line_node_t){true, true, s_owner, s_owned_since};
+    mesh_peer_t p;
+    line_t l;
+    for (int i = 1; i < MESH_MAX_PEERS; i++) {
+        if (!mesh_peer(i, &p) || p.len[0] < 21 || !peer_line(&p, &l) || l.id != s_line.id || l.index != idx) continue;
+        r.found = true;
+        r.owner = (int8_t)p.d[0][5];
+        if (p.len[0] >= 25) {
+            r.since_known = true;
+            memcpy(&r.since, p.d[0] + 21, 4);
+        }
+        break;
+    }
+    return r;
+}
+static int line_end_team(int side)
+{
+    int e = side < 0 ? (s_line.ends & 15) : (s_line.ends >> 4);
+    return e == 1 || e == 2 ? e - 1 : -1;
+}
+// Can team take this button? enabled: a neighbour (or the end beyond it) is theirs, so it can, now or once
+// wait_ms has passed (the advance time from that neighbour's capture, and the retake time from this one's).
+// need: the node they need first (-1 none).
+typedef struct {
+    bool enabled;
+    int32_t wait_ms;
+    int need;
+} line_rule_t;
+static line_rule_t line_rule(int team, uint32_t net)
+{
+    line_rule_t r = {false, 0, -1};
+    if (s_owner == team || (s_line.type == LINE_FORGE && s_owner >= 0)) return r;
+    int32_t wait = INT32_MAX;
+    for (int side = -1; side <= 1; side += 2) {
+        int idx = s_line.index + side;
+        int32_t w = 0;
+        if (idx < 1 || idx > s_line.n) {
+            if (line_end_team(side) != team) continue;
+        } else {
+            line_node_t nd = line_node(idx);
+            if (nd.found && nd.owner != team) continue;
+            if (nd.found && nd.since_known) w = (int32_t)(nd.since + s_line.advance_s * 1000u - net);
+        }
+        r.enabled = true;
+        if (w < wait) wait = w;
+    }
+    if (!r.enabled) {
+        if (line_end_team(-1) == team) r.need = s_line.index - 1;
+        else if (line_end_team(1) == team) r.need = s_line.index + 1;
+        return r;
+    }
+    if (s_owner >= 0) {
+        int32_t w = (int32_t)(s_owned_since + s_line.retake_s * 1000u - net);
+        if (w > wait) wait = w;
+    }
+    r.wait_ms = wait > 0 ? wait : 0;
+    return r;
+}
+
+static void apply_config(const config_t *in, uint32_t now);
+static bool powered_on(void);  // (s_pwr == PWR_ON; declared further down)
+static void line_join(const line_t *in, int owner, uint32_t now)
+{
+    bool was = in_line();
+    line_t l = *in;
+    l.prev_mode = was ? s_line.prev_mode : s_cfg.mode;
+    l.spare = 0;
+    bool moved = !was || l.id != s_line.id || l.index != s_line.index || l.n != s_line.n;
+    s_line = l;
+    config_blob_save("line", &s_line, sizeof s_line);
+    config_t c = s_cfg;
+    c.mode = MODE_TEAMS;  // a line tracks position along it, not time
+    if (owner >= 0) c.initial_owner = (uint8_t)(owner + 1);
+    apply_config(&c, now);  // (publishes the config item, with the line)
+    if (owner >= 0) {
+        s_owner = owner;
+        s_running = true;
+        s_fresh = false;
+    }
+    if (moved) s_line_show_until = now + LINE_JOIN_SHOW_MS;
+    ESP_LOGI(TAG, "line %u (%04X): %d of %d, owner team %d", line_number(s_line.id), s_line.id, s_line.index, s_line.n, s_owner + 1);
+}
+static void line_leave(uint32_t now)
+{
+    uint8_t m = s_line.prev_mode <= MODE_TWO_TIMERS ? s_line.prev_mode : s_cfg.mode;
+    memset(&s_line, 0, sizeof s_line);
+    config_blob_save("line", &s_line, sizeof s_line);
+    config_t c = s_cfg;
+    c.mode = m;
+    apply_config(&c, now);
+    s_line_show_until = now + LINE_TAP_SHOW_MS;
+    ESP_LOGI(TAG, "left the line");
+}
+
+// Buttons holding at the same time (their hot items: face held, and since when). For the shared flash
+// while they hold, and the line they form if they all reach the reset.
+typedef struct {
+    uint16_t id;
+    bool holding;
+    uint32_t start;     // network ms the hold started
+    uint32_t reset_at;  // local ms it was seen at the reset stage (0: not this hold)
+} holder_t;
+static holder_t s_holders[MESH_MAX_PEERS];
+static uint32_t s_my_hold_start;  // network ms
+static uint32_t s_form_at;        // local ms to form a line (0: none)
+static void holders_watch(uint32_t now)
+{
+    mesh_peer_t p;
+    for (int i = 1; i < MESH_MAX_PEERS; i++) {
+        holder_t *h = &s_holders[i];
+        if (!mesh_peer(i, &p) || p.len[0] < 21) {
+            h->id = 0;
+            continue;
+        }
+        if (h->id != p.id) *h = (holder_t){.id = p.id};
+        const uint8_t *d = p.d[0];
+        h->holding = d[4] & 8;
+        if (!h->holding) continue;
+        uint32_t t;
+        memcpy(&t, d, 4);
+        uint32_t start = t - (uint32_t)(d[9] | d[10] << 8);
+        int32_t moved = (int32_t)(start - h->start);
+        if (moved > 2000 || moved < -2000) h->reset_at = 0;  // a new hold
+        h->start = start;
+        if (d[8] >= HS_RESET && !h->reset_at) h->reset_at = now | 1;
+    }
+}
+// This button and those holding with it (or that reached the reset with it, if reset): sorted ids.
+static int holders(uint16_t *ids, bool reset, uint32_t now)
+{
+    int n = 0;
+    ids[n++] = mesh_id();
+    for (int i = 1; i < MESH_MAX_PEERS; i++) {
+        const holder_t *h = &s_holders[i];
+        if (!h->id) continue;
+        int32_t d = (int32_t)(h->start - s_my_hold_start);
+        if (d > FORM_WINDOW_MS || d < -FORM_WINDOW_MS) continue;
+        if (reset ? !(h->reset_at && now - h->reset_at < 10000) : !h->holding) continue;
+        ids[n++] = h->id;
+    }
+    for (int a = 1; a < n; a++)
+        for (int b = a; b > 0 && ids[b - 1] > ids[b]; b--) {
+            uint16_t t = ids[b];
+            ids[b] = ids[b - 1];
+            ids[b - 1] = t;
+        }
+    return n;
+}
+// After a hold-reset: with others, a new line (numbered in id order, the first half team 1, the rest team 2,
+// a middle one either); alone, out of any line.
+static void line_form(uint32_t now)
+{
+    uint16_t ids[MESH_MAX_PEERS];
+    int n = holders(ids, true, now);
+    if (n < 2) {
+        if (in_line()) line_leave(now);
+        return;
+    }
+    int me = 0;
+    while (ids[me] != mesh_id()) me++;
+    int index = me + 1;
+    line_t l = {.id = line_id_of(ids, n), .index = (uint8_t)index, .n = (uint8_t)n, .type = LINE_TUG,
+                .ends = 1 | 2 << 4, .retake_s = LINE_DEFAULT_S, .advance_s = LINE_DEFAULT_S};
+    int owner = index <= n / 2 ? 0 : index > (n + 1) / 2 ? 1 : (int)(esp_random() & 1);
+    line_join(&l, owner, now);
+}
+
 static int capture_target(void)
 {
     if (s_owner >= 0) return s_running ? 1 - s_owner : s_owner;
+    if (in_line()) {  // uncaptured in a line: the team that can take it, if only one can
+        uint32_t net = net_now();
+        bool e0 = line_rule(0, net).enabled, e1 = line_rule(1, net).enabled;
+        if (e0 != e1) return e0 ? 0 : 1;
+    }
     if (s_next_pick >= 0) return s_next_pick;
     return (int)s_cfg.default_capture - 1;
 }
@@ -443,10 +688,26 @@ static void on_face_press(uint32_t now)
     s_hold_target = capture_target();
     // Random is decided now, so the hold shows the team from the first moment.
     if (s_hold_target < 0) s_hold_target = (int)(esp_random() & 1);
+    s_my_hold_start = net_now();
+    // In a line, a press its rule doesn't allow: a short "no", and nothing else happens (no build-up, no
+    // capture), so it's clearly working but not worth holding. Holding on still pauses and resets as usual.
+    s_denied = false;
+    if (in_line() && powered_on() && !s_hold_gp && s_winner < 0) {
+        line_rule_t r = line_rule(s_hold_target, s_my_hold_start);
+        if (!r.enabled || r.wait_ms > 0) {
+            s_denied = true;
+            s_denied_flash_until = now + DENIED_FLASH_MS;
+            if (!r.enabled) {
+                s_need = r.need;
+                s_need_until = now + NEED_SHOW_MS;
+            }
+        }
+    }
 
     audio_pcm_stop();
     AUDIO_PLAY(SLOT_CLICK, SND_CLICK);
     if (s_hold_gp) AUDIO_PLAY(SLOT_EVENT, SND_PAUSE);  // "the game is paused"
+    if (s_denied) AUDIO_PLAY(SLOT_EVENT, SND_DENIED);
     ESP_LOGI(TAG, "face press (%s, owner %d, taps %d, target %d)", state_name(), s_owner + 1, s_taps,
              s_hold_target + 1);
 }
@@ -478,7 +739,7 @@ static void hold_progress(uint32_t now, uint32_t held)
 
     // The build-up into the capture (the sound set's), made for the whole hold time, so it
     // means the same thing at 3 s or 20 s.
-    if (s_hold_stage == HS_BUILD && !won && !s_hold_gp && !s_build_started) {
+    if (s_hold_stage == HS_BUILD && !won && !s_hold_gp && !s_denied && !s_build_started) {
         s_build_started = true;
         uint32_t ms = h1 > held ? h1 - held : 1;
         start_build(ms);
@@ -487,7 +748,9 @@ static void hold_progress(uint32_t now, uint32_t held)
     if (s_hold_stage == HS_BUILD && held >= h1) {
         s_hold_stage = HS_CAPTURED;
         stop_build();
-        if (s_hold_gp && !won) {
+        if (s_denied && !won) {
+            // (a line said no: nothing at the capture point either)
+        } else if (s_hold_gp && !won) {
             AUDIO_PLAY(SLOT_CLICK, SND_DING);  // game paused: no capture, dings towards the release
         } else if (won) {
             if ((int32_t)(s_win_alarm_until - now) > 0) {
@@ -535,6 +798,7 @@ static void hold_progress(uint32_t now, uint32_t held)
         s_hold_stage = HS_RESET;
         game_reset(now);
         AUDIO_PLAY(SLOT_EVENT, SND_RESET);
+        s_form_at = (now + FORM_WAIT_MS) | 1;  // then: a line with the others that reset with it, or out of one
     }
     // Still held after the reset: "HoLd" "oFF" with a falling tone, then power off.
     if (s_hold_stage == HS_RESET && held >= hold_off_warn_ms() && !s_off_warn_started) {
@@ -593,7 +857,9 @@ static void game_tick(uint32_t now, uint32_t dt)
     }
 
     if (!s_face.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
-        if (s_taps == 3) {
+        if (s_taps == 4) {
+            s_line_show_until = now + LINE_TAP_SHOW_MS;  // "LinE" and its place in it (or "--")
+        } else if (s_taps == 3) {
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
             ESP_LOGI(TAG, "triple tap: VSYS %d mV (~%d %%), VBUS %d mV", s_vsys_mv, batt_percent(batt_now_mv()),
@@ -639,6 +905,7 @@ enum {
     OP_GAME_RESUME = 17, // undo a game pause (runs again only if it was running)
     OP_FACTORY_OFF = 18, // what a low battery does: deep sleep, no BLE; a lid press or USB wakes it
     // 19 was the awake LED switch; it is a setting now (config_t.debug)
+    OP_SET_LINE = 20,    // u16 id (0: leave), u8 index, u8 n, u8 type, u8 ends, u16 retake s, u16 advance s, i8 owner (-1 as is)
 };
 
 // Restarts since power-on (they survive resets, not power loss), to spot brown-outs. Wakes from deep
@@ -712,7 +979,7 @@ static void apply_config(const config_t *in, uint32_t now)
     synth_set_plain_gain(medieval() ? PLAIN_GAIN_MEDIEVAL : 256);
     awake_led_set(s_cfg.debug & CFG_DEBUG_AWAKE_LED);
     ble_publish_config(&s_cfg, sizeof s_cfg);
-    mesh_publish_config(&s_cfg, sizeof s_cfg);
+    publish_config_items();
     ESP_LOGI(TAG, "settings: mode %d, hold %u ms, %s, numbers %s, durations %lu/%lu s, volume %d, leds %d",
              s_cfg.mode, s_cfg.hold_ms, s_cfg.count_up ? "up" : "down", s_cfg.show_numbers ? "shown" : "hidden",
              (unsigned long)(s_cfg.duration_ms[0] / 1000), (unsigned long)(s_cfg.duration_ms[1] / 1000), s_cfg.volume,
@@ -799,6 +1066,7 @@ static const char *const BATT_LEVEL_NAME[] = {"normal", "low", "dead", "overdisc
 #define BATT_TAU_MS        60000
 
 static pwr_t s_pwr = PWR_ON;
+static bool powered_on(void) { return s_pwr == PWR_ON; }
 static bool s_periph_on;
 static uint32_t s_last_activity;
 
@@ -1498,6 +1766,7 @@ static void net_publish(uint32_t now)
         .time_ms = {s_val[0], s_val[1]},
         .power = (uint8_t)s_pwr,
         .flags2 = state_flags2(),
+        .owned_since = s_owned_since,
     };
     bool send = !s_hot_sent || now - s_hot_last_ms >= HOT_EVERY_MS;
     if (!send) {
@@ -1683,6 +1952,19 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         power_set(PWR_OFF, now);
         intent_set(INTENT_OFF);  // (also out of shipping, from a shipping peek)
         break;
+    case OP_SET_LINE:
+        if (n >= 12) {
+            line_t l = {0};
+            memcpy(&l, d + 1, 10);
+            int owner = (int8_t)d[11];
+            if (owner > 1) owner = -1;
+            if (!l.id) {
+                if (in_line()) line_leave(now);
+            } else if (l.n >= 1 && l.index >= 1 && l.index <= l.n && l.type <= LINE_FORGE) {
+                line_join(&l, owner, now);
+            }
+        }
+        break;
     case OP_FACTORY_OFF:
         // A moment first, so the network passes the command on (and hears this button's last state).
         s_factory_off_at = now + 1500;
@@ -1830,6 +2112,37 @@ static void render_displays(uint32_t now)
                 }
             }
             bright = DISP_FULL;
+        } else if (line_showing(now)) {
+            if (t == 0) {
+                display_text(seg, "LinE");
+            } else if (in_line()) {
+                char b[8];
+                snprintf(b, sizeof b, "%d%3d", line_number(s_line.id), s_line.index % 100);
+                display_text(seg, b);
+            } else {
+                display_text(seg, "  --");
+            }
+            bright = DISP_FULL;
+        } else if (need_showing(now)) {
+            if (t == 0) display_text(seg, "nEEd");
+            else if (s_need >= 1) display_number(seg, s_need);
+            else display_text(seg, "  --");
+            bright = DISP_FULL;
+        } else if (in_line() && s_winner < 0 && !(s_face.state && s_hold_stage == HS_BUILD && !s_denied && !s_hold_gp)) {
+            // A line: the time until this team can take it (0:00 once it can) on its display, the other
+            // blank; nobody can take it: "--:--" on both.
+            uint32_t net = net_now();
+            line_rule_t r0 = line_rule(0, net), r1 = line_rule(1, net);
+            line_rule_t r = t == 0 ? r0 : r1;
+            if (!r0.enabled && !r1.enabled) {
+                for (int i = 0; i < 4; i++) seg[i] = display_char('-');
+                display_colon(seg, true);
+                bright = DISP_DIM;
+            } else if (r.enabled) {
+                render_clock(seg, r.wait_ms, true);
+                display_colon(seg, true);
+                bright = DISP_FULL;
+            }
         } else if (s_cfg.mode == MODE_TEAMS || s_cfg.show_numbers) {
             // Two timers: both clocks, always. One timer (the shared clock) and teams only
             // (dashes, as a place for the colon and highlight): only on the owner's display,
@@ -1839,7 +2152,7 @@ static void render_displays(uint32_t now)
             const int src = t;
             // Held towards a capture: the old state is gone at once. The new team is
             // lit; the old owner's clock keeps ticking (dim) until the capture.
-            bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
+            bool holding = s_face.state && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp && !s_denied;
             bool shown = s_cfg.mode == MODE_TWO_TIMERS ||
                          (s_winner >= 0 ? src == s_winner
                                         : (s_owner < 0 && (s_cfg.mode != MODE_ONE_TIMER || src == one_timer_side())) ||
@@ -1913,7 +2226,7 @@ static void ring_fill(rgb_t ring[6], rgb_t c, int level, uint32_t done, uint32_t
 // The capture fill is showing (a press building to a capture): it gets the brightness floor.
 static bool capture_building(void)
 {
-    return s_face.state && s_pwr == PWR_ON && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp;
+    return s_face.state && s_pwr == PWR_ON && s_hold_stage == HS_BUILD && s_winner < 0 && !s_hold_gp && !s_denied;
 }
 // The moment of a capture: everything dark for CAPTURE_DARK_MS (then the new owner, as normal, while
 // the call plays; then the count towards the pause).
@@ -1966,6 +2279,8 @@ static void render_leds(uint32_t now)
         } else if (s_hold_gp && s_hold_stage <= HS_CAPTURED) {
             // Game paused: a slow white fill towards the release, never a team colour.
             ring_fill(ring, WHITE, 70, held, h2, 0);
+        } else if (s_hold_stage == HS_BUILD && s_denied) {
+            // (a line said no: the ring stays as it is)
         } else if (s_hold_stage == HS_BUILD) {
             rgb_t c = s_hold_target >= 0 ? team_colour(s_hold_target) : WHITE;
             int cl = capture_level();  // (dim is absolute: relative to the overall level here)
@@ -1983,6 +2298,25 @@ static void render_leds(uint32_t now)
         } else {
             for (int i = 0; i < 6; i++) ring[i] = rgb_scale(WHITE, 120);
         }
+    }
+
+    // Holding together with other buttons (towards forming a line): all flash one colour on a shared beat.
+    if (s_face.state && s_hold_stage >= HS_PAUSED && s_hold_stage <= HS_RESET && s_radio) {
+        uint16_t ids[MESH_MAX_PEERS];
+        int n = holders(ids, false, now);
+        if (n >= 2) {
+            rgb_t c = line_colour(line_id_of(ids, n));
+            bool on = !((net_now() / 250) & 1);
+            for (int i = 0; i < 6; i++) ring[i] = on ? c : (rgb_t){0};
+        }
+    }
+    if ((int32_t)(s_denied_flash_until - now) > 0)
+        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(RED, 120);
+    // "LinE": a sweep down the line in its colour, each button lit in turn (checks the order at a glance).
+    if (line_showing(now) && in_line()) {
+        rgb_t c = line_colour(s_line.id);
+        bool lit = (net_now() / 150) % s_line.n == (uint32_t)(s_line.index - 1);
+        for (int i = 0; i < 6; i++) ring[i] = rgb_scale(c, lit ? 255 : 30);
     }
 
     // Battery gauge: green fill by estimated percent (at least one LED).
@@ -2253,7 +2587,7 @@ static void radio_start(void)
     ble_init(name);
     ble_publish_config(&s_cfg, sizeof s_cfg);
     mesh_init(on_mesh_cmd);
-    mesh_publish_config(&s_cfg, sizeof s_cfg);
+    publish_config_items();
 }
 
 // A wake from overdischarge (app_main, before anything starts). PWR_EN stays off and nothing else is
@@ -2310,6 +2644,7 @@ void app_main(void)
              s_reset_reason == ESP_RST_BROWNOUT ? " (BROWN-OUT)" : from_deep ? " (woke from deep sleep)" : "",
              (unsigned long)s_boot_count);
     config_load(&s_cfg);
+    if (!config_blob_load("line", &s_line, sizeof s_line) || !in_line()) memset(&s_line, 0, sizeof s_line);
     s_intent = (intent_t)config_load_power();
     bool new_firmware = config_firmware_changed();
     awake_led_set(s_cfg.debug & CFG_DEBUG_AWAKE_LED);
@@ -2525,6 +2860,15 @@ void app_main(void)
             deep_sleep(DEEP_SHIP);
         }
         if (s_ident_len && (int32_t)(now - s_ident_at) >= 0) identify_start(s_ident_at, s_ident_len);
+        if (s_owner != s_owned_last) {
+            s_owned_last = s_owner;
+            s_owned_since = net_now();
+        }
+        if (s_radio) holders_watch(now);
+        if (s_form_at && (int32_t)(now - s_form_at) >= 0) {
+            s_form_at = 0;
+            if (s_radio) line_form(now);
+        }
         game_tick(now, dt);
         if (s_radio) net_publish(now);
         if (s_pwr == PWR_ON) countdown_blips();

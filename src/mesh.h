@@ -26,8 +26,9 @@ typedef struct __attribute__((packed)) {
     int32_t time_ms[2];   // 11, 15
     uint8_t power;        // 19
     uint8_t flags2;       // 20
-} mesh_hot_t;             // 21 bytes
-_Static_assert(sizeof(mesh_hot_t) == 21, "mesh_hot_t layout is part of the BLE protocol");
+    uint32_t owned_since; // 21 network ms the owner last changed (lines: the retake and advance times count from it)
+} mesh_hot_t;             // 25 bytes
+_Static_assert(sizeof(mesh_hot_t) == 25, "mesh_hot_t layout is part of the BLE protocol");
 
 // Status, every 30 s and when the links change. The mesh appends the neighbour list.
 typedef struct __attribute__((packed)) {
@@ -65,3 +66,13 @@ int64_t mesh_net_ms64(void);  // the whole thing, now
 // At every start, before anything else uses network time. keep: carry it on (not after a power-on).
 void mesh_time_init(bool keep);
 int mesh_button_links(void);
+// Other buttons' latest items, as last received (hot, slow, config; len 0 = none yet). For the game
+// loop only (the mesh runs on it). i from 1 to MESH_MAX_PEERS - 1; false where there's no button.
+#define MESH_MAX_PEERS 24
+typedef struct {
+    uint16_t id;
+    const uint8_t *d[3];
+    uint8_t len[3];
+} mesh_peer_t;
+bool mesh_peer(int i, mesh_peer_t *p);
+uint16_t mesh_id(void);  // this button's node id (0 before mesh_init)
