@@ -771,7 +771,10 @@ static void hold_progress(uint32_t now, uint32_t held)
             s_fresh = false;
             sound_t call = sounds_team(s_cfg.sound_set, team);
             play(call);
-            s_hold_shift = sounds_ms(call);
+            // The count to the pause starts after the longer of the two teams' calls, so a hold's pause and
+            // reset come at the same moment whichever team it went to.
+            uint32_t c0 = sounds_ms(sounds_team(s_cfg.sound_set, 0)), c1 = sounds_ms(sounds_team(s_cfg.sound_set, 1));
+            s_hold_shift = c0 > c1 ? c0 : c1;
             ESP_LOGI(TAG, "CAPTURED by team %d", team + 1);
         }
     }
