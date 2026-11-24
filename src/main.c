@@ -378,7 +378,7 @@ typedef struct __attribute__((packed)) {
 } line_t;
 _Static_assert(sizeof(line_t) == 12, "line_t layout is part of the BLE protocol (after config_t in the config item)");
 enum { LINE_TUG = 0, LINE_FORGE = 1 };
-#define LINE_DEFAULT_S     60
+#define LINE_DEFAULT_S     30
 #define LINE_JOIN_SHOW_MS  20000  // "LinE" on joining, with the sweep down the line
 #define LINE_TAP_SHOW_MS   5000   // the same on a quadruple tap
 #define NEED_SHOW_MS       2000   // "nEEd" after a denied press
@@ -1822,6 +1822,8 @@ static void factory_reset(uint32_t now)
 {
     config_t d;
     config_defaults(&d);
+    memset(&s_line, 0, sizeof s_line);  // out of any line too (apply_config publishes that with the defaults)
+    config_blob_save("line", &s_line, sizeof s_line);
     apply_config(&d, now);
     game_reset(now);
     AUDIO_PLAY(SLOT_EVENT, SND_FACTORY);
