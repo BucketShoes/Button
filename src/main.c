@@ -756,17 +756,17 @@ static bool s_peek_hold;
 #define AUTO_WON_BLINK_MS    300
 #define OFF_BATT_CHECK_MS    (60 * 60 * 1000)
 #define OFF_RECHECK_MS       60000              // off: a low reading is confirmed once before acting
-#define DEAD_CHECK_US        (60ULL * 60 * 1000000)       // dead (deep sleep): watching for overdischarge
-#define LOW_DEEP_CHECK_US    (6ULL * 60 * 60 * 1000000)   // low (deep sleep): the same, less often
-#define DEAD_USB_CHECK_US    (60ULL * 1000000)            // dead on USB: a reading a minute (charging out, or not)
-#define DEAD_FIRST_US        (15ULL * 1000000)            // just out of overdischarge: dead's first reading, the
+#define DEAD_CHECK_MS        (60u * 60 * 1000)            // dead (deep sleep): watching for overdischarge
+#define LOW_DEEP_CHECK_MS    (6u * 60 * 60 * 1000)    // low (deep sleep): the same, less often
+#define DEAD_USB_CHECK_MS    (60u * 1000)            // dead on USB: a reading a minute (charging out, or not)
+#define DEAD_FIRST_MS        (15u * 1000)            // just out of overdischarge: dead's first reading, the
                                                           // body diode charging meanwhile (PWR_EN still off)
 // Overdischarge never turns PWR_EN on, so its only reading is VSYS with PWR_EN off: with USB that's the
 // charger's output, a body diode (about 0.6-0.7 V) above the cell while it charges.
 #define OVER_EXIT_MV         3900   // at least this: the cell is about 3.2 V or more: on to dead
-#define OVER_SOON_MV         3700   // at least this: charging, not there yet: look again in OVER_SOON_US
-#define OVER_SOON_US         (60ULL * 1000000)
-#define OVER_RETRY_US        (15ULL * 60 * 1000000)       // otherwise, or a USB that came and went: the only wake
+#define OVER_SOON_MV         3700   // at least this: charging, not there yet: look again in OVER_SOON_MS
+#define OVER_SOON_MS         (60u * 1000)
+#define OVER_RETRY_MS        (15u * 60 * 1000)       // otherwise, or a USB that came and went: the only wake
 #define OFF_BLE_MAX_MS       (8ULL * 24 * 3600 * 1000)    // off with BLE lasts this long at most
 #define BATT_WARN_EVERY_MS   30000              // low battery while on: the battery shows briefly, with a beep
 #define BATT_WARN_MS         900
@@ -1097,7 +1097,7 @@ static void deep_sleep(deep_t kind)
 }
 // The same without saving the game: for a wake that goes straight back, before the game is restored
 // (the saved copy, and its LP-timer time, are still right).
-static uint64_t s_over_timer_us;  // the next overdischarge sleep's only wake (0: by rule, see sleep_now)
+static uint32_t s_over_timer_ms;  // the next overdischarge sleep's only wake (0: by rule, see sleep_now)
 static void sleep_now(deep_t kind, bool back)
 {
     if (kind == DEEP_OVER) s_cell_lvl = BATT_OVER;  // (before anything below looks at charge_hold)
@@ -1161,14 +1161,14 @@ static void sleep_now(deep_t kind, bool back)
     if (kind == DEEP_OVER) {
         // One wake only. With USB: the timer (a supply that reads high but can't charge can't keep waking
         // it). Without: USB appearing, or the timer after a USB that came and went (a flickering supply).
-        uint64_t t = s_over_timer_us ? s_over_timer_us : on_usb() ? OVER_RETRY_US : 0;
-        if (t) esp_sleep_enable_timer_wakeup(t);
+        uint32_t t = s_over_timer_ms ? s_over_timer_ms : on_usb() ? OVER_RETRY_MS : 0;
+        if (t) esp_sleep_enable_timer_wakeup((uint64_t)t * 1000);
         else esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, ESP_EXT1_WAKEUP_ANY_HIGH);
     } else {
         esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_VBUS_SENSE, on_usb() ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
         if (kind == DEEP_DEAD)
-            esp_sleep_enable_timer_wakeup(s_dead_first ? DEAD_FIRST_US : on_usb() ? DEAD_USB_CHECK_US : DEAD_CHECK_US);
-        if (kind == DEEP_LOW) esp_sleep_enable_timer_wakeup(LOW_DEEP_CHECK_US);
+            esp_sleep_enable_timer_wakeup((uint64_t)(s_dead_first ? DEAD_FIRST_MS : on_usb() ? DEAD_USB_CHECK_MS : DEAD_CHECK_MS) * 1000);
+        if (kind == DEEP_LOW) esp_sleep_enable_timer_wakeup((uint64_t)LOW_DEEP_CHECK_MS * 1000);
     }
     esp_deep_sleep_start();
 }
@@ -2209,13 +2209,13 @@ static void radio_start(void)
 
 // A wake from overdischarge (app_main, before anything starts). PWR_EN stays off and nothing else is
 // powered: the only reading is VSYS, which with USB is the charger's output. Every path ends in a sleep:
-// overdischarge again (at least OVER_SOON_US, or until USB appears), or dead for DEAD_FIRST_US.
+// overdischarge again (at least OVER_SOON_MS, or until USB appears), or dead for DEAD_FIRST_MS.
 static void over_wake(bool by_usb)
 {
     s_cell_lvl = BATT_OVER;
     if (!on_usb()) {
         // Timer, USB gone: wait for USB to appear. USB appeared and went already: the timer only.
-        s_over_timer_us = by_usb ? OVER_RETRY_US : 0;
+        s_over_timer_ms = by_usb ? OVER_RETRY_MS : 0;
         sleep_now(DEEP_OVER, true);
     }
     int mv = sense_vsys_mv();
@@ -2226,7 +2226,7 @@ static void over_wake(bool by_usb)
         s_dead_first = true;
         sleep_now(DEEP_DEAD, true);
     }
-    s_over_timer_us = mv >= OVER_SOON_MV ? OVER_SOON_US : OVER_RETRY_US;
+    s_over_timer_ms = mv >= OVER_SOON_MV ? OVER_SOON_MS : OVER_RETRY_MS;
     sleep_now(DEEP_OVER, true);
 }
 
