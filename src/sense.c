@@ -87,12 +87,18 @@ static int read_pin_mv(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
 static int s_rebuilds;
 
 int sense_adc_rebuilds(void) { return s_rebuilds; }
+void sense_adc_reset(void)
+{
+    adc_oneshot_del_unit(s_adc);
+    unit_init();
+    s_rebuilds++;
+}
 
 static int read_checked(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
 {
     int raw = 0;
     int mv = read_pin_mv(ch, cali, &raw);
-    if (mv > PIN_MAX_MV) {
+    if (mv > PIN_MAX_MV || mv < 0) {  // (or no read at all)
         adc_oneshot_del_unit(s_adc);
         unit_init();
         int before = raw;

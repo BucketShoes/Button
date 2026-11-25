@@ -1225,8 +1225,16 @@ static int s_batt_mv;  // the same in mV
 static int s_batt_avg_uv;  // 1 min average of the loaded readings, in uV (it moves a few uV a loop pass)
 static int s_batt_avg_mv;  // the same in mV (0 = none)
 static uint32_t s_batt_at;
+// The chip runs from the cell (through the LDO), so a VSYS reading this low while it's running is a failed
+// read, not a voltage: ignored. (A read that failed outright came back as -2 mV, which counted as
+// overdischarge, and in off that went straight to a deep sleep only USB could wake.)
+#define BATT_IMPLAUSIBLE_MV 2500
 static void batt_rest(int mv, uint32_t now)
 {
+    if (mv < BATT_IMPLAUSIBLE_MV) {
+        ESP_LOGW(TAG, "battery rest reading %d mV can't be right: ignored", mv);
+        return;
+    }
     wake_log_batt(mv);
     s_batt_nv = mv * 1000000LL;
     s_batt_mv = mv;
@@ -1235,6 +1243,7 @@ static void batt_rest(int mv, uint32_t now)
 }
 static void batt_loaded(int mv, uint32_t now)
 {
+    if (mv < BATT_IMPLAUSIBLE_MV) return;  // (see batt_rest)
     uint32_t dt = now - s_batt_at;
     s_batt_at = now;
     s_batt_avg_uv = s_batt_avg_uv ? s_batt_avg_uv + (int)(((int64_t)(mv * 1000 - s_batt_avg_uv) * (int64_t)(dt > BATT_TAU_MS ? BATT_TAU_MS : dt)) / BATT_TAU_MS) : mv * 1000;
@@ -1366,6 +1375,10 @@ static int read_batt_rest(void)
     gpio_set_level(PIN_PWR_EN, 1);
     vTaskDelay(pdMS_TO_TICKS(50));  // divider filter is ~5 ms; the LED caps charge too
     int mv = sense_vsys_mv();
+    if (mv < BATT_IMPLAUSIBLE_MV) {  // a failed read: rebuild the ADC and try once more
+        sense_adc_reset();
+        mv = sense_vsys_mv();
+    }
     pwr_en_apply();
     return mv;
 }
@@ -1655,7 +1668,7 @@ static void power_tick_off(uint32_t now)
         s_next_batt_check = now + OFF_BATT_CHECK_MS;
         return;
     }
-    if (++s_low_readings < 2 && d != DEEP_OVER) {
+    if (++s_low_readings < 2) {  // (overdischarge too: one reading is never enough to go where only USB wakes it)
         s_next_batt_check = now + OFF_RECHECK_MS;
         return;
     }

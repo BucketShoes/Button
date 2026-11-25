@@ -10,5 +10,7 @@ int sense_vbus_mv(void);  // USB VBUS (0.6 divider)
 void sense_vsys_debug(int *raw, int *pin_mv);
 // Times the ADC was found stuck above the pin's possible range and rebuilt (since boot).
 int sense_adc_rebuilds(void);
+// Rebuild the ADC unit (after a read that can't be right).
+void sense_adc_reset(void);
 // USB power present, from the VBUS pin's digital level (no ADC conversion).
 bool sense_vbus_present(void);
