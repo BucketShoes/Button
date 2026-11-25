@@ -2133,6 +2133,25 @@ static int one_timer_side(void)
     int c = capture_target();
     return c >= 0 ? c : 0;
 }
+// A line's own display for team t's side, or false for the normal teams-only one.
+static bool line_display(int t, uint8_t seg[4], int *bright)
+{
+    uint32_t net = net_now();
+    line_rule_t r0 = line_rule(0, net), r1 = line_rule(1, net), r = t == 0 ? r0 : r1;
+    if (!r0.enabled && !r1.enabled) {
+        for (int i = 0; i < 4; i++) seg[i] = display_char('-');
+        display_colon(seg, true);
+        *bright = DISP_DIM;
+        return true;
+    }
+    if (r.enabled && r.wait_ms > 0) {
+        render_clock(seg, r.wait_ms, true);
+        display_colon(seg, true);
+        *bright = DISP_FULL;
+        return true;
+    }
+    return false;
+}
 static void render_displays(uint32_t now)
 {
     for (int t = 0; t < 2; t++) {
@@ -2177,21 +2196,10 @@ static void render_displays(uint32_t now)
             else if (s_need >= 1) display_number(seg, s_need);
             else display_text(seg, "  --");
             bright = DISP_FULL;
-        } else if (in_line() && s_winner < 0 && !(s_face.state && s_hold_stage == HS_BUILD && !s_denied && !s_hold_gp)) {
-            // A line: the time until this team can take it (0:00 once it can) on its display, the other
-            // blank; nobody can take it: "--:--" on both.
-            uint32_t net = net_now();
-            line_rule_t r0 = line_rule(0, net), r1 = line_rule(1, net);
-            line_rule_t r = t == 0 ? r0 : r1;
-            if (!r0.enabled && !r1.enabled) {
-                for (int i = 0; i < 4; i++) seg[i] = display_char('-');
-                display_colon(seg, true);
-                bright = DISP_DIM;
-            } else if (r.enabled) {
-                render_clock(seg, r.wait_ms, true);
-                display_colon(seg, true);
-                bright = DISP_FULL;
-            }
+        } else if (in_line() && s_winner < 0 && !(s_face.state && s_hold_stage == HS_BUILD && !s_denied && !s_hold_gp) &&
+                   line_display(t, seg, &bright)) {
+            // (a line: "--:--" on both while nobody can take it; the time until a team can, on its display,
+            // while that counts down; otherwise it's a teams-only button, below)
         } else if (s_cfg.mode == MODE_TEAMS || s_cfg.show_numbers) {
             // Two timers: both clocks, always. One timer (the shared clock) and teams only
             // (dashes, as a place for the colon and highlight): only on the owner's display,
