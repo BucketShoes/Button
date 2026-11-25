@@ -865,7 +865,9 @@ static void game_tick(uint32_t now, uint32_t dt)
     if (!s_face.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
         if (s_taps == 4) {
             s_line_show_until = now + LINE_TAP_SHOW_MS;  // "LinE" and its place in it (or "--")
+            s_batt_until = s_need_until = 0;              // (the latest tap code is what shows)
         } else if (s_taps == 3) {
+            s_line_show_until = s_need_until = 0;
             s_batt_until = now + BATT_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
             ESP_LOGI(TAG, "triple tap: VSYS %d mV (~%d %%), VBUS %d mV", s_vsys_mv, batt_percent(batt_now_mv()),
