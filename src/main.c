@@ -396,15 +396,13 @@ static bool in_line(void) { return s_line.id && s_line.n && s_line.index >= 1 &&
 static bool line_showing(uint32_t now) { return (int32_t)(s_line_show_until - now) > 0; }
 static bool need_showing(uint32_t now) { return (int32_t)(s_need_until - now) > 0; }
 
-// A line's identity colour and number (1-8) both come from its id, so they're the same on every button.
-static const rgb_t LINE_COLOURS[8] = {{255, 0, 0}, {255, 90, 0}, {120, 255, 0}, {0, 255, 60},
-                                      {0, 255, 255}, {0, 60, 255}, {255, 255, 255}, {255, 60, 160}};
-static int line_number(uint16_t id) { return id % 8 + 1; }
-static rgb_t line_colour(uint16_t id)
-{
-    rgb_t c = LINE_COLOURS[id % 8];
-    return (rgb_t){s_gamma[c.r], s_gamma[c.g], s_gamma[c.b]};
-}
+// A line's identity colour and number (1-6) both come from its id, so they're the same on every button.
+// LED values as sent (no gamma), picked for these LEDs: green far brighter than red and blue, blue
+// towards cyan; nothing near the team purple and yellow, and no pink (it looks white).
+#define LINE_NUMBERS 6
+static const rgb_t LINE_COLOURS[LINE_NUMBERS] = {{255, 0, 0}, {255, 24, 0}, {0, 110, 0}, {0, 0, 255}, {255, 140, 200}, {0, 90, 255}};
+static int line_number(uint16_t id) { return id % LINE_NUMBERS + 1; }
+static rgb_t line_colour(uint16_t id) { return LINE_COLOURS[id % LINE_NUMBERS]; }
 static uint16_t line_id_of(const uint16_t *ids, int n)
 {
     uint16_t id = (uint16_t)esp_rom_crc32_le(0x4C696E65u, (const uint8_t *)ids, (uint32_t)(n * sizeof ids[0]));
@@ -596,7 +594,20 @@ static void line_form(uint32_t now)
     int me = 0;
     while (ids[me] != mesh_id()) me++;
     int index = me + 1;
-    line_t l = {.id = line_id_of(ids, n), .index = (uint8_t)index, .n = (uint8_t)n, .type = LINE_TUG,
+    // The id from the members (every one of them works out the same), stepped on past any line number
+    // already used by a button outside this group, so two lines in one network don't share a number.
+    uint16_t id = line_id_of(ids, n);
+    bool used[LINE_NUMBERS] = {false};
+    mesh_peer_t p;
+    line_t pl;
+    for (int i = 1; i < MESH_MAX_PEERS; i++) {
+        if (!mesh_peer(i, &p) || !peer_line(&p, &pl) || !pl.id) continue;
+        bool member = false;
+        for (int k = 0; k < n; k++) member |= ids[k] == p.id;
+        if (!member) used[line_number(pl.id) - 1] = true;
+    }
+    for (int k = 0; k < LINE_NUMBERS && used[line_number(id) - 1]; k++) id = (uint16_t)(id + 1) ? (uint16_t)(id + 1) : 1;
+    line_t l = {.id = id, .index = (uint8_t)index, .n = (uint8_t)n, .type = LINE_TUG,
                 .ends = 1 | 2 << 4, .retake_s = LINE_DEFAULT_S, .advance_s = LINE_DEFAULT_S};
     int owner = index <= n / 2 ? 0 : index > (n + 1) / 2 ? 1 : (int)(esp_random() & 1);
     line_join(&l, owner, now);
