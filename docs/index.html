@@ -55,7 +55,8 @@
   .lines .handle { cursor: grab; touch-action: none; user-select: none; padding: 2px 8px; font-size: 18px; }
   .lines li.drag { opacity: .6; }
   .lines li { display: flex; align-items: center; gap: 6px; }
-  .lines .l-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lines .l-name { flex: 1 1 6em; min-width: 4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid .lines li select, .lines li select:not(.x) { width: auto; flex: 0 1 auto; }  /* (not the grid's 100 %, or the name has no room) */
   .owner { border-radius: 10px; padding: 12px; font-weight: 700; font-size: 18px; text-align: center;
            border: 2px solid var(--line); margin: 8px 0; }
   .clocks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -248,10 +249,10 @@
         <label>Sounds</label><select class="f-sounds" title="The capture build-up, captures, countdown and win. Admin sounds (pause, reset, power) stay plain beeps in both."><option value="1">Medieval (drums, horns, bells)</option><option value="0">Sci-fi (synth)</option></select>
         <label class="l-vol">Volume <output class="f-volv"></output></label><input type="range" class="f-vol" min="0" max="125" step="1" list="vol-ticks">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
-        <label title="Minutes with no press and no page command. 0 = never.">Idle: half the LEDs</label><span class="unit"><input type="number" class="f-idle0 num" min="0" max="255" step="1"> min</span>
-        <label title="10 % brightness">Idle: dim</label><span class="unit"><input type="number" class="f-idle1 num" min="0" max="255" step="1"> min</span>
-        <label title="Auto-off: dark, but still in the game (clocks keep running) and in the network. A tap or any command brings it straight back, as if it had stayed on. A countdown brings it back for its last 5 minutes. With a low battery it's 11 min at most.">Idle: auto-off</label><span class="unit"><input type="number" class="f-idle2 num" min="0" max="255" step="1"> min</span>
-        <label title="Auto-off becomes off: out of the network and the clocks pause (a lid press peeks; two presses turn it on). Never while a countdown is running here.">Idle: off</label><span class="unit"><input type="number" class="f-idle3 num" min="0" max="255" step="1"> min</span>
+        <label title="Minutes with no press and no page command. 0 = never.">Idle: half the LEDs</label><span class="unit"><input type="number" class="f-idle0 num" min="0" max="255" step="1"> mins</span>
+        <label title="10 % brightness">Idle: dim</label><span class="unit"><input type="number" class="f-idle1 num" min="0" max="255" step="1"> mins</span>
+        <label title="Auto-off: dark, but still in the game (clocks keep running) and in the network. A tap or any command brings it straight back, as if it had stayed on. A countdown brings it back for its last 5 minutes. With a low battery it's 11 min at most.">Idle: auto-off</label><span class="unit"><input type="number" class="f-idle2 num" min="0" max="255" step="1"> mins</span>
+        <label title="Auto-off becomes off: out of the network and the clocks pause (a lid press peeks; two presses turn it on). Never while a countdown is running here.">Idle: off</label><span class="unit"><input type="number" class="f-idle3 num" min="0" max="255" step="1"> mins</span>
         <label title="The red status LED is lit whenever the chip is out of light sleep, so each wake shows as a flash and a chip that never sleeps shows as a steady light.">Awake LED (debug)</label><input type="checkbox" class="f-awake">
       </div>
       <p class="note">After a capture its call plays out first (about 0.6 to 1.5 s); then pause is 4 s later, reset at 9 s, power off at 14 s. On an uncaptured button, each press
@@ -302,7 +303,8 @@ const RESET_REASON = { 1: "power-on", 2: "reset pin", 3: "software", 4: "crash",
                        8: "woke from off", 9: "BROWN-OUT", 11: "USB", 12: "JTAG", 14: "power glitch", 15: "CPU lockup" };
 const SOUNDS = ["Team 1 capture", "Team 2 capture", "Win fanfare", "Pause", "Reset", "Ding", "Doom",
                 "Countdown blip", "Whistle", "Horn", "Battery chirp", "Startup", "Diagnostic", "Music clip",
-                "Capture build-up (3 s hold)", "Capture build-up (8 s hold)", "Capture build-up (20 s hold)", "Stop build-up", "Let go early (medieval)"];
+                "Capture build-up (3 s hold)", "Capture build-up (8 s hold)", "Capture build-up (20 s hold)", "Stop build-up", "Let go early (medieval)",
+                "Line: opened by a neighbour", "Line: count ran out", "Drum", "Snare roll", "Timpani", "Bell", "Natural horn", "Trumpet"];
 const MODE_TEAMS = 0, MODE_ONE = 1, MODE_TWO = 2;
 const DEBUG_AWAKE_LED = 1;  // config byte 11, bit0: awake LED
 
@@ -338,7 +340,7 @@ function setColour(input, hex) {
 // ---- lines (tug-of-war, forge-a-path) -------------------------------------------
 // Each button's config item carries its line after the settings: u16 id (0 = none), u8 index, u8 n, u8 type,
 // u8 ends (low nibble: the team beyond #1, high: beyond #n; 0 none), u16 retake s, u16 advance s, u8, u8.
-const LINE_LEN = 12, LINE_TUG = 0, LINE_FORGE = 1, LINE_DEFAULT_S = 30;
+const LINE_LEN = 12, LINE_TUG = 0, LINE_FORGE = 1, LINE_RETAKE_S = 0, LINE_ADVANCE_S = 20;  // (defaults)
 // As the firmware's LINE_COLOURS (which are set for the LEDs, not the screen): red, orange, green, blue, white, sky.
 const LINE_COLOURS = ["#ff0000", "#ff7000", "#00c000", "#0030ff", "#ffffff", "#00a0ff"];
 const lineNo = id => id % LINE_COLOURS.length + 1, lineCol = id => LINE_COLOURS[id % LINE_COLOURS.length];
@@ -393,7 +395,7 @@ const lines = {
   },
   send(b, l, owner = -1) {
     return b.send(OP.SET_LINE, ["u16", l.id], ["u8", l.index || 0], ["u8", l.n || 0], ["u8", l.type || 0], ["u8", l.ends ?? 0x21],
-      ["u16", l.retake ?? LINE_DEFAULT_S], ["u16", l.advance ?? LINE_DEFAULT_S], ["i8", owner]);
+      ["u16", l.retake ?? LINE_RETAKE_S], ["u16", l.advance ?? LINE_ADVANCE_S], ["i8", owner]);
   },
   // The line as shown: its unsaved edits, or as the buttons say.
   view(id, g) {
@@ -431,7 +433,7 @@ const lines = {
       const used = new Set([...ids].map(lineNo));
       let id;
       for (let k = 0; k < 50; k++) { id = 1 + Math.floor(Math.random() * 65535); if (!used.has(lineNo(id))) break; }
-      this.drafts.set(id, { id, type: LINE_TUG, ends: 0x21, retake: LINE_DEFAULT_S, advance: LINE_DEFAULT_S, members: [], fresh: new Set(), isNew: true });
+      this.drafts.set(id, { id, type: LINE_TUG, ends: 0x21, retake: LINE_RETAKE_S, advance: LINE_ADVANCE_S, members: [], fresh: new Set(), isNew: true });
       this.render();
     };
     box.append(nb);
@@ -457,7 +459,7 @@ const lines = {
       `<ol class="l-list span">` +
       v.members.map((m, i) => {
         const b = buttons.get(m.id);
-        return `<li data-id="${m.id}"><span class="handle" title="Drag to reorder">≡</span> <span class="l-name">#${i + 1} ${b ? b.label() : hex4(m.id)}</span>` +
+        return `<li data-id="${m.id}"><span class="handle" title="Drag to reorder">≡</span> <span class="l-name">(${i + 1}) ${b ? b.label() : hex4(m.id)}</span>` +
           ` ${this.teamSelect("l-own", m.owner, m.id, "uncaptured")} <button class="l-rm" title="Take it out of the line">✕</button></li>`;
       }).join("") +
       `</ol>` +
@@ -1167,10 +1169,12 @@ class Btn {
       box.classList.toggle("won", live && s.won && s.winner === t);
       let tv = !live ? "--:--" : timed ? fmtMs(this.liveTime(t), !c.countUp) : c.mode === MODE_ONE ? " " : "–";  // (no-break space, keeps the box height)
       if (live && this.line && this.line.id && !s.won) {
-        // A line, as the button's displays: the time until this team can take it (0:00 once it can), blank if it
-        // can't; nobody can: --:-- in both.
+        // A line, as the button's displays: nobody can take it: --:-- in both; a team's count to when it can,
+        // in its box;
+        // (otherwise it's a teams-only button)
         const n = net.now(), r = [lineRule(this, 0, n), lineRule(this, 1, n)];
-        tv = !r[0].enabled && !r[1].enabled ? "--:--" : r[t].enabled ? fmtMs(r[t].wait, true) : " ";
+        if (!r[0].enabled && !r[1].enabled) tv = "--:--";
+        else if (r[t].enabled && r[t].wait > 0) tv = fmtMs(r[t].wait, true);
       }
       $(box, ".tv").textContent = tv;
       const pie = $(box, ".pie");

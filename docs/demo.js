@@ -37,7 +37,7 @@
     };
     const sim = { id: d.id, d, cfg, s, ver: [0, 0, 0], data: [null, null, null], shape: "", hotAt: -1e9, slowAt: -1e9 };
     // Its line (after the settings in the config item). The demo shows it; its holds don't follow the line's rule.
-    const line = { id: 0, index: 0, n: 0, type: 0, ends: 0x21, retake: 30, advance: 30, prevMode: cfg.mode };
+    const line = { id: 0, index: 0, n: 0, type: 0, ends: 0x21, retake: 0, advance: 20, prevMode: cfg.mode };
     const cfgBytes = () => {
       const c = new Uint8Array(encodeConfig(cfg)), b = new Uint8Array(c.length + LINE_LEN), v = new DataView(b.buffer);
       b.set(c);
