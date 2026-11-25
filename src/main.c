@@ -1464,6 +1464,8 @@ static void sleep_now(deep_t kind, bool back)
         }
     }
     if (mask) esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
+    // The awake LED (IO23) keeps its level through deep sleep: off, or it stays lit (a few mA) all night.
+    gpio_set_level(PIN_STAT_LED, 0);
     if (kind == DEEP_OVER) {
         // One wake only. With USB: the timer (a supply that reads high but can't charge can't keep waking
         // it). Without: USB appearing, or the timer after a USB that came and went (a flickering supply).
