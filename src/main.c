@@ -393,6 +393,7 @@ static int s_owned_last = -2;
 static uint32_t s_line_show_until, s_need_until, s_denied_flash_until;
 static int s_need;              // the node to take first, after a denied press (-1: none)
 static bool s_denied;           // this press can't capture (a line's rule)
+static int s_line_seen[2] = {-1, -1};  // per team: 0 can't take it, 1 counting down, 2 can (-1 not yet looked)
 static uint32_t net_now(void) { return (uint32_t)mesh_net_ms64(); }
 static bool in_line(void) { return s_line.id && s_line.n && s_line.index >= 1 && s_line.index <= s_line.n; }
 static bool line_showing(uint32_t now) { return (int32_t)(s_line_show_until - now) > 0; }
@@ -506,6 +507,7 @@ static void line_join(const line_t *in, int owner, uint32_t now)
     config_t c = s_cfg;
     c.mode = MODE_TEAMS;  // a line tracks position along it, not time
     apply_config(&c, now);  // (publishes the config item, with the line)
+    int was_owner = s_owner;
     if (owner == 2) {
         s_owner = -1;
         s_running = false;
@@ -514,6 +516,13 @@ static void line_join(const line_t *in, int owner, uint32_t now)
         s_running = true;
         s_fresh = false;
     }
+    // An owner set by an admin: open at once, no retake or advance count (which capture would it count
+    // from?). An owner kept as it was keeps its count.
+    if (s_owner != was_owner) {
+        s_owned_last = s_owner;
+        s_owned_since = 0;
+    }
+    s_line_seen[0] = s_line_seen[1] = -1;  // (no alert or bell for what a reorganising changed)
     if (moved) s_line_show_until = now + LINE_JOIN_SHOW_MS;
     ESP_LOGI(TAG, "line %u (%04X): %d of %d, owner team %d", line_number(s_line.id), s_line.id, s_line.index, s_line.n, s_owner + 1);
 }
@@ -1934,6 +1943,10 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         if (n >= 2) {
             int o = (int8_t)d[1];
             if (o < -1 || o > 1) break;
+            if (o != s_owner) {  // set by an admin: no retake or advance count from it (see line_join)
+                s_owned_last = o;
+                s_owned_since = 0;
+            }
             s_owner = o;
             s_fresh = false;
             if (o >= 0 && s_cfg.mode == MODE_TEAMS && s_winner < 0) {
