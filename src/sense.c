@@ -71,7 +71,7 @@ static int read_pin_mv(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
             ESP_LOGW(TAG, "ch%d read: %s", ch, esp_err_to_name(err));
         }
     }
-    if (!n) return -1;
+    if (!n) return SENSE_ERR;
     int raw = sum / n;
     if (raw_out) *raw_out = raw;
     int mv;
@@ -98,7 +98,7 @@ static int read_checked(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
 {
     int raw = 0;
     int mv = read_pin_mv(ch, cali, &raw);
-    if (mv > PIN_MAX_MV || mv < 0) {  // (or no read at all)
+    if (mv > PIN_MAX_MV) {
         adc_oneshot_del_unit(s_adc);
         unit_init();
         int before = raw;
@@ -110,10 +110,21 @@ static int read_checked(adc_channel_t ch, adc_cali_handle_t cali, int *raw_out)
     return mv;
 }
 
+// The chip runs from the cell (through the LDO), so VSYS below 2.5 V while it runs is most likely a bad
+// conversion: the unit is rebuilt and it's read again, and that second reading is believed (it's the
+// overdischarge protection). A failed read (every conversion an error) is SENSE_ERR, never a voltage.
+#define VSYS_DOUBT_PIN_MV 1250
 int sense_vsys_mv(void)
 {
-    s_vsys_pin = read_checked(CH_VSYS, s_cali[0], &s_vsys_raw);
-    return s_vsys_pin * 2;
+    int mv = read_checked(CH_VSYS, s_cali[0], &s_vsys_raw);
+    if (mv == SENSE_ERR || mv < VSYS_DOUBT_PIN_MV) {
+        int before = mv;
+        sense_adc_reset();
+        mv = read_checked(CH_VSYS, s_cali[0], &s_vsys_raw);
+        ESP_LOGW(TAG, "VSYS read %d mV at the pin, rebuilt the ADC: now %d", before, mv);
+    }
+    s_vsys_pin = mv;
+    return mv == SENSE_ERR ? SENSE_ERR : mv * 2;
 }
 
 void sense_vsys_debug(int *raw, int *pin_mv)
