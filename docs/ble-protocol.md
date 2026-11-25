@@ -140,7 +140,7 @@ The first byte is the opcode.
 | 17 | | game resume: undo a game pause (runs again only if it was running before) |
 | 18 | | shipping mode (was "factory off"): deep sleep with BLE off after about 1.5 s (so the network passes the command on), on battery or USB. Saved: any reset comes back to it. A lid press or USB appearing peeks, then it goes back to shipping unless the peek turned it on; USB going just sleeps again |
 | 19 | | (removed: was the awake LED switch, now config byte 11) |
-| 20 | u16 id, u8 index, u8 n, u8 type, u8 ends, u16 retake s, u16 advance s, i8 owner | put the button in a line (id 0: out of its line, back to its own mode). type 0 tug-of-war, 1 forge-a-path; ends: low nibble the team beyond #1, high nibble beyond #n (0 none, 1, 2). Joining sets teams-only mode; owner ≥ 0 also sets the owner and the after-reset team, −1 leaves them |
+| 20 | u16 id, u8 index, u8 n, u8 type, u8 ends, u16 retake s, u16 advance s, i8 owner | put the button in a line (id 0: out of its line, back to its own mode). type 0 tug-of-war, 1 forge-a-path; ends: low nibble the team beyond #1, high nibble beyond #n (0 none, 1, 2). Joining sets teams-only mode; owner 0 / 1 also sets the owner and its team after a reset while in the line, 2 sets uncaptured, −1 leaves them (the button's own after-reset setting is never changed) |
 
 Sound ids:
 
@@ -209,10 +209,10 @@ i8 target, u8 hold stage, u16 held ms, i32 ×2 clocks, u8 power, u8 flags2, u32 
 (a line's retake and advance times count from it). The clocks and held time are as of the timestamp; receivers
 extrapolate while running or held.
 
-**Line** (after the config): u16 id (0 = not in a line; random, shared by the line's buttons; its number 1–8 and
-colour are id mod 8), u8 index (1..n), u8 n, u8 type (0 tug-of-war, 1 forge-a-path), u8 ends (low nibble: the team
+**Line** (after the config): u16 id (0 = not in a line; random, shared by the line's buttons; its number 1–6 and
+colour are id mod 6; forming steps the id on past a number another line in the network uses), u8 index (1..n), u8 n, u8 type (0 tug-of-war, 1 forge-a-path), u8 ends (low nibble: the team
 beyond #1, high nibble: beyond #n; 0 none, 1, 2), u16 retake s, u16 advance s, u8 the mode it had before joining,
-u8 0. A team can take a button in a line when it owns a neighbour (or the end beyond it), the button isn't already
+u8 its team after a reset while in the line (0 uncaptured, 1, 2). A team can take a button in a line when it owns a neighbour (or the end beyond it), the button isn't already
 theirs (and, forge-a-path, isn't owned at all), the retake time has passed since the button's own capture, and the
 advance time since that neighbour's. A neighbour never heard from doesn't block.
 
