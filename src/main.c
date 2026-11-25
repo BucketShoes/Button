@@ -74,6 +74,7 @@ static const char *TAG = "button";
 #define PAUSED_LEVEL     14    // ring blink while paused with an owner: only visible close up
 #define UNCAPTURED_LEVEL 50    // ring pulse peak while uncaptured, relative to the brightness setting
 #define BATT_SHOW_MS     6000
+#define BATT_TAP_SHOW_MS 2000  // the same from a triple tap
 #define IDENT_MS         3000
 #define BOOT_OFF_MS      3000  // BOOT held this long powers off
 #define BOOT_FACTORY_MS  8000  // ... and this long restores default settings
@@ -378,9 +379,10 @@ typedef struct __attribute__((packed)) {
 } line_t;
 _Static_assert(sizeof(line_t) == 12, "line_t layout is part of the BLE protocol (after config_t in the config item)");
 enum { LINE_TUG = 0, LINE_FORGE = 1 };
-#define LINE_DEFAULT_S     30
-#define LINE_JOIN_SHOW_MS  20000  // "LinE" on joining, with the sweep down the line
-#define LINE_TAP_SHOW_MS   5000   // the same on a quadruple tap
+#define LINE_RETAKE_S      0      // defaults
+#define LINE_ADVANCE_S     20
+#define LINE_JOIN_SHOW_MS  15000  // "LinE" on joining, with the sweep down the line
+#define LINE_TAP_SHOW_MS   2000   // the same on a quadruple tap
 #define NEED_SHOW_MS       2000   // "nEEd" after a denied press
 #define DENIED_FLASH_MS    150
 #define FORM_WINDOW_MS     1000   // holds that started this close together form a line at the reset
@@ -608,7 +610,7 @@ static void line_form(uint32_t now)
     }
     for (int k = 0; k < LINE_NUMBERS && used[line_number(id) - 1]; k++) id = (uint16_t)(id + 1) ? (uint16_t)(id + 1) : 1;
     line_t l = {.id = id, .index = (uint8_t)index, .n = (uint8_t)n, .type = LINE_TUG,
-                .ends = 1 | 2 << 4, .retake_s = LINE_DEFAULT_S, .advance_s = LINE_DEFAULT_S};
+                .ends = 1 | 2 << 4, .retake_s = LINE_RETAKE_S, .advance_s = LINE_ADVANCE_S};
     int owner = index <= n / 2 ? 0 : index > (n + 1) / 2 ? 1 : (int)(esp_random() & 1);
     line_join(&l, owner, now);
 }
@@ -874,15 +876,18 @@ static void game_tick(uint32_t now, uint32_t dt)
     }
 
     if (!s_face.state && s_taps > 0 && now - s_last_tap_ms > TAP_GAP_MS) {
+        // The latest tap code is what shows; 1, 2 or 5+ taps (someone trying again) put it back to normal.
         if (s_taps == 4) {
             s_line_show_until = now + LINE_TAP_SHOW_MS;  // "LinE" and its place in it (or "--")
-            s_batt_until = s_need_until = 0;              // (the latest tap code is what shows)
+            s_batt_until = s_need_until = 0;
         } else if (s_taps == 3) {
             s_line_show_until = s_need_until = 0;
-            s_batt_until = now + BATT_SHOW_MS;
+            s_batt_until = now + BATT_TAP_SHOW_MS;
             AUDIO_PLAY(SLOT_EVENT, SND_BATT);
             ESP_LOGI(TAG, "triple tap: VSYS %d mV (~%d %%), VBUS %d mV", s_vsys_mv, batt_percent(batt_now_mv()),
                      s_vbus_mv);
+        } else {
+            s_line_show_until = s_need_until = s_batt_until = 0;
         }
         s_taps = 0;
     }
