@@ -374,7 +374,7 @@ typedef struct __attribute__((packed)) {
     uint16_t retake_s;   // a node just captured can't be taken back for this long
     uint16_t advance_s;  // a node can't be taken for this long after the neighbour that opens it was captured
     uint8_t prev_mode;   // this button's mode before it joined, to go back to
-    uint8_t spare;
+    uint8_t start;       // its team after a reset while in the line (0 uncaptured, 1, 2); its own setting is kept
 } line_t;
 _Static_assert(sizeof(line_t) == 12, "line_t layout is part of the BLE protocol (after config_t in the config item)");
 enum { LINE_TUG = 0, LINE_FORGE = 1 };
@@ -499,15 +499,17 @@ static void line_join(const line_t *in, int owner, uint32_t now)
     bool was = in_line();
     line_t l = *in;
     l.prev_mode = was ? s_line.prev_mode : s_cfg.mode;
-    l.spare = 0;
+    l.start = owner == 2 ? 0 : owner >= 0 ? (uint8_t)(owner + 1) : was ? s_line.start : 0;
     bool moved = !was || l.id != s_line.id || l.index != s_line.index || l.n != s_line.n;
     s_line = l;
     config_blob_save("line", &s_line, sizeof s_line);
     config_t c = s_cfg;
     c.mode = MODE_TEAMS;  // a line tracks position along it, not time
-    if (owner >= 0) c.initial_owner = (uint8_t)(owner + 1);
     apply_config(&c, now);  // (publishes the config item, with the line)
-    if (owner >= 0) {
+    if (owner == 2) {
+        s_owner = -1;
+        s_running = false;
+    } else if (owner >= 0) {
         s_owner = owner;
         s_running = true;
         s_fresh = false;
@@ -635,7 +637,7 @@ static void game_reset(uint32_t now)
     for (int t = 0; t < 2; t++) s_val[t] = s_cfg.count_up ? 0 : duration(t);
     s_winner = -1;
     s_win_alarm_until = now;
-    s_owner = (int)s_cfg.initial_owner - 1;
+    s_owner = in_line() ? (int)s_line.start - 1 : (int)s_cfg.initial_owner - 1;  // (a line keeps its own)
     // Teams only: an initial owner is simply live. With clocks, it waits
     // paused for a start (page or a hold).
     s_running = s_owner >= 0 && s_cfg.mode == MODE_TEAMS;
@@ -909,7 +911,7 @@ enum {
     OP_GAME_RESUME = 17, // undo a game pause (runs again only if it was running)
     OP_FACTORY_OFF = 18, // what a low battery does: deep sleep, no BLE; a lid press or USB wakes it
     // 19 was the awake LED switch; it is a setting now (config_t.debug)
-    OP_SET_LINE = 20,    // u16 id (0: leave), u8 index, u8 n, u8 type, u8 ends, u16 retake s, u16 advance s, i8 owner (-1 as is)
+    OP_SET_LINE = 20,    // u16 id (0: leave), u8 index, u8 n, u8 type, u8 ends, u16 retake s, u16 advance s, i8 owner (-1 as is, 0/1, 2 uncaptured)
 };
 
 // Restarts since power-on (they survive resets, not power loss), to spot brown-outs. Wakes from deep
@@ -1977,8 +1979,8 @@ static void handle_command(const uint8_t *d, int n, uint32_t now)
         if (n >= 12) {
             line_t l = {0};
             memcpy(&l, d + 1, 10);
-            int owner = (int8_t)d[11];
-            if (owner > 1) owner = -1;
+            int owner = (int8_t)d[11];  // -1 as is, 0 / 1 a team, 2 uncaptured
+            if (owner > 2 || owner < -1) owner = -1;
             if (!l.id) {
                 if (in_line()) line_leave(now);
             } else if (l.n >= 1 && l.index >= 1 && l.index <= l.n && l.type <= LINE_FORGE) {
