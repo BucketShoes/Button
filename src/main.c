@@ -2466,7 +2466,9 @@ static void status_line(uint32_t now)
            s_in[IN_FACE1].state, s_in[IN_FACE2].state, s_in[IN_FACE3].state, s_in[IN_BOOT].state,
            s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, vraw, vpin, s_vbus_mv, sense_adc_rebuilds(), ble_connections(),
            "", (unsigned long)display_nak_count(0), (unsigned long)display_nak_count(1),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
+           // network ms minus local ms: steps up whenever another button's clock is heard ahead (it only moves forward)
+           (long long)(mesh_net_ms64() - esp_timer_get_time() / 1000));
 }
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
