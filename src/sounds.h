@@ -33,4 +33,6 @@ sound_t sounds_let_go(int set);              // let go before the capture
 sound_t sounds_team(int set, int team);      // captured by team 0 / 1
 sound_t sounds_win(int set);
 sound_t sounds_blip(int set, int i);         // countdown step i (SOUNDS_BLIP_AT[i] s to go)
+sound_t sounds_line_alert(int set);         // a line: a neighbour's capture opened this one (or started its count)
+sound_t sounds_line_open(int set);          // a line: its count ran out, it can be taken
 uint32_t sounds_ms(sound_t s);               // how long it plays (its longest voice)

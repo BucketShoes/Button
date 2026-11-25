@@ -184,6 +184,12 @@ static void play_blip(int i) { play(sounds_blip(s_cfg.sound_set, i)); }
 static void play_let_go(void) { play(sounds_let_go(s_cfg.sound_set)); }
 
 // Sounds the page can play (ids are part of the BLE protocol). The game sounds follow the sound set.
+static const note_t SND_TEST_DRUM[] = {{196, 196, 400, W_DRUM, 255}, {0, 0, 200, W_SQUARE, 0}, {147, 147, 400, W_DRUM, 255}};
+static const note_t SND_TEST_SNARE[] = {{300, 300, 1200, W_SNARE, 255}};
+static const note_t SND_TEST_TIMPANI[] = {{196, 196, 900, W_TIMPANI, 255}};
+static const note_t SND_TEST_BELL[] = {{1047, 1047, 1500, W_BELL, 230}};
+static const note_t SND_TEST_HORN[] = {{330, 330, 900, W_HORN, 255}};
+static const note_t SND_TEST_TRUMPET[] = {{523, 523, 900, W_TRUMPET, 255}};
 static void play_sound_id(int id)
 {
     switch (id) {
@@ -206,6 +212,14 @@ static void play_sound_id(int id)
     case 16: start_build(20000); break;
     case 17: stop_build(); break;
     case 18: stop_build(); play_let_go(); break;  // let go early (medieval; nothing in sci-fi)
+    case 19: play(sounds_line_alert(s_cfg.sound_set)); break;  // a line: a neighbour's capture opened it
+    case 20: play(sounds_line_open(s_cfg.sound_set)); break;   // a line: its count ran out
+    case 21: AUDIO_PLAY(SLOT_EVENT, SND_TEST_DRUM); break;     // the instruments on their own, to hear them
+    case 22: AUDIO_PLAY(SLOT_EVENT, SND_TEST_SNARE); break;
+    case 23: AUDIO_PLAY(SLOT_EVENT, SND_TEST_TIMPANI); break;
+    case 24: AUDIO_PLAY(SLOT_EVENT, SND_TEST_BELL); break;
+    case 25: AUDIO_PLAY(SLOT_EVENT, SND_TEST_HORN); break;
+    case 26: AUDIO_PLAY(SLOT_EVENT, SND_TEST_TRUMPET); break;
     default: break;
     }
 }
@@ -536,6 +550,26 @@ static void line_leave(uint32_t now)
     apply_config(&c, now);
     s_line_show_until = now + LINE_TAP_SHOW_MS;
     ESP_LOGI(TAG, "left the line");
+}
+
+// A neighbour's capture that opens this button (or starts its count): a brief alert, since this one
+// played nothing; the count running out: a bell. Its own capture has its own sounds.
+static void line_sounds(uint32_t now)
+{
+    static uint32_t next;
+    if ((int32_t)(now - next) < 0) return;
+    next = now + 100;
+    uint32_t net = net_now();
+    bool own = s_owned_since && net - s_owned_since < 3000;  // (just captured here)
+    for (int t = 0; t < 2; t++) {
+        line_rule_t r = line_rule(t, net);
+        int st = !r.enabled ? 0 : r.wait_ms > 0 ? 1 : 2;
+        int was = s_line_seen[t];
+        s_line_seen[t] = st;
+        if (was < 0 || st == was || own) continue;
+        if (was == 0) play(sounds_line_alert(s_cfg.sound_set));
+        else if (was == 1 && st == 2) play(sounds_line_open(s_cfg.sound_set));
+    }
 }
 
 // Buttons holding at the same time (their hot items: face held, and since when). For the shared flash
@@ -2930,6 +2964,7 @@ void app_main(void)
             s_owned_since = net_now() | 1;  // (never 0: that's "unknown")
         }
         if (s_radio) holders_watch(now);
+        if (in_line() && s_pwr == PWR_ON && s_winner < 0) line_sounds(now);
         if (s_form_at && (int32_t)(now - s_form_at) >= 0) {
             s_form_at = 0;
             if (s_radio) line_form(now);

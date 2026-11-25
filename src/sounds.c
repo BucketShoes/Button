@@ -215,6 +215,24 @@ sound_t sounds_blip(int set, int i)
     return one(SLOT_DIAG, s_blip[i], s_blip_len[i]);
 }
 
+// Lines. Medieval: "dun dun" on a drum, a short horn under the second hit; then a bell when it opens.
+// Sci-fi: two low beeps; then a high blip.
+static const note_t MED_ALERT_DRUM[] = {{196, 196, 180, W_DRUM, 255}, {0, 0, 90, W_SQUARE, 0}, {196, 196, 400, W_DRUM, 255}};
+static const note_t MED_ALERT_HORN[] = {{0, 0, 270, W_SQUARE, 0}, {330, 330, 450, W_HORN, 200}};
+static const note_t MED_OPEN[] = {{1047, 1047, 900, W_BELL, 230}};
+static const note_t SND_ALERT[] = {{523, 523, 120, W_SQUARE, 255}, {0, 0, 80, W_SQUARE, 0}, {523, 523, 200, W_SQUARE, 255}};
+static const note_t SND_OPEN[] = {{1568, 1568, 120, W_SQUARE, 255}};
+sound_t sounds_line_alert(int set)
+{
+    if (set == SOUNDS_MEDIEVAL) return two(SLOT_EVENT, MED_ALERT_HORN, LEN(MED_ALERT_HORN), SLOT_EVENT2, MED_ALERT_DRUM, LEN(MED_ALERT_DRUM));
+    return one(SLOT_EVENT, SND_ALERT, LEN(SND_ALERT));
+}
+sound_t sounds_line_open(int set)
+{
+    if (set == SOUNDS_MEDIEVAL) return one(SLOT_EVENT, MED_OPEN, LEN(MED_OPEN));
+    return one(SLOT_EVENT, SND_OPEN, LEN(SND_OPEN));
+}
+
 uint32_t sounds_ms(sound_t s)
 {
     uint32_t most = 0;
