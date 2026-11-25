@@ -48,6 +48,9 @@
   .lines li { margin: 3px 0; }
   .lines .warn { color: var(--bad); }
   .lines input[type=number] { width: 4.5em; }
+  .grid input.num:not([type=checkbox]) { width: 5em; }  /* (beats the grid's 100 %) */
+  .unit { white-space: nowrap; }
+  .grid .span { grid-column: 1 / -1; }
   .lines ol { list-style: none; margin-left: 0; }
   .lines .handle { cursor: grab; touch-action: none; user-select: none; padding: 2px 8px; font-size: 18px; }
   .lines li.drag { opacity: .6; }
@@ -239,16 +242,16 @@
         <select class="f-initial"><option value="0">Uncaptured</option><option value="1">Owned by team 1</option><option value="2">Owned by team 2</option></select>
         <label>First capture</label>
         <select class="f-default"><option value="0">Random</option><option value="1">Team 1</option><option value="2">Team 2</option></select>
-        <label>Hold to capture (s)</label><input type="number" class="f-hold" min="0.5" max="60" step="0.5">
+        <label>Hold to capture</label><span class="unit"><input type="number" class="f-hold num" min="0.5" max="60" step="0.5"> sec</span>
         <label>Team 1 colour</label><input type="color" class="f-col0">
         <label>Team 2 colour</label><input type="color" class="f-col1">
         <label>Sounds</label><select class="f-sounds" title="The capture build-up, captures, countdown and win. Admin sounds (pause, reset, power) stay plain beeps in both."><option value="1">Medieval (drums, horns, bells)</option><option value="0">Sci-fi (synth)</option></select>
         <label class="l-vol">Volume <output class="f-volv"></output></label><input type="range" class="f-vol" min="0" max="125" step="1" list="vol-ticks">
         <label>LED brightness</label><input type="range" class="f-led" min="0" max="100" step="5">
-        <label title="Minutes with no press and no page command. 0 = never.">Idle: half the LEDs (min)</label><input type="number" class="f-idle0" min="0" max="255" step="1">
-        <label title="10 % brightness">Idle: dim (min)</label><input type="number" class="f-idle1" min="0" max="255" step="1">
-        <label title="Auto-off: dark, but still in the game (clocks keep running) and in the network. A tap or any command brings it straight back, as if it had stayed on. A countdown brings it back for its last 5 minutes. With a low battery it's 11 min at most.">Idle: auto-off (min)</label><input type="number" class="f-idle2" min="0" max="255" step="1">
-        <label title="Auto-off becomes off: out of the network and the clocks pause (a lid press peeks; two presses turn it on). Never while a countdown is running here.">Idle: off (min)</label><input type="number" class="f-idle3" min="0" max="255" step="1">
+        <label title="Minutes with no press and no page command. 0 = never.">Idle: half the LEDs</label><span class="unit"><input type="number" class="f-idle0 num" min="0" max="255" step="1"> min</span>
+        <label title="10 % brightness">Idle: dim</label><span class="unit"><input type="number" class="f-idle1 num" min="0" max="255" step="1"> min</span>
+        <label title="Auto-off: dark, but still in the game (clocks keep running) and in the network. A tap or any command brings it straight back, as if it had stayed on. A countdown brings it back for its last 5 minutes. With a low battery it's 11 min at most.">Idle: auto-off</label><span class="unit"><input type="number" class="f-idle2 num" min="0" max="255" step="1"> min</span>
+        <label title="Auto-off becomes off: out of the network and the clocks pause (a lid press peeks; two presses turn it on). Never while a countdown is running here.">Idle: off</label><span class="unit"><input type="number" class="f-idle3 num" min="0" max="255" step="1"> min</span>
         <label title="The red status LED is lit whenever the chip is out of light sleep, so each wake shows as a flash and a chip that never sleeps shows as a steady light.">Awake LED (debug)</label><input type="checkbox" class="f-awake">
       </div>
       <p class="note">After a capture its call plays out first (about 0.6 to 1.5 s); then pause is 4 s later, reset at 9 s, power off at 14 s. On an uncaptured button, each press
@@ -336,8 +339,9 @@ function setColour(input, hex) {
 // Each button's config item carries its line after the settings: u16 id (0 = none), u8 index, u8 n, u8 type,
 // u8 ends (low nibble: the team beyond #1, high: beyond #n; 0 none), u16 retake s, u16 advance s, u8, u8.
 const LINE_LEN = 12, LINE_TUG = 0, LINE_FORGE = 1, LINE_DEFAULT_S = 30;
-const LINE_COLOURS = ["#ff0000", "#ff5a00", "#78ff00", "#00ff3c", "#00ffff", "#003cff", "#ffffff", "#ff3ca0"];
-const lineNo = id => id % 8 + 1, lineCol = id => LINE_COLOURS[id % 8];
+// As the firmware's LINE_COLOURS (which are set for the LEDs, not the screen): red, orange, green, blue, white, sky.
+const LINE_COLOURS = ["#ff0000", "#ff7000", "#00c000", "#0030ff", "#ffffff", "#00a0ff"];
+const lineNo = id => id % LINE_COLOURS.length + 1, lineCol = id => LINE_COLOURS[id % LINE_COLOURS.length];
 function parseLine(dv, o) {
   return { id: dv.getUint16(o, true), index: dv.getUint8(o + 2), n: dv.getUint8(o + 3), type: dv.getUint8(o + 4),
            ends: dv.getUint8(o + 5), retake: dv.getUint16(o + 6, true), advance: dv.getUint16(o + 8, true) };
@@ -410,7 +414,7 @@ const lines = {
   teamSelect(cls, v, colourFrom, noneLabel) {
     const bg = v >= 0 ? this.colourOf(colourFrom, v) : "";
     return `<select class="${cls}" style="${bg ? `background:${bg};color:#111` : ""}">` +
-      [[-1, noneLabel], [0, teamName(0)], [1, teamName(1)]].map(([t, n]) =>
+      [...(v === -2 ? [[-2, "nearest end"]] : []), [-1, noneLabel], [0, teamName(0)], [1, teamName(1)]].map(([t, n]) =>
         `<option value="${t}"${t === v ? " selected" : ""}>${n}</option>`).join("") + "</select>";
   },
   render() {
@@ -424,7 +428,9 @@ const lines = {
     const nb = document.createElement("button");
     nb.textContent = "New line";
     nb.onclick = () => {
-      const id = 1 + Math.floor(Math.random() * 65535);
+      const used = new Set([...ids].map(lineNo));
+      let id;
+      for (let k = 0; k < 50; k++) { id = 1 + Math.floor(Math.random() * 65535); if (!used.has(lineNo(id))) break; }
       this.drafts.set(id, { id, type: LINE_TUG, ends: 0x21, retake: LINE_DEFAULT_S, advance: LINE_DEFAULT_S, members: [], fresh: new Set(), isNew: true });
       this.render();
     };
@@ -445,17 +451,17 @@ const lines = {
       ` <select class="l-type"><option value="0"${v.type === LINE_TUG ? " selected" : ""}>Tug-of-war</option>` +
       `<option value="1"${v.type === LINE_FORGE ? " selected" : ""}>Forge a path</option></select></div>` +
       `<div class="grid">` +
+      `<label>Retake after</label><span class="unit"><input type="number" class="l-retake num" min="0" max="3600" value="${v.retake}"> sec</span>` +
+      `<label>Advance after</label><span class="unit"><input type="number" class="l-advance num" min="0" max="3600" value="${v.advance}"> sec</span>` +
       `<label>Beyond #1</label>${this.teamSelect("l-e1", (v.ends & 15) - 1, first, "nobody")}` +
-      `</div><ol class="l-list">` +
+      `<ol class="l-list span">` +
       v.members.map((m, i) => {
         const b = buttons.get(m.id);
         return `<li data-id="${m.id}"><span class="handle" title="Drag to reorder">≡</span> <span class="l-name">#${i + 1} ${b ? b.label() : hex4(m.id)}</span>` +
           ` ${this.teamSelect("l-own", m.owner, m.id, "uncaptured")} <button class="l-rm" title="Take it out of the line">✕</button></li>`;
       }).join("") +
-      `</ol><div class="grid">` +
+      `</ol>` +
       `<label>Beyond the last</label>${this.teamSelect("l-e2", (v.ends >> 4) - 1, last, "nobody")}` +
-      `<label>Retake after</label><span><input type="number" class="l-retake" min="0" max="3600" value="${v.retake}"> s</span>` +
-      `<label>Next one opens after</label><span><input type="number" class="l-advance" min="0" max="3600" value="${v.advance}"> s</span>` +
       `<label>Add</label><span class="row"><select class="l-add grow">${others.map(b => `<option value="${b.id}">${b.label()}${b.line && b.line.id ? ` (line ${lineNo(b.line.id)})` : ""}</option>`).join("")}</select>` +
       ` <button class="l-addb"${others.length ? "" : " disabled"}>Add</button></span>` +
       `</div>` +
@@ -497,32 +503,35 @@ const lines = {
     this.dragList($(el, ".l-list"), id);
     return el;
   },
-  // Drag the ≡ handle up or down (pointer events, so it works on a phone too).
+  // Drag the ≡ handle up or down (pointer events, so it works on a phone too). The listeners are on the
+  // document: moving the row in the list would drop a pointer capture on the handle.
   dragList(ol, id) {
     ol.addEventListener("pointerdown", ev => {
       const h = ev.target.closest(".handle");
       if (!h) return;
       const li = h.closest("li");
       ev.preventDefault();
-      h.setPointerCapture(ev.pointerId);
       this.dragging = true;
       li.classList.add("drag");
       const move = e => {
+        e.preventDefault();
         const items = [...ol.children].filter(x => x !== li);
         const before = items.find(x => { const r = x.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
-        ol.insertBefore(li, before || null);
+        if ((before || null) !== li.nextElementSibling) ol.insertBefore(li, before || null);
       };
       const up = () => {
-        h.removeEventListener("pointermove", move);
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", up);
         this.dragging = false;
         li.classList.remove("drag");
-        const d = this.draft(id), order = [...ol.children].map(x => +x.dataset.id);
+        const order = [...ol.children].map(x => +x.dataset.id), d = this.draft(id);
         d.members.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
         this.render();
       };
-      h.addEventListener("pointermove", move);
-      h.addEventListener("pointerup", up, { once: true });
-      h.addEventListener("pointercancel", up, { once: true });
+      document.addEventListener("pointermove", move, { passive: false });
+      document.addEventListener("pointerup", up);
+      document.addEventListener("pointercancel", up);
     });
   },
   // Every member gets its place and the line's settings; an owner that was changed (or a button just added:
@@ -533,10 +542,14 @@ const lines = {
       const b = buttons.get(m.id), index = i + 1;
       if (!b) return;
       let owner = m.owner;
-      if (owner === -2) owner = index <= n / 2 ? 0 : index > (n + 1) / 2 ? 1 : Math.round(Math.random());
+      if (owner === -2) {  // just added: the team of the end it's nearer (either end's if that one has none)
+        const e1 = (v.ends & 15) - 1, e2 = (v.ends >> 4) - 1, near = i < n - 1 - i ? e1 : i > n - 1 - i ? e2 : -1;
+        owner = near >= 0 ? near : e1 >= 0 && e2 < 0 ? e1 : e2 >= 0 && e1 < 0 ? e2 : -1;
+      }
       const now = b.hot ? b.hot.owner : -1;
-      this.send(b, { id, index, n, type: v.type, ends: v.ends, retake: v.retake, advance: v.advance }, owner !== now || v.fresh.has(m.id) ? owner : -1);
-      if (owner === -1 && now !== -1) b.send(OP.SET_OWNER, ["i8", -1]);  // (the line command only sets a team)
+      // (on the wire: -1 leave it as it is, 0 / 1 a team, 2 uncaptured)
+      this.send(b, { id, index, n, type: v.type, ends: v.ends, retake: v.retake, advance: v.advance },
+        owner !== now || v.fresh.has(m.id) ? (owner < 0 ? 2 : owner) : -1);
     });
     for (const b of buttons.values())
       if (b.line && b.line.id === id && !v.members.some(m => m.id === b.id)) this.send(b, { id: 0 });
