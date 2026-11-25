@@ -2461,7 +2461,7 @@ static void status_line(uint32_t now)
     int vraw = 0, vpin = 0;
     sense_vsys_debug(&vraw, &vpin);
     printf("[%7.1fs] %-4s %-7s mode=%d owner=%d T1=%s T2=%s hold=%4lums sw=%d%d%d boot=%d ped=%d%d "
-           "vsys=%dmV (adc %d, pin %dmV) vbus=%dmV adc_rebuilds=%d ble=%d%s disp_nak=%lu/%lu heap=%u\n",
+           "vsys=%dmV (adc %d, pin %dmV) vbus=%dmV adc_rebuilds=%d ble=%d%s disp_nak=%lu/%lu heap=%u net_off=%lldms\n",
            now / 1000.0, PWR_NAME[s_pwr], state_name(), s_cfg.mode, s_owner + 1, t1, t2, (unsigned long)input_held_ms(&s_face),
            s_in[IN_FACE1].state, s_in[IN_FACE2].state, s_in[IN_FACE3].state, s_in[IN_BOOT].state,
            s_in[IN_PEDAL1].state, s_in[IN_PEDAL2].state, s_vsys_mv, vraw, vpin, s_vbus_mv, sense_adc_rebuilds(), ble_connections(),
